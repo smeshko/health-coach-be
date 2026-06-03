@@ -137,6 +137,37 @@ Status per phase. Phase IDs are `E<n>·P<m>`.
 
 ---
 
+## Validated plans (E1–E5)
+
+Each phase of E1–E5 has an implementation plan authored with `create-plan` and hardened with an
+adversarial `validate-plan` pass. Each has a single-file HTML viewer (built with `md-to-viewer`) covering
+its full scope (overview · acceptance · per-task RED/GREEN/REFACTOR · validation rounds). Open
+[`docs/architecture/epics.html`](./docs/architecture/epics.html) and expand an epic in the sidebar, or
+open a viewer directly.
+
+| Phase | Plan (source) | Viewer | Validation |
+|---|---|---|---|
+| E1·P1 | [`e1-p1-project-scaffold`](./.claude/plans/e1-p1-project-scaffold/PLAN.md) | [viewer](./docs/architecture/plans/e1-p1-project-scaffold.html) | 3 rounds · codex |
+| E1·P2 | [`e1-p2-auth-errors-health`](./.claude/plans/e1-p2-auth-errors-health/PLAN.md) | [viewer](./docs/architecture/plans/e1-p2-auth-errors-health.html) | 3 rounds · codex |
+| E1·P3 | [`e1-p3-workflow-engine`](./.claude/plans/e1-p3-workflow-engine/PLAN.md) | [viewer](./docs/architecture/plans/e1-p3-workflow-engine.html) | 3 rounds · codex |
+| E2·P1 | [`e2-p1-db-engine-alembic`](./.claude/plans/e2-p1-db-engine-alembic/PLAN.md) | [viewer](./docs/architecture/plans/e2-p1-db-engine-alembic.html) | 3 rounds · codex |
+| E2·P2 | [`e2-p2-ingest-tables`](./.claude/plans/e2-p2-ingest-tables/PLAN.md) | [viewer](./docs/architecture/plans/e2-p2-ingest-tables.html) | 3 rounds · codex |
+| E2·P3 | [`e2-p3-derived-state-tables`](./.claude/plans/e2-p3-derived-state-tables/PLAN.md) | [viewer](./docs/architecture/plans/e2-p3-derived-state-tables.html) | 3 rounds · codex |
+| E3·P1 | [`e3-p1-profile-loader`](./.claude/plans/e3-p1-profile-loader/PLAN.md) | [viewer](./docs/architecture/plans/e3-p1-profile-loader.html) | 3 rounds · codex |
+| E3·P2 | [`e3-p2-constitution-renderer`](./.claude/plans/e3-p2-constitution-renderer/PLAN.md) | [viewer](./docs/architecture/plans/e3-p2-constitution-renderer.html) | 3 rounds · codex |
+| E4·P1 | [`e4-p1-build-db-etl`](./.claude/plans/e4-p1-build-db-etl/PLAN.md) | [viewer](./docs/architecture/plans/e4-p1-build-db-etl.html) | 2 rounds · manual¹ |
+| E4·P2 | [`e4-p2-derive-constants`](./.claude/plans/e4-p2-derive-constants/PLAN.md) | [viewer](./docs/architecture/plans/e4-p2-derive-constants.html) | 3 rounds · manual¹ |
+| E4·P3 | [`e4-p3-seed-reconcile`](./.claude/plans/e4-p3-seed-reconcile/PLAN.md) | [viewer](./docs/architecture/plans/e4-p3-seed-reconcile.html) | 2 rounds · manual¹ |
+| E5·P1 | [`e5-p1-sync-models`](./.claude/plans/e5-p1-sync-models/PLAN.md) | [viewer](./docs/architecture/plans/e5-p1-sync-models.html) | 2 rounds · manual¹ |
+| E5·P2 | [`e5-p2-upsert-services`](./.claude/plans/e5-p2-upsert-services/PLAN.md) | [viewer](./docs/architecture/plans/e5-p2-upsert-services.html) | 2 rounds · manual¹ |
+| E5·P3 | [`e5-p3-checkin-strength-hook`](./.claude/plans/e5-p3-checkin-strength-hook/PLAN.md) | [viewer](./docs/architecture/plans/e5-p3-checkin-strength-hook.html) | 2 rounds · manual¹ |
+
+¹ The Codex adversarial-review backend hit its usage quota partway through E4; those phases were hardened
+with a rigorous **manual** adversarial review (same two-axis challenge: fidelity vs the architecture docs +
+internal coherence), recorded in each plan's `validation/` round files and `VALIDATION.md`. They can be
+re-run through Codex once quota resets. Each plan dir also carries `tasks/`, `VALIDATION.md`, and (for
+medium-risk phases) `RESEARCH.md`.
+
 ## Dependency order
 
 ```
