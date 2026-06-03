@@ -56,11 +56,17 @@ _VALIDATION_MESSAGE = "Request validation failed."
 
 
 def error_response(
-    code: ErrorCode, message: str, status_code: int, detail: str | None = None
+    code: ErrorCode,
+    message: str,
+    status_code: int,
+    detail: str | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     """Render the `{ "error": { … } }` envelope as a JSON response at `status_code`."""
     payload = ErrorResponse(error=Error(code=code, message=message, detail=detail))
-    return JSONResponse(status_code=status_code, content=payload.model_dump(mode="json"))
+    return JSONResponse(
+        status_code=status_code, content=payload.model_dump(mode="json"), headers=headers
+    )
 
 
 def _status_phrase(status_code: int) -> str | None:
@@ -109,7 +115,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         # Never echo caller-supplied detail on the internal_error fallback (unmapped
         # statuses) — that path must leak nothing, even if a route passed a detail.
         detail = None if code is ErrorCode.internal_error else _http_detail(exc)
-        return error_response(code, message, status_code=exc.status_code, detail=detail)
+        # Preserve HTTP recovery headers (405 Allow, 401 WWW-Authenticate, Retry-After, …)
+        # that Starlette attached to the exception; the fresh JSONResponse would drop them.
+        return error_response(
+            code, message, status_code=exc.status_code, detail=detail, headers=exc.headers
+        )
 
     @app.exception_handler(Exception)
     async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:

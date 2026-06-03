@@ -105,6 +105,14 @@ def test_internal_error_never_echoes_caller_detail():
         assert "secret" not in json.dumps(resp.json())
 
 
+def test_http_exception_headers_are_preserved():
+    # A 405 must still carry its Allow header through the envelope (review round-1 #2).
+    resp = TestClient(_app_with_routes()).post("/raise-404")
+    assert resp.status_code == 405
+    assert "allow" in {k.lower() for k in resp.headers}
+    assert resp.json()["error"]["code"] == "internal_error"
+
+
 def test_validation_error_envelope():
     resp = TestClient(_app_with_routes()).post("/validate", json={"n": "not-an-int"})
     assert resp.status_code == 422
