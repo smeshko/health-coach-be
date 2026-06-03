@@ -1,6 +1,10 @@
 # Local-dev runner for the Coach App backend — just `uv` + `just`, no containers.
 # Bare `just` lists every recipe. See the README "Local development" section.
 
+# Load .env into recipe env (process env still wins) so recipes resolve APP_DB_PATH
+# from the SAME source the app/Alembic do — e.g. db-reset deletes the configured DB.
+set dotenv-load := true
+
 # List all recipes (runs when `just` is invoked with no arguments).
 _default:
     @just --list
@@ -47,8 +51,9 @@ db-reset:
     # ${VAR-default}: unset -> app.db; an explicitly empty APP_DB_PATH stays empty (refused below).
     DB="${APP_DB_PATH-app.db}"
     [ -n "$DB" ] || { echo "db-reset: APP_DB_PATH is empty; refusing" >&2; exit 1; }
+    # Mirror the settings forbidden-basename guard (read-only build inputs, ARCHITECTURE §3).
     case "$(basename "$DB")" in
-        baseline.db) echo "db-reset: refusing to delete the read-only build DB (baseline.db)" >&2; exit 1 ;;
+        baseline.db|health.db) echo "db-reset: refusing to delete the read-only build DB ($DB)" >&2; exit 1 ;;
     esac
     rm -f -- "$DB" "$DB-wal" "$DB-shm"
     just migrate
