@@ -83,10 +83,23 @@ def test_short_token_rejected(monkeypatch):
 
 @pytest.mark.parametrize(
     "bad_path",
-    ["baseline.db", "./baseline.db", "/data/baseline.db", "health.db", "sqlite:///baseline.db"],
+    [
+        "baseline.db",
+        "./baseline.db",
+        "/data/baseline.db",
+        "health.db",
+        "sqlite:///baseline.db",
+        # URI scheme/query/fragment forms must not bypass the basename check
+        # (review round-4 #1).
+        "sqlite:///baseline.db?timeout=30",
+        "sqlite:///health.db#frag",
+        "sqlite+pysqlite:///baseline.db",
+        "file:baseline.db?mode=rwc",
+        "file:./health.db",
+    ],
 )
 def test_build_db_path_rejected(monkeypatch, bad_path):
-    # baseline.db / health.db are read-only build inputs (review round-3 #1).
+    # baseline.db / health.db are read-only build inputs (review round-3 #1, round-4 #1).
     monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
     monkeypatch.setenv("APP_DB_PATH", bad_path)
     with pytest.raises(ValidationError):

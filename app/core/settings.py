@@ -5,6 +5,7 @@ startup (E1·P2 wiring) so a missing required variable fails the boot rather tha
 lazily at first use (ARCHITECTURE §1 — env-driven config, one process).
 """
 
+import re
 from functools import lru_cache
 from pathlib import PurePath
 from typing import Annotated
@@ -34,6 +35,16 @@ _SENTINEL_TOKEN_FRAGMENTS = (
 # pointing it at one of these — or at a non-durable in-memory database — would
 # silently corrupt the build corpus or lose state. Reject both at startup.
 _FORBIDDEN_DB_BASENAMES = frozenset({"baseline.db", "health.db"})
+# Leading URL scheme (`sqlite://`, `sqlite+pysqlite://`, `file:`); stripped before
+# resolving the basename so URI forms can't smuggle a forbidden name past the check.
+_DB_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:(//)?")
+
+
+def _db_target_basename(value: str) -> str:
+    """Resolve the target filename of a db path/URI, ignoring scheme + query/fragment."""
+    candidate = value.split("?", 1)[0].split("#", 1)[0]
+    candidate = _DB_SCHEME_RE.sub("", candidate)
+    return PurePath(candidate).name.lower()
 
 
 class Settings(BaseSettings):
@@ -88,7 +99,8 @@ class Settings(BaseSettings):
                 "app_db_path must be a durable file path, not an in-memory SQLite database"
             )
         # baseline.db / health.db are read-only build inputs, never opened at runtime.
-        basename = PurePath(value).name.lower()
+        # Normalize scheme + query/fragment first so SQLite URI variants can't bypass it.
+        basename = _db_target_basename(value)
         if basename in _FORBIDDEN_DB_BASENAMES:
             raise ValueError(
                 f"app_db_path must not target the read-only build database ({basename}); "
