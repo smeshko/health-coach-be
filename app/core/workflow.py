@@ -50,6 +50,8 @@ class WorkflowValidator:
 
     def validate(self) -> None:
         self._validate_unique_nodes()
+        self._validate_unique_node_names()
+        self._validate_connections_declared()
         self._validate_dag()
         self._validate_connections()
 
@@ -61,6 +63,28 @@ class WorkflowValidator:
         dupes = sorted(node.__name__ for node, n in counts.items() if n > 1)
         if dupes:
             raise ValueError(f"Duplicate node configs for: {dupes}")
+
+    def _validate_unique_node_names(self) -> None:
+        # Outputs are keyed by node_name (the class __name__), so two distinct classes
+        # sharing a name (e.g. from different modules) would overwrite each other's slot
+        # in TaskContext.nodes. Reject the collision at construction.
+        counts = Counter(nc.node.__name__ for nc in self.workflow_schema.nodes)
+        dupes = sorted(name for name, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"Multiple nodes share a class name (output keys would collide): {dupes}")
+
+    def _validate_connections_declared(self) -> None:
+        # Every connection target must have its own NodeConfig. Synthesizing one for an
+        # omitted target would bypass these checks — e.g. an omitted BaseRouter would be
+        # registered is_router=False with no edges and silently skipped, never routing.
+        declared = {nc.node for nc in self.workflow_schema.nodes}
+        for nc in self.workflow_schema.nodes:
+            for target in nc.connections:
+                if target not in declared:
+                    raise ValueError(
+                        f"Connection target {target.__name__} (from {nc.node.__name__}) "
+                        f"has no NodeConfig."
+                    )
 
     def _validate_dag(self) -> None:
         all_nodes = {nc.node for nc in self.workflow_schema.nodes}
@@ -151,12 +175,10 @@ class Workflow(ABC):
         self.nodes: dict[type[Node], NodeConfig] = self._initialize_nodes()
 
     def _initialize_nodes(self) -> dict[type[Node], NodeConfig]:
-        registry: dict[type[Node], NodeConfig] = {}
-        for node_config in self.workflow_schema.nodes:
-            registry[node_config.node] = node_config
-            for connected in node_config.connections:
-                registry.setdefault(connected, NodeConfig(node=connected))
-        return registry
+        # Validation guarantees every node (start + every connection target) has an
+        # explicit config, so the registry is just the declared configs — no implicit
+        # synthesis that could mask an omitted (and unchecked) node.
+        return {nc.node: nc for nc in self.workflow_schema.nodes}
 
     def run(self, event: Any = None, *, context: TaskContext | None = None) -> TaskContext:
         """Run the workflow synchronously (new event loop) — for inline endpoint/script callers."""
@@ -184,7 +206,9 @@ class Workflow(ABC):
             task_context.should_stop = False
         else:
             task_context = TaskContext(event=event)
-            task_context.event = self.workflow_schema.event_schema(**event)
+            # model_validate accepts both a raw mapping and an already-parsed event model
+            # (an endpoint may hand the runner its request model directly).
+            task_context.event = self.workflow_schema.event_schema.model_validate(event)
             incoming_stop = False
 
         # Preserve a parent's registry across nested (composed) runs; restore on EVERY

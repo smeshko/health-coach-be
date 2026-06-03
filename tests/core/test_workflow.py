@@ -100,6 +100,15 @@ def test_linear_runs_end_to_end():
     assert ctx.metadata["b_saw_a"] is True  # B saw A's output over one shared context
 
 
+def test_run_accepts_dict_or_model_event():
+    # event parsing must accept both a raw mapping and an already-parsed model
+    # (an endpoint may pass its request model directly) — review round-3 #3.
+    dict_ctx = _LinearWF().run(event={"direction": "left"})
+    model_ctx = _LinearWF().run(event=_Event(direction="left"))
+    assert dict_ctx.event.direction == "left"
+    assert model_ctx.event.direction == "left"
+
+
 def test_router_branch_left():
     ctx = _BranchWF().run(event={"direction": "left"})
     assert "_LeftTerm" in ctx.nodes
@@ -268,6 +277,39 @@ def test_validator_rejects_cycle():
         nodes=[NodeConfig(node=_A, connections=[_B]), NodeConfig(node=_B, connections=[_A])],
     )
     with pytest.raises(ValueError, match="cycle"):
+        WorkflowValidator(schema).validate()
+
+
+def test_validator_rejects_omitted_connection_target():
+    # An omitted connection target (e.g. a BaseRouter) must fail at construction, not be
+    # silently synthesized and skipped (review round-3 #1).
+    schema = WorkflowSchema(
+        event_schema=_Event,
+        start=_Start,
+        nodes=[NodeConfig(node=_Start, connections=[_DirRouter])],  # _DirRouter omitted
+    )
+    with pytest.raises(ValueError, match="has no NodeConfig"):
+        WorkflowValidator(schema).validate()
+
+
+def _make_step():
+    async def process(self, task_context):
+        return task_context
+
+    return type("Step", (Node,), {"process": process})
+
+
+def test_validator_rejects_colliding_node_names():
+    # Two distinct classes named "Step" would overwrite each other's output slot
+    # (review round-3 #2).
+    step_a = _make_step()
+    step_b = _make_step()
+    schema = WorkflowSchema(
+        event_schema=_Event,
+        start=step_a,
+        nodes=[NodeConfig(node=step_a, connections=[step_b]), NodeConfig(node=step_b)],
+    )
+    with pytest.raises(ValueError, match="share a class name"):
         WorkflowValidator(schema).validate()
 
 
