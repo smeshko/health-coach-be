@@ -1,6 +1,6 @@
 # Plan: E1·P3 — Workflow engine primitives
 
-Status: draft
+Status: in-progress
 Branch: feature/e1-p3-workflow-engine
 Risk: medium
 Created: 2026-06-03
@@ -192,7 +192,7 @@ canonical early-stop the engine must support. Full keep/adapt/drop matrix and ci
 Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
-- [ ] TASK-001: TaskContext shared Pydantic state
+- [x] TASK-001: TaskContext shared Pydantic state
 - [ ] TASK-002: Node and RouterNode base types
 - [ ] TASK-003: AgentNode base type (LLM placeholder)
 - [ ] TASK-004: WorkflowRunner executor with stop_workflow and tests
