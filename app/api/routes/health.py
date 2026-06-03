@@ -4,8 +4,8 @@
 HEALTHCHECK / litestream / uptime monitors can probe it without the API token).
 `serverTime` is an instant-preserving conversion of the current UTC instant to
 Europe/Sofia — the offset always comes from the tz database (DST-aware: +02:00
-winter / +03:00 summer), never a fixed `timezone(timedelta(...))` or a relabel
-(MODELS "Conventions → Timestamps").
+winter / +03:00 summer), never a hard-coded fixed offset and never a tzinfo
+relabel (MODELS "Conventions → Timestamps").
 
 `GET /probe` is a throwaway route guarded by `require_auth` that demonstrates the
 401-vs-200 gate; the real endpoints arrive in E5/E10/E11.
@@ -20,8 +20,6 @@ from fastapi import APIRouter, Depends
 from app.api.auth import require_auth
 from app.api.schemas.base import CamelModel
 
-_SOFIA = ZoneInfo("Europe/Sofia")
-
 
 def utc_now() -> datetime:
     """Default clock: the current aware UTC instant (the seam tests override)."""
@@ -30,7 +28,9 @@ def utc_now() -> datetime:
 
 def now_sofia(clock: Callable[[], datetime] = utc_now) -> datetime:
     """Convert the injected aware-UTC instant to Europe/Sofia, preserving the instant."""
-    return clock().astimezone(_SOFIA)
+    # ZoneInfo is internally cached by key, so constructing it here is free and keeps
+    # the tz-database (DST-aware) conversion explicit at the call site.
+    return clock().astimezone(ZoneInfo("Europe/Sofia"))
 
 
 def get_clock() -> Callable[[], datetime]:
