@@ -116,12 +116,19 @@ class WorkflowValidator:
                 raise ValueError(
                     f"Node {nc.node.__name__} has multiple connections but is not marked as a router."
                 )
-            # is_router=True must be a BaseRouter subclass — the runner resolves a router
-            # edge via node().route(ctx), which only exists on BaseRouter; fail at
-            # construction, not with a runtime AttributeError.
+            # is_router and BaseRouter-ness must agree in BOTH directions, so the runner's
+            # is_router dispatch always matches the node kind:
+            #  - is_router=True on a non-BaseRouter would call node().route(), which only
+            #    exists on BaseRouter (runtime AttributeError);
+            #  - a BaseRouter with is_router omitted would be skipped *and* never routed —
+            #    it would silently take connections[0] without evaluating its predicates.
             if nc.is_router and not issubclass(nc.node, BaseRouter):
                 raise ValueError(
                     f"Node {nc.node.__name__} is marked is_router=True but is not a BaseRouter subclass."
+                )
+            if issubclass(nc.node, BaseRouter) and not nc.is_router:
+                raise ValueError(
+                    f"Node {nc.node.__name__} is a BaseRouter but is_router is not set to True."
                 )
 
 

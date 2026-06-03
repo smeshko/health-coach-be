@@ -319,3 +319,19 @@ def test_validator_rejects_is_router_on_non_baserouter():
     )
     with pytest.raises(ValueError, match="not a BaseRouter"):
         WorkflowValidator(schema).validate()
+
+
+def test_validator_rejects_baserouter_without_is_router():
+    # A BaseRouter with is_router omitted would be skipped and never routed, silently
+    # taking connections[0] without evaluating predicates (review round-2 #2).
+    schema = WorkflowSchema(
+        event_schema=_Event,
+        start=_Start,
+        nodes=[
+            NodeConfig(node=_Start, connections=[_DirRouter]),
+            NodeConfig(node=_DirRouter, connections=[_LeftTerm]),  # is_router omitted
+            NodeConfig(node=_LeftTerm),
+        ],
+    )
+    with pytest.raises(ValueError, match="is_router is not set to True"):
+        WorkflowValidator(schema).validate()
