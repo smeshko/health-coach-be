@@ -7,15 +7,19 @@ TASK-002; activity_summary: TASK-003).
 """
 
 from app.database.models.activity_summary import ActivitySummary
+from app.database.models.checkins import Checkins
 from app.database.models.daily_metrics import DailyMetrics
 from app.database.models.records import Records
+from app.database.models.strength_tests import StrengthTests
 from app.database.models.workout_statistics import WorkoutStatistics
 from app.database.models.workouts import Workouts
 
 __all__ = [
     "ActivitySummary",
+    "Checkins",
     "DailyMetrics",
     "Records",
+    "StrengthTests",
     "WorkoutStatistics",
     "Workouts",
 ]
