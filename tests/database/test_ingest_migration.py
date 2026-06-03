@@ -185,3 +185,33 @@ def test_workout_statistics_columns_and_types(migrated_db):
 def test_workout_statistics_fk_and_index(migrated_db):
     assert ("workout_id", "workouts", "id") in _fks(migrated_db, "workout_statistics")
     assert _has_index(migrated_db, "workout_statistics", ["workout_id", "type"], unique=False)
+
+
+# --------------------------- activity_summary (TASK-003) ----------------------
+
+def test_activity_summary_date_pk_not_null(migrated_db):
+    info = _table_info(migrated_db, "activity_summary")
+    assert info["date"]["affinity"] == "TEXT"
+    assert info["date"]["pk"] == 1
+    # A non-WITHOUT ROWID TEXT PK is NULL-tolerant in SQLite, so NOT NULL must be
+    # explicit or multiple NULL-date rows would slip in and break the date upsert.
+    assert info["date"]["notnull"] == 1
+
+
+def test_activity_summary_column_affinities(migrated_db):
+    info = _table_info(migrated_db, "activity_summary")
+    for real_col in (
+        "active_energy_burned",
+        "active_energy_burned_goal",
+        "apple_exercise_time",
+        "apple_exercise_time_goal",
+        "apple_move_time",
+        "apple_move_time_goal",
+    ):
+        assert info[real_col]["affinity"] == "REAL"
+    assert info["apple_stand_hours"]["affinity"] == "INTEGER"
+    assert info["apple_stand_hours_goal"]["affinity"] == "INTEGER"
+
+
+def test_exactly_the_four_ingest_tables_present(migrated_db):
+    assert _table_names(migrated_db) == INGEST_TABLES | {"alembic_version"}

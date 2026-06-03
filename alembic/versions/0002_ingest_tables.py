@@ -93,9 +93,24 @@ def upgrade() -> None:
         unique=False,
     )
 
+    op.create_table(
+        "activity_summary",
+        sa.Column("date", sa.Text(), nullable=False),
+        sa.Column("active_energy_burned", sa.Float(), nullable=True),
+        sa.Column("active_energy_burned_goal", sa.Float(), nullable=True),
+        sa.Column("apple_exercise_time", sa.Float(), nullable=True),
+        sa.Column("apple_exercise_time_goal", sa.Float(), nullable=True),
+        sa.Column("apple_stand_hours", sa.Integer(), nullable=True),
+        sa.Column("apple_stand_hours_goal", sa.Integer(), nullable=True),
+        sa.Column("apple_move_time", sa.Float(), nullable=True),
+        sa.Column("apple_move_time_goal", sa.Float(), nullable=True),
+        sa.PrimaryKeyConstraint("date", name=op.f("pk_activity_summary")),
+    )
+
 
 def downgrade() -> None:
     # Drop children before parents so the workout_statistics → workouts FK never dangles.
+    op.drop_table("activity_summary")
     op.drop_index(op.f("ix_workout_statistics_workout_id"), table_name="workout_statistics")
     op.drop_table("workout_statistics")
     op.drop_table("workouts")

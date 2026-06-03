@@ -91,3 +91,13 @@ def test_workout_statistics_orphan_workout_id_rejected(engine):
         conn.exec_driver_sql(
             "INSERT INTO workout_statistics (workout_id, type) VALUES (9999, 'HKQuantityTypeIdentifierHeartRate')"
         )
+
+
+# --------------------------- activity_summary (TASK-003) ----------------------
+
+def test_activity_summary_null_date_rejected(engine):
+    # The date upsert key can't be NULL (explicit NOT NULL on a TEXT PK).
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO activity_summary (date, apple_stand_hours) VALUES (NULL, 8)"
+        )
