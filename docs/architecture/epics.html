@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Coach App · Implementation Epics</title>
+<!-- set theme before first paint to avoid a flash; key shared with the plan viewers -->
+<script>(function(){try{var p=localStorage.getItem("md-viewer-theme")||"system";var light=p==="light"||(p==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.setAttribute("data-theme",light?"light":"dark");}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -19,6 +21,15 @@
   --f-body:'IBM Plex Sans',system-ui,sans-serif;
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --sidebar:300px;
+}
+/* ── Light theme — applied when <html data-theme="light"> (set by the toggle / system pref) ── */
+:root[data-theme="light"]{
+  --bg:#f3f6f9; --panel:#ffffff; --panel-2:#eaf0f5; --panel-3:#dde6ee;
+  --line:#d6dee7; --line-bright:#bcc8d4;
+  --ink:#1a2430; --ink-dim:#55657a; --ink-faint:#8593a4;
+  --green:#0e9d6e; --amber:#bf7d12; --red:#d2433f;
+  --blue:#2f7ec4; --violet:#7a4fd0; --steel:#48657f;
+  --grid:rgba(40,80,130,.05);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -37,7 +48,7 @@ em{color:var(--ink-dim);font-style:normal}
 /* ── Sidebar ─────────────────────────────────────────── */
 aside{
   width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
-  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),var(--bg));
   display:flex; flex-direction:column; padding:22px 18px; gap:16px; z-index:5;
 }
 .brand{display:flex;flex-direction:column;gap:3px}
@@ -185,6 +196,13 @@ body.viewing .planview{display:flex}
   border:1px solid rgba(58,214,160,.3);border-radius:10px;padding:1px 8px;font-weight:700}
 
 @media(max-width:880px){.egrid,.epic-meta,.stats{grid-template-columns:1fr 1fr}.section{padding:30px 22px 80px}}
+/* theme segmented control (dark / light / system) */
+.seg{display:flex;border:1px solid var(--line-bright);border-radius:7px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;flex:1;text-align:center;padding:7px 4px;
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.02em;color:var(--ink-dim);transition:.14s}
+.seg button + button{border-left:1px solid var(--line-bright)}
+.seg button:hover{background:var(--panel-2);color:var(--ink)}
+.seg button.on{background:var(--green);color:#04130d;font-weight:700}
 </style>
 </head>
 <body>
@@ -192,7 +210,7 @@ body.viewing .planview{display:flex}
   <div class="brand">
     <div class="kick">Coach App · Backend</div>
     <h1>Implementation Epics</h1>
-    <div class="sub">12 epics · 35 phases</div>
+    <div class="sub">12 epics · 36 phases</div>
   </div>
   <nav id="nav"></nav>
   <div class="legend">
@@ -201,6 +219,11 @@ body.viewing .planview{display:flex}
     <div class="row"><span class="pill prog">in progress</span></div>
     <div class="row"><span class="pill done">done</span></div>
     <div class="row" style="margin-top:4px"><span class="gtoggle open" style="position:static;width:auto">▸</span><span>expand an epic for its validated plans</span></div>
+  </div>
+  <div class="seg" id="themeSeg" role="group" aria-label="Theme (press T to cycle)">
+    <button data-theme-choice="light" title="Light theme (T)">light</button>
+    <button data-theme-choice="dark" title="Dark theme (T)">dark</button>
+    <button data-theme-choice="system" title="Match system (T)">auto</button>
   </div>
 </aside>
 <main>
@@ -236,6 +259,9 @@ const EPICS = [
       {t:"Workflow engine primitives", deliver:"Adopt and verify the Launchpad `core/` primitives — `Node`, `RouterNode`, `AgentNode`, `TaskContext` — with `stop_workflow()` and unit tests.",
         items:["DAG runner over a shared Pydantic `TaskContext`","`Node` / `RouterNode` / `AgentNode` base types","`stop_workflow()` short-circuit","Tests: linear flow, router branch, early stop"],
         refs:["ARCHITECTURE §1 (Orchestration)","ARCHITECTURE §5 (node legend)","LLM §0"]},
+      {t:"Local dev runner (justfile)", deliver:"A `justfile` of turnkey local-dev recipes so the app runs without Docker (deployment-only, E12) and without memorising commands.",
+        items:["Core recipes: `install` (uv sync), `run` (uvicorn --reload), `test`, `lint`, `fmt`; bare `just` lists recipes","Forward recipes that light up later: `migrate` (E2), `seed` (E4), `bootstrap`, `db-reset`","`.env.example` + a README \"Local development\" section","No Docker / litestream / migrate-on-startup (those stay in E12)"],
+        refs:["ARCHITECTURE §1 (single uvicorn process; Docker is E12)","E1·P1 run convention (`uv run uvicorn app.main:app`)"]},
     ]
   },
   {
@@ -452,7 +478,7 @@ const EPICS = [
 // Validated plans (create-plan + validate-plan) → md-to-viewer HTML, per epic phase.
 // Index aligns to e.phases. Epics without entries have no plans yet.
 const PLANS = {
-  E1:[{slug:"e1-p1-project-scaffold",rounds:3,how:"codex"},{slug:"e1-p2-auth-errors-health",rounds:3,how:"codex"},{slug:"e1-p3-workflow-engine",rounds:3,how:"codex"}],
+  E1:[{slug:"e1-p1-project-scaffold",rounds:3,how:"codex"},{slug:"e1-p2-auth-errors-health",rounds:3,how:"codex"},{slug:"e1-p3-workflow-engine",rounds:3,how:"codex"},{slug:"e1-p4-local-dev-runner",rounds:3,how:"codex"}],
   E2:[{slug:"e2-p1-db-engine-alembic",rounds:3,how:"codex"},{slug:"e2-p2-ingest-tables",rounds:3,how:"codex"},{slug:"e2-p3-derived-state-tables",rounds:3,how:"codex"}],
   E3:[{slug:"e3-p1-profile-loader",rounds:3,how:"codex"},{slug:"e3-p2-constitution-renderer",rounds:3,how:"codex"}],
   E4:[{slug:"e4-p1-build-db-etl",rounds:2,how:"manual"},{slug:"e4-p2-derive-constants",rounds:3,how:"manual"},{slug:"e4-p3-seed-reconcile",rounds:2,how:"manual"}],
@@ -611,8 +637,9 @@ function toggleGroup(n){
   const open=g.classList.toggle('open'); if(t) t.classList.toggle('open',open);
 }
 function openPlan(slug, epicN){
-  planframe.src = PLAN_DIR+slug+'.html';
-  document.getElementById('planopen').href = PLAN_DIR+slug+'.html';
+  var th = window.__mdvTheme ? '#t='+window.__mdvTheme : '';   // seed theme so the iframe paints right
+  planframe.src = PLAN_DIR+slug+'.html'+th;
+  document.getElementById('planopen').href = PLAN_DIR+slug+'.html'+th;
   let meta=null, code='', title=slug;
   for(const c in PLANS){
     const idx=PLANS[c].findIndex(x=>x.slug===slug);
@@ -643,6 +670,42 @@ document.addEventListener('click',ev=>{
   if(h.startsWith('plan=')){ const slug=h.slice(5);
     for(const c in PLANS){ const idx=PLANS[c].findIndex(x=>x.slug===slug);
       if(idx>=0){ openPlan(slug, EPICS.findIndex(e=>e.code===c)+1); return; } } }
+})();
+</script>
+<script>
+/* dark / light / system theme. file:// frames don't share localStorage, so the open plan
+   iframe is themed via a #t= url hint (flash-free on load) + postMessage (live on toggle). T cycles. */
+(function(){
+  var KEY="md-viewer-theme";
+  var seg=[].slice.call(document.querySelectorAll("#themeSeg button"));
+  var mq=window.matchMedia("(prefers-color-scheme: light)");
+  var eff="dark";                                          // current resolved theme: "light" | "dark"
+  function pref(){try{return localStorage.getItem(KEY)||"system";}catch(e){return "system";}}
+  function postFrame(){
+    var f=document.getElementById("planframe");
+    if(f&&f.contentWindow){try{f.contentWindow.postMessage({type:"mdv-theme",theme:eff},"*");}catch(e){}}
+  }
+  function apply(p){
+    eff=p==="system"?(mq.matches?"light":"dark"):p;
+    window.__mdvTheme=eff;                                 // read by openPlan() to seed the iframe url
+    document.documentElement.setAttribute("data-theme",eff);
+    seg.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===p);});
+    postFrame();
+  }
+  function set(p){try{localStorage.setItem(KEY,p);}catch(e){}apply(p);}
+  function cycle(){var o=["light","dark","system"];set(o[(o.indexOf(pref())+1)%o.length]);}
+  seg.forEach(function(b){b.addEventListener("click",function(){set(b.getAttribute("data-theme-choice"));});});
+  if(mq.addEventListener)mq.addEventListener("change",function(){if(pref()==="system")apply("system");});
+  else if(mq.addListener)mq.addListener(function(){if(pref()==="system")apply("system");});
+  var frame=document.getElementById("planframe");
+  if(frame)frame.addEventListener("load",postFrame);       // re-assert theme each time a plan loads
+  document.addEventListener("keydown",function(e){
+    var t=e.target.tagName;
+    if(t==="TEXTAREA"||t==="INPUT"||e.target.isContentEditable)return;
+    if(e.metaKey||e.ctrlKey||e.altKey)return;
+    if(e.key==="t"||e.key==="T")cycle();
+  });
+  apply(pref());
 })();
 </script>
 </body>

@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Coach App · E1·P1 — Project scaffold &amp; config</title>
+<!-- {{TITLE}} : the browser tab title -->
+<title>Coach App · E1·P4 — Local dev runner (justfile)</title>
 <!-- set theme before first paint; prefer a #t=light|dark hint from a parent frame, else stored pref -->
 <script>(function(){try{var h=(location.hash.match(/[#&]t=(light|dark)/)||[])[1];var p=h||localStorage.getItem("md-viewer-theme")||"system";var light=p==="light"||(p==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.setAttribute("data-theme",light?"light":"dark");}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -164,13 +165,6 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 .note b{color:var(--ink)}
 .note.warn{border-left-color:var(--amber)} .note.warn b{color:var(--amber)}
 
-/* checklist (acceptance / validation) */
-ul.check{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:8px}
-ul.check li{padding-left:26px;position:relative;font-size:13.5px;color:var(--ink-dim)}
-ul.check li::before{content:"☐";position:absolute;left:0;top:-1px;color:var(--green);font-size:14px;font-family:var(--f-mono)}
-ul.check li b,ul.check li strong{color:var(--ink);font-weight:600}
-ul.check li code{color:var(--green)}
-
 /* ── diagrams ────────────────────────────────────────── */
 .diagram{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:20px;margin:6px 0}
 .sys{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap}
@@ -255,12 +249,12 @@ ul.check li code{color:var(--green)}
     data-doc          filename prefix for exports → "<doc>-comments.json" / ".md"
     data-export-title H1 used at the top of the exported Markdown
 -->
-<body data-store="coachapp-plan-e1-p1-project-scaffold-v1" data-doc="e1-p1-project-scaffold" data-export-title="E1·P1 — Project scaffold &amp; config — plan review comments">
+<body data-store="coachapp-plan-e1-p4-local-dev-runner-v1" data-doc="e1-p4-local-dev-runner" data-export-title="E1·P4 — Local dev runner (justfile) — plan review comments">
 <aside>
   <div class="brand">
     <span class="kick">Coach App · Plan</span>
-    <h1>E1·P1<br>Project scaffold</h1>
-    <span class="sub">E1 · Foundation &amp; API Skeleton · 4 tasks</span>
+    <h1>E1·P4<br>Local dev runner</h1>
+    <span class="sub">E1 · Foundation &amp; API Skeleton · 3 tasks</span>
   </div>
   <nav id="nav"></nav>
   <div class="tools">
@@ -271,8 +265,8 @@ ul.check li code{color:var(--green)}
     </div>
     <button class="tbtn" id="cmtToggle" title="Toggle comment mode (C)"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
     <div class="row">
-      <button class="tbtn" id="expJson" title="Download e1-p1-project-scaffold-comments.json">⤓ JSON</button>
-      <button class="tbtn" id="expMd" title="Download e1-p1-project-scaffold-comments.md">⤓ MD</button>
+      <button class="tbtn" id="expJson" title="Download e1-p4-local-dev-runner-comments.json">⤓ JSON</button>
+      <button class="tbtn" id="expMd" title="Download e1-p4-local-dev-runner-comments.md">⤓ MD</button>
       <button class="tbtn" id="copyMd" title="Copy comments as Markdown">⧉ Copy</button>
     </div>
     <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
@@ -287,23 +281,25 @@ ul.check li code{color:var(--green)}
   <div class="shead">
     <div class="idx">00</div>
     <div class="meta">
-      <div class="kick">orientation · E1·P1</div>
-      <h2>Project scaffold &amp; config</h2>
-      <p>Stand up the runnable <code>uv</code>/FastAPI chassis — package layout, typed env settings, and the camelCase Pydantic base — so every later epic has something to build on.</p>
+      <div class="kick">orientation · E1·P4</div>
+      <h2>Local dev runner (justfile)</h2>
+      <p>Ship a repo-root <code>backend/justfile</code> that makes local dev turnkey <b>without Docker</b> — wrapping the E1·P1 <code>uvicorn</code> entry point and forward-declaring the migrate/seed/bootstrap recipes that light up as E2/E4 land.</p>
     </div>
   </div>
 
   <div class="commentable" data-anchor="ov-goal" data-label="Goal">
     <h3>Goal</h3>
-    <div class="note"><b>Deliver the chassis:</b> a <code>uv</code>-managed, Python&nbsp;3.13 FastAPI skeleton with a package layout, typed env <code>Settings</code>, and a shared camelCase Pydantic base — nothing more. This phase produces the structure every later epic imports.</div>
+    <div class="note"><b>Make local dev turnkey:</b> a <code>backend/justfile</code> (plus a <code>.env</code> bootstrap and a README "Local development" section) that boots the E1 scaffold today with <b>no Docker</b>, wrapping the E1·P1 <code>uv run uvicorn app.main:app</code> entry point and forward-declaring the migrate/seed/bootstrap recipes for E2/E4.</div>
   </div>
 
   <div class="commentable" data-anchor="ov-context" data-label="Epic / dependency context">
     <h3>Epic context</h3>
     <ul class="clean">
-      <li><b>Epic E1 — Foundation &amp; API Skeleton</b>, phase <b>P1</b>. Source of truth: <code>epics/E01-foundation.md</code>.</li>
-      <li><b>Grounded in</b> <code>ARCHITECTURE.md §1</code> (stack note) and <code>MODELS.md "Conventions"</code> (casing, nulls vs absent).</li>
-      <li><b>Status:</b> <span class="tag swap">draft</span> · <b>Risk:</b> <span class="tag keep">small</span> · <b>4 implementation tasks</b> + 1 final-validation task.</li>
+      <li><b>Epic E1 — Foundation &amp; API Skeleton</b>, phase <b>P4</b> (Local dev runner). Source of truth: <code>epics/E01-foundation.md</code> §3 "E1·P4" + §4 acceptance.</li>
+      <li><b>Grounded in</b> <code>ARCHITECTURE.md §1</code> — a single synchronous <code>uvicorn</code> process; Docker/litestream are <b>optional deployment</b> (E12), not local dev.</li>
+      <li><b>Builds on</b> <b>E1·P1</b> (the <code>uv</code> project + <code>uv run uvicorn app.main:app</code> entry point + canonical <code>.env.example</code>) and <b>E1·P2</b> (so <code>just run</code> serves <code>GET /health</code>).</li>
+      <li><b>Forward recipes target</b> <b>E2·P1</b> (<code>uv run alembic upgrade head</code>) and <b>E4</b> (<code>scripts/build_db.py</code>, <code>scripts/derive_constants.py</code>, <code>scripts/seed_app_db.py</code>).</li>
+      <li><b>Status:</b> <span class="tag swap">draft</span> · <b>Risk:</b> <span class="tag keep">small</span> · <b>3 implementation tasks</b> + 1 final-validation task.</li>
     </ul>
   </div>
 
@@ -313,35 +309,34 @@ ul.check li code{color:var(--green)}
       <div class="col det">
         <div class="ch">In scope <span class="pill">this phase</span></div>
         <ul class="clean">
-          <li><code>uv</code> project pinned to <b>Python 3.13</b> (<code>requires-python = "&gt;=3.13,&lt;3.14"</code>), kept-stack deps only.</li>
-          <li>Package layout: <code>app/</code> with <code>api/</code>, <code>core/</code>, <code>database/</code>, <code>services/</code> + <code>tests/</code>.</li>
-          <li>FastAPI <b>app factory</b> <code>create_app()</code> + a <code>uvicorn</code> entrypoint.</li>
-          <li>Typed <b>settings</b> (<code>pydantic-settings</code>) read from env; fail fast on missing required vars.</li>
-          <li>A <b>camelCase Pydantic base</b> (<code>alias_generator=to_camel</code>, <code>populate_by_name=True</code>).</li>
+          <li><b>A <code>justfile</code></b> at <code>backend/justfile</code> with a <code>_default</code> recipe (<code>@just --list</code>) so bare <code>just</code> lists every recipe.</li>
+          <li><b>Core recipes</b> that work today: <code>install</code> → <code>uv sync</code>, <code>run</code> → <code>uv run uvicorn app.main:app --reload</code>, <code>test</code> → <code>uv run pytest</code>, <code>lint</code> → <code>uv run ruff check .</code>, <code>fmt</code> → <code>uv run ruff format .</code>.</li>
+          <li><b>Forward-declared lifecycle recipes</b>: <code>migrate</code>, <code>seed</code>, <code>bootstrap</code>, <code>db-reset</code> — authored now, calling the correct future E2/E4 commands.</li>
+          <li><b><code>.env</code> handling</b>: an <code>env</code> recipe that copies <code>.env.example</code> → <code>.env</code> only when <code>.env</code> is missing (never clobber).</li>
+          <li><b>README "Local development"</b> section with two separated flows (E1-now boot path + post-E2/E4 full flow) and a per-recipe reference.</li>
         </ul>
       </div>
       <div class="col llm">
         <div class="ch">Out of scope <span class="pill">later phases</span></div>
         <ul class="clean">
-          <li>Auth, error envelope, health endpoint → <b>E1·P2</b>.</li>
-          <li>Workflow engine primitives → <b>E1·P3</b>.</li>
-          <li>DB models / migrations → <b>E2</b>.</li>
-          <li>Real endpoints → <b>E5 / E10 / E11</b>.</li>
-          <li>Docker / Langfuse wiring → <b>E12</b>.</li>
+          <li><b>Docker / litestream / migrate-on-startup</b> — deployment-only, lives in <b>E12·P2</b>. No <code>Dockerfile</code>, compose file, or startup migration.</li>
+          <li>The app/DB code the forward recipes call: Alembic config (<b>E2·P1</b>) and bootstrap scripts (<b>E4·P1/P2/P3</b>) are authored in their own phases.</li>
+          <li>Editing <code>.env.example</code> content beyond what E1·P1 ships (E1·P1 owns it; append only a genuinely-required var).</li>
+          <li>CI wiring, pre-commit hooks, task runners other than <code>just</code>.</li>
         </ul>
       </div>
     </div>
-    <div class="gate"><span class="gt">STACK ALLOWLIST</span><span class="gd"><b>No</b> Postgres / Celery / Redis / pgvector / <code>vecs</code> / Supabase deps anywhere (ARCHITECTURE §1).</span></div>
+    <div class="gate"><span class="gt">NO DOCKER LOCALLY</span><span class="gd">Local dev is just <code>uv</code> + <code>just</code> — <b>no</b> <code>Dockerfile</code>/compose/litestream/startup-migration (ARCHITECTURE §1; deferred to E12·P2).</span></div>
   </div>
 
   <div class="commentable" data-anchor="ov-research" data-label="Research summary">
     <h3>Research summary</h3>
-    <p class="lede">Where the chassis comes from, and what it deliberately drops.</p>
+    <p class="lede">Why local dev needs neither Docker nor litestream, and where the forward commands come from.</p>
     <ul class="clean">
-      <li><b>Reuse Datalumina's GenAI Launchpad</b> (<code>../genai-launchpad-main</code>) — keep <b>only</b> its FastAPI app, <code>core/</code> workflow primitives, PydanticAI, Jinja2, and Alembic.</li>
-      <li><b>Drop</b> Postgres/pgvector, Celery, Redis, Supabase, streaming and RAG (ARCHITECTURE §1). Single synchronous process — no workers/scheduler.</li>
-      <li><b>Wire JSON is camelCase</b>, Python stays snake_case behind a Pydantic <code>alias_generator</code> (MODELS "Conventions").</li>
-      <li>The Launchpad layout under <code>../genai-launchpad-main/app/</code> is the reference for the package structure to mirror (minus the dropped pieces).</li>
+      <li><b>Runtime is one synchronous Python 3.13 <code>uvicorn</code> process</b> with an <code>app.db</code> SQLite file (ARCHITECTURE §1). Docker is "optional (a single <code>api</code> container)" and <code>litestream</code> is the <b>deployment</b> backup path — both deferred to E12.</li>
+      <li><b>Canonical entry point</b> set in E1·P1 is <code>uv run uvicorn app.main:app</code>; this phase's <code>run</code> recipe wraps it with <code>--reload</code>.</li>
+      <li><b>Forward commands mirror later phases</b>: E2·P1 uses <code>uv run alembic upgrade head</code> against <code>app.db</code> (URL from <code>settings.app_db_path</code>); E4 defines <code>scripts/build_db.py</code> (E4·P1), <code>scripts/derive_constants.py</code> (E4·P2), <code>scripts/seed_app_db.py</code> (E4·P3).</li>
+      <li><b>Gitignored artifacts</b>: <code>app.db*</code> (<code>*.db</code>/<code>*.db-wal</code>/<code>*.db-shm</code>) and <code>.env</code> are gitignored, so <code>db-reset</code> only ever deletes untracked files and a real <code>.env</code> is never committed. E1·P1 owns the committed <code>.env.example</code>.</li>
     </ul>
   </div>
 
@@ -349,18 +344,43 @@ ul.check li code{color:var(--green)}
     <h3>Decisions</h3>
     <table>
       <tr><th>decision</th><th>tag</th><th>rationale</th></tr>
-      <tr><td>Mirror the Launchpad package layout (<code>api/core/database/services</code>), minus dropped deps</td><td><span class="tag keep">keep</span></td><td>Parity with the boilerplate the <code>core/</code> primitives come from (E1·P3), while shedding Postgres/Celery/Redis.</td></tr>
-      <tr><td><code>pydantic-settings</code> for config, env-driven</td><td><span class="tag keep">keep</span></td><td>Matches the deployment model (one process, env config; ARCHITECTURE §1) and fails fast at startup.</td></tr>
-      <tr><td>One shared camelCase base model now</td><td><span class="tag keep">keep</span></td><td>Every later wire model (E5/E10/E11) inherits it, so casing is defined once (MODELS "Conventions").</td></tr>
+      <tr><td><code>justfile</code> (not a Makefile or shell scripts)</td><td><span class="tag keep">keep</span></td><td>The epic mandates <code>just</code> by name (E1·P4 title + §4). Already on the dev box (<code>just 1.51.0</code>); recipes self-document via <code>just --list</code> and forward recipes are inspectable via <code>--show</code>/<code>-n</code> before the underlying tools exist.</td></tr>
+      <tr><td><code>_default</code> recipe runs <code>@just --list</code></td><td><span class="tag keep">keep</span></td><td><code>just</code> with no args runs the first recipe; making it a <code>_default</code> that lists satisfies "bare <code>just</code> lists recipes" (E1 §4). The <code>_</code> prefix hides it from the listing.</td></tr>
+      <tr><td><code>run</code> adds <code>--reload</code>; bare <code>uvicorn app.main:app</code> stays canonical</td><td><span class="tag swap">wrap</span></td><td><code>--reload</code> is a dev-only convenience; production/E12 uses the plain entry point. The recipe wraps, not replaces, the E1·P1 convention.</td></tr>
+      <tr><td>Forward recipes authored now, calling exact future commands, not run end-to-end until E2/E4</td><td><span class="tag opt">forward</span></td><td>Keeping them present (asserted via <code>--show</code>/dry-run) means E2/E4 only add code, not wire ergonomics. README + inline comments flag the owning epic.</td></tr>
+      <tr><td><code>env</code> copies <code>.env.example</code> → <code>.env</code> only when <code>.env</code> is absent</td><td><span class="tag keep">keep</span></td><td><code>.env</code> holds secrets (the API token) and is gitignored; clobbering would destroy local config. Idempotent and safe to re-run.</td></tr>
+      <tr><td><code>db-reset</code> is a single shebang shell block resolving <code>DB</code> from <code>APP_DB_PATH</code></td><td><span class="tag swap">guarded</span></td><td><code>settings.app_db_path</code> is the source of truth (E1·P1) and the Alembic target (E2·P1), so hard-coding <code>app.db</code> would delete the wrong file under an override. One shell keeps <code>DB=</code>/guard/<code>rm</code> together; <code>${APP_DB_PATH-app.db}</code> (not <code>:-</code>) refuses an explicitly-empty path.</td></tr>
+      <tr><td>No Docker/litestream in this phase</td><td><span class="tag drop">defer</span></td><td>ARCHITECTURE §1 marks them optional/deployment; the epic NOTES put them in E12·P2.</td></tr>
     </table>
+  </div>
+
+  <div class="commentable" data-anchor="ov-dbreset" data-label="db-reset safety design">
+    <h3>db-reset safety design</h3>
+    <p class="lede">A single shebang Bash block — two operational subtleties make it one shell, not multiple recipe lines.</p>
+    <div class="pre"><span class="d">#!/usr/bin/env bash</span>
+<span class="s">set</span> -euo pipefail
+DB=<span class="a">"${APP_DB_PATH-app.db}"</span>            <span class="d"># unset → app.db; explicit-empty stays empty</span>
+[ -n <span class="a">"$DB"</span> ] || { <span class="g">echo</span> <span class="a">"db-reset: APP_DB_PATH is empty; refusing"</span> &gt;&amp;2; <span class="g">exit</span> 1; }
+<span class="s">case</span> <span class="a">"$(basename "$DB")"</span> in baseline.db) <span class="g">echo</span> <span class="a">"db-reset: refusing baseline.db"</span> &gt;&amp;2; <span class="g">exit</span> 1;; esac
+<span class="g">rm</span> -f -- <span class="a">"$DB" "$DB-wal" "$DB-shm"</span>
+<span class="g">just</span> migrate</div>
+    <ul class="clean">
+      <li><b>One shell block</b> — <code>just</code> runs each plain recipe line in its own process, so <code>DB=…</code> on one line would not survive to the guard/<code>rm</code>; a shebang block keeps them together.</li>
+      <li><b><code>${APP_DB_PATH-app.db}</code> not <code>:-</code></b> — an <b>explicitly empty</b> <code>APP_DB_PATH</code> stays empty and is caught by the <code>[ -z ]</code> refusal rather than silently collapsing to <code>app.db</code>.</li>
+      <li><b>Explicit siblings, never a glob</b> — <code>rm -f -- "$DB" "$DB-wal" "$DB-shm"</code> (<code>--</code> stops option parsing). All three are gitignored, so nothing tracked is ever touched.</li>
+      <li><b>Refuses <code>baseline.db</code></b> — a read-only build input (ARCHITECTURE §3) is never deleted.</li>
+    </ul>
   </div>
 
   <div class="commentable" data-anchor="ov-risks" data-label="Risks">
     <h3>Risks &amp; mitigations</h3>
     <table>
       <tr><th>risk</th><th>tag</th><th>mitigation</th></tr>
-      <tr><td>Carrying over dropped deps from the Launchpad</td><td><span class="tag drop">risk</span></td><td>The manifest is an explicit allowlist; TASK-001 acceptance asserts no Postgres/Celery/Redis/pgvector imports.</td></tr>
-      <tr><td>Python version drift</td><td><span class="tag swap">risk</span></td><td>Pin 3.13 in <code>pyproject.toml</code> / <code>.python-version</code>.</td></tr>
+      <tr><td>Forward recipes mislead a dev into thinking E2/E4 features work</td><td><span class="tag drop">risk</span></td><td>Each carries an inline <code># (E2)</code>/<code># (E4)</code> comment; the README recipe table states the owning epic; acceptance only asserts the recipe <b>exists and invokes the right command</b> (via <code>--show</code>/<code>-n</code>), not that it succeeds end-to-end.</td></tr>
+      <tr><td><code>db-reset</code> deleting a tracked or wrong file</td><td><span class="tag drop">risk</span></td><td>Single shebang block resolving <code>DB="${APP_DB_PATH-app.db}"</code> (unset→fallback; explicit-empty refused), refuses <code>baseline.db</code>, and <code>rm -f --</code>s only <code>"$DB" "$DB-wal" "$DB-shm"</code> (all gitignored), never a glob.</td></tr>
+      <tr><td><code>env</code> clobbering an existing <code>.env</code></td><td><span class="tag swap">risk</span></td><td>Guarded by a <code>test ! -f .env</code> (copy only when missing); re-running is a no-op that prints "kept existing .env".</td></tr>
+      <tr><td>Duplicating E12 deployment surface</td><td><span class="tag swap">risk</span></td><td>Final-validation scopes the check to <b>this phase's surface</b> (no <code>Dockerfile</code>/compose/litestream in <code>git status</code>; no <code>docker</code>/<code>litestream</code> in <code>justfile</code>) — not a repo-wide grep, since existing docs already mention them.</td></tr>
+      <tr><td>Recipe drift from the real entry point/commands</td><td><span class="tag swap">risk</span></td><td><code>run</code> uses the exact <code>app.main:app</code> target (E1·P1), <code>migrate</code> uses <code>alembic upgrade head</code> (E2·P1), <code>seed</code> uses the E4 script paths; acceptance greps for these literals.</td></tr>
     </table>
   </div>
 </section>
@@ -371,253 +391,254 @@ ul.check li code{color:var(--green)}
     <div class="meta">
       <div class="kick">the contract</div>
       <h2>Acceptance criteria</h2>
-      <p>The phase's contract — every box must be green before E1·P1 is done. Final validation (page 06) maps concrete checks back to each of these.</p>
+      <p>The phase's contract — every box must be green before E1·P4 is done. Final validation (page 05) maps concrete checks back to each of these.</p>
     </div>
   </div>
 
   <div class="commentable" data-anchor="acc-list" data-label="Acceptance criteria">
-    <ul class="check">
-      <li><code>uv sync</code> installs the project on Python <b>3.13</b> (<code>requires-python</code> bounded <code>&gt;=3.13,&lt;3.14</code>); the locked dependency set contains <b>none</b> of Postgres/Celery/Redis/pgvector/<code>vecs</code>.</li>
-      <li><code>uvicorn</code> starts the app via the factory entrypoint without error when env is complete.</li>
-      <li>Settings load from env and <b>fail fast at app startup</b> (<code>create_app()</code> raises) when a required var is missing — proven by a <b>negative app-factory smoke</b>, not only an isolated settings test.</li>
-      <li>A sample model inheriting the base emits camelCase from raw <code>model_dump_json()</code> <b>and</b> over the wire (FastAPI route), and accepts both snake_case and camelCase input.</li>
-      <li>The package layout (<code>api/</code>, <code>core/</code>, <code>database/</code>, <code>services/</code>, <code>tests/</code>) exists and is importable.</li>
+    <h3>Acceptance criteria</h3>
+    <ul class="clean">
+      <li><b>☐ AC1 — bare <code>just</code> lists recipes</b> — <code>just</code> with no args and <code>just --list</code> both show: <code>install</code>, <code>run</code>, <code>test</code>, <code>lint</code>, <code>fmt</code>, <code>migrate</code>, <code>seed</code>, <code>bootstrap</code>, <code>db-reset</code>, <code>env</code> (the <code>_default</code> recipe runs <code>@just --list</code>).</li>
+      <li><b>☐ AC2 — core recipes work against the E1 scaffold now</b> — <code>just install</code> runs <code>uv sync</code>; <code>just lint</code> → <code>uv run ruff check .</code>; <code>just test</code> → <code>uv run pytest</code>; <code>just fmt</code> → <code>uv run ruff format .</code>; <code>just run</code> → <code>uv run uvicorn app.main:app --reload</code> (serving <code>/health</code> from E1·P2). Verified by <code>--show</code>/<code>-n</code> and actual runs.</li>
+      <li><b>☐ AC3 — forward recipes invoke the correct future commands</b> — <code>--show migrate</code> → <code>uv run alembic upgrade head</code>; <code>--show seed</code> → the E4 scripts (<code>build_db.py</code>/<code>derive_constants.py</code>/<code>seed_app_db.py</code>); <code>--show bootstrap</code> chains <code>install</code>→<code>migrate</code>→<code>seed</code>; <code>--show db-reset</code> removes <code>app.db</code>/<code>-wal</code>/<code>-shm</code> then re-migrates.</li>
+      <li><b>☐ AC4 — <code>.env</code> bootstrap is non-clobbering</b> — <code>just env</code> copies <code>.env.example</code> → <code>.env</code> when absent and is a no-op when <code>.env</code> exists; a real <code>.env</code> is never committed (gitignored).</li>
+      <li><b>☐ AC5 — README "Local development" section</b> — exists with two separated flows: the <b>E1-now</b> boot path (<code>install</code> → <code>env</code>/set <code>.env</code> → <code>run</code> → <code>curl /health</code>) that completes today, and the <b>post-E2/E4</b> full flow inserting <code>migrate</code>/<code>bootstrap</code>; lists each recipe with one line and notes which depend on E2/E4.</li>
+      <li><b>☐ AC6 — no Docker/litestream/migrate-on-startup introduced</b> — no <code>Dockerfile</code>/compose/litestream files; the <code>justfile</code> contains no <code>docker</code>/<code>litestream</code> references (grep is empty).</li>
     </ul>
   </div>
 </section>
 
-<section class="section" data-name="T1 · uv + layout" id="task-001">
+<section class="section" data-name="T1 · core recipes" id="task-001">
   <div class="shead">
     <div class="idx">02</div>
     <div class="meta">
       <div class="kick">task-001 · depends: none</div>
-      <h2>Init uv project, pin 3.13, deps &amp; layout</h2>
-      <p>Create the <code>uv</code> project pinned to Python 3.13 with the kept-stack dependencies and the package layout the later epics import.</p>
+      <h2>justfile with core dev recipes</h2>
+      <p>Create <code>backend/justfile</code> with a <code>_default</code> recipe (so bare <code>just</code> lists recipes) and the five core recipes that work against the E1 scaffold today: <code>install</code>, <code>run</code>, <code>test</code>, <code>lint</code>, <code>fmt</code>.</p>
     </div>
   </div>
 
   <div class="commentable" data-anchor="t1-goal" data-label="T1 goal / commit">
-    <div class="note"><b>Goal:</b> the <code>uv</code> project with kept-stack deps and the importable package skeleton. <b>Commit:</b> <code>chore(project): init uv project, deps, and package layout</code></div>
+    <div class="note"><b>Goal:</b> the <code>justfile</code> with a <code>_default</code> lister and the five core recipes that run green against the E1 scaffold today. <b>Commit:</b> <code>feat(dev): add justfile with core dev recipes</code></div>
   </div>
 
   <div class="commentable" data-anchor="t1-files" data-label="T1 files">
     <h3>Files</h3>
     <table>
       <tr><th>path</th><th>change</th><th>note</th></tr>
-      <tr><td><code>pyproject.toml</code></td><td><span class="tag swap">create</span></td><td>Metadata, <code>requires-python = "&gt;=3.13,&lt;3.14"</code> (bounded — not a bare floor), deps allowlist + dev deps (incl. <code>httpx</code> for <code>TestClient</code>).</td></tr>
-      <tr><td><code>.python-version</code></td><td><span class="tag swap">create</span></td><td><code>3.13</code></td></tr>
-      <tr><td><code>app/__init__.py</code>, <code>app/api/__init__.py</code>, <code>app/core/__init__.py</code>, <code>app/database/__init__.py</code>, <code>app/services/__init__.py</code></td><td><span class="tag swap">create</span></td><td>Package skeleton.</td></tr>
-      <tr><td><code>tests/__init__.py</code>, <code>tests/test_layout.py</code></td><td><span class="tag swap">create</span></td><td>Import-boundary smoke test.</td></tr>
-      <tr><td><code>README.md</code></td><td><span class="tag swap">create</span></td><td>Run instructions (<code>uv sync</code>, <code>uv run uvicorn …</code>).</td></tr>
+      <tr><td><code>justfile</code> (repo root, <code>backend/justfile</code>)</td><td><span class="tag swap">create</span></td><td>Header comment naming it the local-dev runner + pointing at the README. Contains <code>_default</code> + the five core recipes below.</td></tr>
+    </table>
+    <h3>Core recipes</h3>
+    <table>
+      <tr><th>recipe</th><th>command</th><th>note</th></tr>
+      <tr><td><code>_default</code></td><td><code>@just --list</code></td><td>First recipe; runs when <code>just</code> is called with no args; <code>_</code> hides it from the listing.</td></tr>
+      <tr><td><code>install</code></td><td><code>uv sync</code></td><td>Install deps.</td></tr>
+      <tr><td><code>run</code></td><td><code>uv run uvicorn app.main:app --reload</code></td><td>The E1·P1 canonical entry point + dev <code>--reload</code>.</td></tr>
+      <tr><td><code>test</code></td><td><code>uv run pytest</code></td><td>Run the suite.</td></tr>
+      <tr><td><code>lint</code></td><td><code>uv run ruff check .</code></td><td>Lint.</td></tr>
+      <tr><td><code>fmt</code></td><td><code>uv run ruff format .</code></td><td>Format.</td></tr>
     </table>
   </div>
 
   <div class="commentable" data-anchor="t1-accept" data-label="T1 acceptance">
     <h3>Acceptance</h3>
-    <ul class="check">
-      <li><code>uv sync</code> succeeds on Python 3.13; <code>requires-python</code> is bounded <code>&gt;=3.13,&lt;3.14</code> (not a bare <code>&gt;=3.13</code>).</li>
-      <li>Runtime deps are exactly the kept stack (<code>fastapi</code>, <code>uvicorn</code>, <code>pydantic</code>, <code>pydantic-settings</code>, <code>sqlalchemy</code>, <code>alembic</code>, <code>pydantic-ai</code>, <code>jinja2</code>); dev deps add <code>pytest</code>, <code>ruff</code>, <code>httpx</code>. <b>No</b> psycopg/asyncpg/celery/redis/pgvector/vecs/supabase anywhere in the lock.</li>
-      <li><code>python -c "import app.api, app.core, app.database, app.services"</code> succeeds.</li>
+    <ul class="clean">
+      <li><b>☐</b> <code>just</code> (no args) and <code>just --list</code> both print the recipe list including <code>install</code>, <code>run</code>, <code>test</code>, <code>lint</code>, <code>fmt</code> (<code>_default</code> hidden by its <code>_</code> prefix).</li>
+      <li><b>☐</b> <code>just --show run</code> prints exactly <code>uv run uvicorn app.main:app --reload</code>; <code>--show install</code> → <code>uv sync</code>; <code>--show lint</code> → <code>uv run ruff check .</code>; <code>--show test</code> → <code>uv run pytest</code>; <code>--show fmt</code> → <code>uv run ruff format .</code>.</li>
+      <li><b>☐</b> <code>just -n install/lint/test/fmt</code> dry-run-print the right command without executing; running <code>just install</code>, <code>just lint</code>, <code>just test</code> actually succeeds against the E1 scaffold.</li>
+      <li><b>☐</b> <code>just --evaluate</code> / <code>just --list</code> exits 0 (the justfile parses with no syntax errors).</li>
     </ul>
   </div>
 
   <div class="commentable" data-anchor="t1-flow" data-label="T1 RED/GREEN/REFACTOR">
     <h3>RED → GREEN → REFACTOR</h3>
     <div class="flow">
-      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>tests/test_layout.py</code>: assert the four subpackages import &amp; forbidden deps are not importable / not in the lock</span></div>
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd">With no justfile, <code>just --list</code> does not list the five recipes and <code>just --show run</code> does not yield <code>app.main:app --reload</code> — capture these as the assertions the recipes must satisfy.</span></div>
       <div class="arrow">↓</div>
-      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Author <code>pyproject.toml</code> (allowlist), <code>.python-version</code>, <code>__init__.py</code> files, README; run <code>uv sync</code></span></div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Author <code>justfile</code> with <code>_default</code> + <code>install</code>/<code>run</code>/<code>test</code>/<code>lint</code>/<code>fmt</code>; confirm <code>--list</code>, <code>--show</code>, and live <code>install</code>/<code>lint</code>/<code>test</code> runs.</span></div>
       <div class="arrow">↓</div>
-      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Run <code>ruff</code> and tidy; confirm the test passes</span></div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Tidy spacing/comments; header references the README "Local development" section; <code>just fmt</code> then <code>just lint</code> leave the tree clean.</span></div>
     </div>
-    <div class="note"><b>Notes:</b> stack allowlist mandated by ARCHITECTURE §1 (drop Postgres/Celery/Redis/pgvector/vecs/Supabase). Mirror <code>../genai-launchpad-main/app/</code> layout for parity with the <code>core/</code> primitives adopted in E1·P3.</div>
   </div>
 </section>
 
-<section class="section" data-name="T2 · app factory" id="task-002">
+<section class="section" data-name="T2 · lifecycle + env" id="task-002">
   <div class="shead">
     <div class="idx">03</div>
     <div class="meta">
-      <div class="kick">task-002 · depends: task-001</div>
-      <h2>FastAPI app factory &amp; uvicorn entrypoint</h2>
-      <p>A <code>create_app()</code> factory returning a configured <code>FastAPI</code> that loads and validates settings at startup, plus a <code>uvicorn</code>-runnable entry point.</p>
+      <div class="kick">task-002 · depends: T1</div>
+      <h2>Forward lifecycle recipes &amp; .env handling</h2>
+      <p>Add the forward-declared lifecycle recipes (<code>migrate</code>, <code>seed</code>, <code>bootstrap</code>, <code>db-reset</code>) calling the exact future E2/E4 commands, plus an <code>env</code> recipe that bootstraps <code>.env</code> from <code>.env.example</code> without clobbering.</p>
     </div>
   </div>
 
   <div class="commentable" data-anchor="t2-goal" data-label="T2 goal / commit">
-    <div class="note"><b>Goal:</b> a <code>create_app()</code> that validates settings at construction time, plus <code>uvicorn app.main:app</code>. <b>Commit:</b> <code>feat(api): add FastAPI app factory and uvicorn entrypoint</code></div>
+    <div class="note"><b>Goal:</b> the four forward lifecycle recipes (calling exact E2/E4 commands) plus a non-clobbering <code>env</code> bootstrap. <b>Commit:</b> <code>feat(dev): add forward lifecycle recipes and .env bootstrap</code></div>
   </div>
 
-  <div class="commentable" data-anchor="t2-files" data-label="T2 files">
-    <h3>Files</h3>
+  <div class="commentable" data-anchor="t2-files" data-label="T2 files / recipes">
+    <h3>Recipes added</h3>
     <table>
-      <tr><th>path</th><th>change</th><th>note</th></tr>
-      <tr><td><code>app/api/app.py</code></td><td><span class="tag swap">create</span></td><td><code>create_app() -&gt; FastAPI</code>; calls <code>get_settings()</code> <b>at construction time</b> (before returning) so missing required env makes <code>create_app()</code> raise — <b>not</b> a lifespan-only hook a non-context-managed <code>TestClient</code> could bypass.</td></tr>
-      <tr><td><code>app/main.py</code></td><td><span class="tag swap">create</span></td><td>Exposes <code>app = create_app()</code> for <code>uvicorn app.main:app</code>.</td></tr>
-      <tr><td><code>tests/test_app_factory.py</code></td><td><span class="tag swap">create</span></td><td>Factory returns a <code>FastAPI</code>; <code>TestClient</code> builds; OpenAPI exposed; <b>negative smoke</b>: <code>create_app()</code> with a required env var unset raises.</td></tr>
+      <tr><th>recipe</th><th>command</th><th>epic</th></tr>
+      <tr><td><code>migrate</code></td><td><code>uv run alembic upgrade head</code> <em># (E2·P1) — lights up once Alembic lands</em></td><td><span class="tag opt">E2·P1</span></td></tr>
+      <tr><td><code>seed</code></td><td><code>uv run python scripts/build_db.py</code>, <code>scripts/derive_constants.py</code>, <code>scripts/seed_app_db.py</code> in order <em># (E4)</em></td><td><span class="tag opt">E4</span></td></tr>
+      <tr><td><code>bootstrap</code></td><td>chains <code>install</code> → <code>migrate</code> → <code>seed</code> (dependency line <code>bootstrap: install migrate seed</code>)</td><td><span class="tag opt">E2+E4</span></td></tr>
+      <tr><td><code>db-reset</code></td><td>single shebang block: resolves <code>DB="${APP_DB_PATH-app.db}"</code>, refuses empty/<code>baseline.db</code>, <code>rm -f -- "$DB" "$DB-wal" "$DB-shm"</code>, then <code>just migrate</code></td><td><span class="tag opt">E2</span></td></tr>
+      <tr><td><code>env</code></td><td><code>test -f .env || cp .env.example .env</code>, with an <code>@echo</code> notice either way</td><td><span class="tag keep">now</span></td></tr>
     </table>
+    <div class="note warn"><b><code>.env.example</code> (owned by E1·P1):</b> only append a var (e.g. <code>APP_DB_PATH=app.db</code>) if <code>just run</code>/<code>just migrate</code> genuinely needs one absent from E1·P1's file — do not rewrite it. Default is to leave it untouched.</div>
   </div>
 
   <div class="commentable" data-anchor="t2-accept" data-label="T2 acceptance">
     <h3>Acceptance</h3>
-    <ul class="check">
-      <li><code>create_app()</code> returns a <code>FastAPI</code> instance and calls <code>get_settings()</code> <b>at construction time</b>.</li>
-      <li><code>TestClient(create_app())</code> builds and the app exposes its OpenAPI schema (<code>/openapi.json</code>).</li>
-      <li>With a required env var unset, <b><code>create_app()</code> itself raises</b> a clear <code>ValidationError</code>-derived error (asserted directly — not via lifespan) — so <code>uv run uvicorn app.main:app</code> also fails fast.</li>
-      <li><code>uv run uvicorn app.main:app</code> boots locally when env is complete (manual smoke).</li>
+    <ul class="clean">
+      <li><b>☐</b> <code>just --show migrate</code> → <code>uv run alembic upgrade head</code>.</li>
+      <li><b>☐</b> <code>just --show seed</code> references all three E4 scripts (<code>build_db.py</code>, <code>derive_constants.py</code>, <code>seed_app_db.py</code>) via <code>uv run python</code>.</li>
+      <li><b>☐</b> <code>just --show bootstrap</code> shows it chains <code>install</code> → <code>migrate</code> → <code>seed</code>.</li>
+      <li><b>☐</b> <code>just --show db-reset</code> shows the shebang single-block recipe: <code>set -euo pipefail</code>, <code>DB="${APP_DB_PATH-app.db}"</code>, the empty refusal, the <code>baseline.db</code> refusal, <code>rm -f -- "$DB" "$DB-wal" "$DB-shm"</code>, then <code>just migrate</code>; grep proves no <code>*.db</code> glob. Behaviour: (a) unset + sentinels → all three removed; (b) <code>APP_DB_PATH=</code> → refuses, deletes nothing; (c) <code>APP_DB_PATH=/tmp/coachtest.db</code> + sentinels → removed; (d) <code>APP_DB_PATH=baseline.db</code> → refuses.</li>
+      <li><b>☐</b> <code>just env</code> creates <code>.env</code> when absent; re-running with an existing <code>.env</code> does <b>not</b> overwrite it (content unchanged, exit 0, prints "kept existing .env").</li>
+      <li><b>☐</b> Forward recipes asserted via <code>--show</code>/<code>-n</code> (not end-to-end), since Alembic (E2) and the E4 scripts do not exist yet.</li>
     </ul>
   </div>
 
   <div class="commentable" data-anchor="t2-flow" data-label="T2 RED/GREEN/REFACTOR">
     <h3>RED → GREEN → REFACTOR</h3>
     <div class="flow">
-      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_app_factory.py</code>: returns <code>FastAPI</code>; <code>TestClient</code> builds; OpenAPI exposed; unset required env → <b><code>create_app()</code> raises directly</b> (assert on the call, not lifespan entry)</span></div>
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd">Before this task, <code>--show migrate/seed/bootstrap/db-reset/env</code> error (recipe absent) or don't print the expected commands; a temp <code>.env</code> with sentinel content would be clobbered by a naive <code>cp</code>. These are the conditions the recipes fix.</span></div>
       <div class="arrow">↓</div>
-      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>create_app()</code> (load <code>get_settings()</code> at construction) and <code>app/main.py</code></span></div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Add the five recipes (forward recipes carry inline <code># (E2)</code>/<code># (E4)</code> markers); verify each via <code>--show</code>/<code>-n</code>; verify <code>just env</code> create-vs-keep against a temp cwd. Append a <code>.env.example</code> var only if genuinely needed.</span></div>
       <div class="arrow">↓</div>
-      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Keep the factory free of unrelated side effects (only config validation at boot); tidy with <code>ruff</code></span></div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Order recipes logically (core, then lifecycle, then env); every forward recipe has an epic marker; <code>just fmt</code> + <code>just lint</code> leave the tree clean; <code>just --list</code> still lists everything.</span></div>
     </div>
-    <div class="note"><b>Notes:</b> single synchronous process — no workers/scheduler (ARCHITECTURE §1). Routers/handlers are added in E1·P2 (health/errors) and later endpoint epics; keep the factory open for <code>include_router</code>.</div>
   </div>
 </section>
 
-<section class="section" data-name="T3 · settings" id="task-003">
+<section class="section" data-name="T3 · README" id="task-003">
   <div class="shead">
     <div class="idx">04</div>
     <div class="meta">
-      <div class="kick">task-003 · depends: task-001</div>
-      <h2>Typed settings module from environment</h2>
-      <p>A <code>pydantic-settings</code> config object read from the environment, validated at startup, used everywhere config is needed.</p>
+      <div class="kick">task-003 · depends: T1, T2</div>
+      <h2>README "Local development" section</h2>
+      <p>Add a "Local development" section to <code>README.md</code> documenting the clean-checkout <code>just</code>-driven flow and what each recipe does, including which forward recipes depend on E2/E4.</p>
     </div>
   </div>
 
   <div class="commentable" data-anchor="t3-goal" data-label="T3 goal / commit">
-    <div class="note"><b>Goal:</b> a single, cached, env-driven <code>Settings</code> that fails fast on missing required vars. <b>Commit:</b> <code>feat(core): add typed settings loaded from environment</code></div>
+    <div class="note"><b>Goal:</b> a <code>## Local development</code> README section with two separated flows and a recipe reference kept in lock-step with the <code>justfile</code>. <b>Commit:</b> <code>docs(readme): add Local development section</code></div>
   </div>
 
-  <div class="commentable" data-anchor="t3-files" data-label="T3 files">
+  <div class="commentable" data-anchor="t3-files" data-label="T3 files / content">
     <h3>Files</h3>
     <table>
       <tr><th>path</th><th>change</th><th>note</th></tr>
-      <tr><td><code>app/core/settings.py</code></td><td><span class="tag swap">create</span></td><td><code>Settings(BaseSettings)</code> + a cached <code>get_settings()</code> accessor.</td></tr>
-      <tr><td><code>tests/test_settings.py</code></td><td><span class="tag swap">create</span></td><td>Required-var validation + override behaviour.</td></tr>
-      <tr><td><code>.env.example</code></td><td><span class="tag swap">create</span></td><td>Documented variables.</td></tr>
+      <tr><td><code>README.md</code> (repo root, created in E1·P1)</td><td><span class="tag swap">edit</span></td><td>Add a <code>## Local development</code> section: prerequisites, two flows, recipe reference, and the single negative Docker note.</td></tr>
     </table>
+    <h3>Section contents</h3>
+    <ul class="clean">
+      <li><b>Prerequisites</b> — <code>uv</code> and <code>just</code> installed (Python 3.13 is provided by <code>uv</code>); link to <code>just</code>.</li>
+      <li><b>From a clean checkout — today (E1)</b> — <code>just install</code> → <code>just env</code> (then edit <code>.env</code>, set <code>API_TOKEN</code>) → <code>just run</code>, then <code>curl localhost:8000/health</code>. Completes on the current scaffold; does <b>not</b> require <code>migrate</code> (no DB tables until E2).</li>
+      <li><b>Full flow (once E2/E4 land)</b> — same start, but insert <code>just migrate</code> (and optionally <code>just bootstrap</code>) after <code>just env</code> and before <code>just run</code>. Forward-declared; only fully runs after E2/E4 (round-1 #1).</li>
+      <li><b>Recipe reference</b> — one line each for <code>install</code>, <code>run</code>, <code>test</code>, <code>lint</code>, <code>fmt</code>, <code>migrate</code>, <code>seed</code>, <code>bootstrap</code>, <code>db-reset</code>, <code>env</code> — each with its command and the owning epic for forward recipes (<code>migrate</code> → E2, <code>seed</code>/<code>bootstrap</code> → E2+E4).</li>
+      <li><b>Docker note</b> — one line that Docker is <b>not</b> used for local dev (deployment-only, E12).</li>
+    </ul>
   </div>
 
-  <div class="commentable" data-anchor="t3-fields" data-label="T3 settings fields">
-    <h3>Settings fields</h3>
-    <table>
-      <tr><th>field</th><th>tag</th><th>note</th></tr>
-      <tr><td><code>api_token</code></td><td><span class="tag drop">required</span></td><td>Consumed by E1·P2 auth.</td></tr>
-      <tr><td><code>app_db_path</code></td><td><span class="tag drop">required</span></td><td>SQLite path.</td></tr>
-      <tr><td><code>model_id</code></td><td><span class="tag keep">default</span></td><td>Defaults to <code>claude-opus-4-8</code>; consumed by E9.</td></tr>
-      <tr><td><code>constitution_version</code></td><td><span class="tag keep">field</span></td><td>Constitution version string.</td></tr>
-      <tr><td><code>langfuse_public_key</code>, <code>langfuse_secret_key</code>, <code>langfuse_host</code></td><td><span class="tag opt">optional</span></td><td>Langfuse wiring; consumed by E12.</td></tr>
-    </table>
+  <div class="commentable" data-anchor="t3-flows" data-label="T3 two documented flows">
+    <h3>Two documented flows</h3>
+    <div class="split">
+      <div class="col det">
+        <div class="ch">E1-now boot path <span class="pill">completes today</span></div>
+        <ul class="clean">
+          <li><code>just install</code></li>
+          <li><code>just env</code> → edit <code>.env</code> (set <code>API_TOKEN</code>)</li>
+          <li><code>just run</code></li>
+          <li><code>curl localhost:8000/health</code> → confirms (no <code>migrate</code>)</li>
+        </ul>
+      </div>
+      <div class="col llm">
+        <div class="ch">Post-E2/E4 full flow <span class="pill">forward</span></div>
+        <ul class="clean">
+          <li><code>just install</code></li>
+          <li><code>just env</code> → edit <code>.env</code></li>
+          <li><code>just migrate</code> <em>(inserted — E2)</em></li>
+          <li>optionally <code>just bootstrap</code> <em>(E2+E4)</em></li>
+          <li><code>just run</code> → <code>curl /health</code></li>
+        </ul>
+      </div>
+    </div>
+    <div class="gate"><span class="gt">WHY TWO FLOWS</span><span class="gd">The split prevents documenting a first-run path that can't complete pre-E2 (round-1 #1) — the E1-now path boots without a DB.</span></div>
   </div>
 
   <div class="commentable" data-anchor="t3-accept" data-label="T3 acceptance">
     <h3>Acceptance</h3>
-    <ul class="check">
-      <li><code>Settings</code> exposes <code>api_token</code> (required), <code>app_db_path</code> (required), <code>model_id</code> (default <code>claude-opus-4-8</code>), <code>constitution_version</code>, optional <code>langfuse_public_key</code>/<code>langfuse_secret_key</code>/<code>langfuse_host</code>.</li>
-      <li>Missing a required var raises a clear <code>ValidationError</code> at load.</li>
-      <li><code>get_settings()</code> is cached (same instance) and reads env via <code>.env</code> + process env.</li>
-      <li><code>get_settings()</code> is the single config entry point invoked by <code>create_app()</code> at startup (TASK-002), so a missing required var fails the boot — not lazily at first use.</li>
+    <ul class="clean">
+      <li><b>☐</b> <code>README.md</code> contains a <code>## Local development</code> heading.</li>
+      <li><b>☐</b> Documents <b>two flows</b>: the E1-now order (<code>install</code> → <code>env</code>/set <code>.env</code> → <code>run</code> → <code>curl /health</code>, no <code>migrate</code>) and the post-E2/E4 full flow inserting <code>migrate</code>/<code>bootstrap</code>.</li>
+      <li><b>☐</b> Every recipe (<code>install</code>, <code>run</code>, <code>test</code>, <code>lint</code>, <code>fmt</code>, <code>migrate</code>, <code>seed</code>, <code>bootstrap</code>, <code>db-reset</code>, <code>env</code>) is listed with a one-line description.</li>
+      <li><b>☐</b> Forward recipes (<code>migrate</code>/<code>seed</code>/<code>bootstrap</code>) are annotated with the epic they depend on (E2/E4) and that they don't fully run until then.</li>
+      <li><b>☐</b> The section states Docker is not needed for local dev (deployment-only, E12).</li>
     </ul>
   </div>
 
   <div class="commentable" data-anchor="t3-flow" data-label="T3 RED/GREEN/REFACTOR">
     <h3>RED → GREEN → REFACTOR</h3>
     <div class="flow">
-      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_settings.py</code>: monkeypatch env → loads; unset required → raises</span></div>
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd">Capture the gap: <code>grep -n "Local development" README.md</code> returns nothing and no recipe reference exists — the conditions this task closes.</span></div>
       <div class="arrow">↓</div>
-      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>Settings</code> + <code>get_settings()</code> (<code>lru_cache</code>); add <code>.env.example</code></span></div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Write the <code>## Local development</code> section, matching the recipe names/commands in <code>justfile</code> exactly (no drift).</span></div>
       <div class="arrow">↓</div>
-      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Group fields by concern; ensure no secret defaults are baked in</span></div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Proofread; the recipe table matches the <code>justfile</code> 1:1 and the epic annotations are correct; <code>just lint</code> still passes.</span></div>
     </div>
-    <div class="note"><b>Notes:</b> env-driven config matches the deployment model (one container, env config; ARCHITECTURE §1). <code>api_token</code> is consumed by E1·P2 auth; <code>model_id</code>/<code>langfuse_*</code> by E9/E12.</div>
-  </div>
-</section>
-
-<section class="section" data-name="T4 · camel base" id="task-004">
-  <div class="shead">
-    <div class="idx">05</div>
-    <div class="meta">
-      <div class="kick">task-004 · depends: task-001</div>
-      <h2>camelCase Pydantic base model</h2>
-      <p>A shared Pydantic base that serializes camelCase on the wire while keeping snake_case in Python, inherited by every request/response model.</p>
-    </div>
-  </div>
-
-  <div class="commentable" data-anchor="t4-goal" data-label="T4 goal / commit">
-    <div class="note"><b>Goal:</b> one <code>CamelModel</code> base that every E5/E10/E11 wire model inherits — casing defined once. <b>Commit:</b> <code>feat(api): add camelCase Pydantic base model</code></div>
-  </div>
-
-  <div class="commentable" data-anchor="t4-files" data-label="T4 files">
-    <h3>Files</h3>
-    <table>
-      <tr><th>path</th><th>change</th><th>note</th></tr>
-      <tr><td><code>app/api/schemas/base.py</code></td><td><span class="tag swap">create</span></td><td><code>CamelModel(BaseModel)</code> with <code>alias_generator=to_camel</code>, <code>populate_by_name=True</code>, <code>from_attributes=True</code>, <b>and <code>serialize_by_alias=True</code></b> (so raw <code>model_dump_json()</code> emits camelCase, not just FastAPI response handling).</td></tr>
-      <tr><td><code>tests/test_camel_base.py</code></td><td><span class="tag swap">create</span></td><td>Round-trip casing test + a FastAPI route returning a <code>CamelModel</code> asserting the <b>actual wire JSON</b> is camelCase.</td></tr>
-    </table>
-  </div>
-
-  <div class="commentable" data-anchor="t4-accept" data-label="T4 acceptance">
-    <h3>Acceptance</h3>
-    <ul class="check">
-      <li>A model with <code>snake_case</code> fields inheriting <code>CamelModel</code> emits camelCase keys from <b>raw</b> <code>model_dump_json()</code> (no <code>by_alias=True</code> needed at the call site) — aliasing is configured on the model, not left to the caller.</li>
-      <li>A FastAPI route returning the model produces camelCase JSON on the wire (asserted via <code>TestClient</code>).</li>
-      <li>It accepts <b>both</b> camelCase (alias) and snake_case (field name) on input.</li>
-      <li><b>Null-vs-absent</b> (MODELS "Nulls vs absent"): an optional field declared <code>T | None = None</code> accepts <b>both</b> omission <b>and</b> explicit <code>null</code> (tested) — the convention <code>T | None = None</code> is documented in the module docstring so later wire models don't reject omission.</li>
-    </ul>
-  </div>
-
-  <div class="commentable" data-anchor="t4-flow" data-label="T4 RED/GREEN/REFACTOR">
-    <h3>RED → GREEN → REFACTOR</h3>
-    <div class="flow">
-      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_camel_base.py</code>: sample model with required + optional (<code>T | None = None</code>); assert raw <code>model_dump_json()</code> is camelCase, both-casing in, a <code>TestClient</code> route returns camelCase wire JSON, optional accepts both omission &amp; explicit <code>null</code></span></div>
-      <div class="arrow">↓</div>
-      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>CamelModel</code> using <code>pydantic.alias_generators.to_camel</code> with <code>serialize_by_alias=True</code></span></div>
-      <div class="arrow">↓</div>
-      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Document the convention in a short module docstring</span></div>
-    </div>
-    <div class="note"><b>Notes:</b> wire is camelCase, Python snake_case behind an <code>alias_generator</code> (MODELS "Conventions → Casing"). All E5/E10/E11 wire models inherit this — define it once.</div>
   </div>
 </section>
 
 <section class="section" data-name="Final validation" id="final-validation">
   <div class="shead">
-    <div class="idx">06</div>
+    <div class="idx">05</div>
     <div class="meta">
-      <div class="kick">task-005 · depends: all prior</div>
+      <div class="kick">task-004 · depends: all prior</div>
       <h2>Final validation</h2>
-      <p>Confirm the plan is fully implemented and production-ready — concrete, non-circular checks mapped to every acceptance criterion.</p>
+      <p>Confirm the plan is fully implemented and production-ready — a concrete, non-circular check for every PLAN.md acceptance criterion. Stack is Python 3.13 / <code>uv</code> / <code>just</code> (no Flutter).</p>
     </div>
   </div>
 
-  <div class="commentable" data-anchor="val-checks" data-label="Final validation checklist">
-    <h3>Validation checks</h3>
-    <ul class="check">
-      <li>All task checkboxes in <code>PLAN.md</code> are ticked.</li>
-      <li><code>uv run ruff check .</code> passes with no issues.</li>
-      <li><code>uv run pytest</code> passes.</li>
-      <li><code>uv sync</code> resolves cleanly and <code>uv run python --version</code> prints <b>3.13.x</b>; <code>requires-python</code> is <code>&gt;=3.13,&lt;3.14</code>; the lock contains <b>none</b> of Postgres/Celery/Redis/pgvector/vecs/Supabase.</li>
-      <li><b>Settings — fail fast:</b> <code>test_settings.py</code> proves a missing required var raises; <b>and</b> the negative app-factory smoke (<code>test_app_factory.py</code>) proves <code>create_app()</code> fails at boot when a required var is unset.</li>
-      <li><b>Settings — load:</b> env present → <code>get_settings()</code> returns a valid cached <code>Settings</code>.</li>
-      <li><b>camelCase in:</b> a <code>CamelModel</code> accepts both snake_case and camelCase input.</li>
-      <li><b>camelCase out:</b> raw <code>model_dump_json()</code> is camelCase <b>and</b> a <code>TestClient</code> route returns camelCase wire JSON.</li>
-      <li><b>Null-vs-absent:</b> an optional <code>T | None = None</code> field accepts both omission and explicit <code>null</code>.</li>
-      <li><b>Importability:</b> <code>python -c "import app.api, app.core, app.database, app.services"</code> succeeds.</li>
-      <li><code>uv run uvicorn app.main:app</code> boots (manual smoke), <code>create_app()</code> returns a <code>FastAPI</code>, OpenAPI at <code>/openapi.json</code>.</li>
-      <li><code>PLAN.md</code> acceptance criteria all met.</li>
+  <div class="commentable" data-anchor="val-base" data-label="Baseline checks">
+    <h3>Baseline checks</h3>
+    <ul class="clean">
+      <li><b>☐</b> All task checkboxes in <code>PLAN.md</code> are ticked.</li>
+      <li><b>☐ Lint:</b> <code>uv run ruff check .</code> passes with no issues.</li>
+      <li><b>☐ Tests:</b> <code>uv run pytest</code> passes (the E1 scaffold suite is green; this phase adds no app code).</li>
+      <li><b>☐ justfile parses:</b> <code>just --list</code> exits 0 (no syntax errors).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="val-ac" data-label="Per-acceptance-criterion checks">
+    <h3>Per acceptance criterion (1:1)</h3>
+    <table>
+      <tr><th>AC</th><th>concrete check</th></tr>
+      <tr><td><b>AC1</b><br>bare <code>just</code> lists all</td><td><code>diff &lt;(just 2&gt;&amp;1) &lt;(just --list 2&gt;&amp;1)</code> is empty; a loop over <code>install run test lint fmt migrate seed bootstrap db-reset env</code> with <code>just --list | grep -qw</code> prints no <code>MISSING</code>; <code>_default</code> hidden by its <code>_</code> prefix.</td></tr>
+      <tr><td><b>AC2</b><br>core recipes work now</td><td><code>--show run</code> → exactly <code>uv run uvicorn app.main:app --reload</code>; <code>--show install/lint/test/fmt</code> → <code>uv sync</code> / <code>uv run ruff check .</code> / <code>uv run pytest</code> / <code>uv run ruff format .</code>. Then actually run <code>just install</code>, <code>just lint</code>, <code>just test</code> (all exit 0). Manual: <code>just run</code> then <code>curl -s localhost:8000/health</code> → <code>200</code>.</td></tr>
+      <tr><td><b>AC3</b><br>forward recipes correct</td><td><code>--show migrate</code> → <code>uv run alembic upgrade head</code>; <code>--show seed</code> contains <code>scripts/build_db.py</code>, <code>derive_constants.py</code>, <code>seed_app_db.py</code> (each via <code>uv run python</code>); <code>--show bootstrap</code> shows the <code>install</code>→<code>migrate</code>→<code>seed</code> chain; <code>--show db-reset</code> shows the shebang block resolving <code>DB="${APP_DB_PATH-app.db}"</code> and <code>rm -f --</code>ing <code>"$DB" "$DB-wal" "$DB-shm"</code> then <code>migrate</code>. <em>(Tails asserted via <code>--show</code>/<code>-n</code>, not run.)</em></td></tr>
+      <tr><td><b>AC4</b><br><code>.env</code> non-clobbering</td><td>In a temp dir with <code>.env.example</code> present, <code>.env</code> absent → <code>just env</code> creates <code>.env</code> (byte-equal to <code>.env.example</code>); with a sentinel <code>.env</code>, re-running leaves it unchanged (<code>diff</code> empty) + prints "kept existing .env". Guard: <code>grep -E 'test +-?f +\.env|\[ +-f +\.env' justfile</code> confirms the if-missing guard.</td></tr>
+      <tr><td><b>AC5</b><br>README section</td><td><code>grep -n "## Local development" README.md</code> matches; documents two flows; every recipe name appears (loop <code>grep -qw</code> over README prints no <code>MISSING-IN-README</code>); forward recipes annotated with E2/E4 (<code>grep -nE "E2|E4"</code> in the section).</td></tr>
+      <tr><td><b>AC6</b><br>no Docker/litestream</td><td><em>(scoped to this phase's surface — round-1 #3)</em> <code>grep -iE "litestream" justfile</code> empty; <code>grep -icE "docker" justfile</code> is <code>0</code>; in <code>README.md</code> the only mention permitted is the single negative "Docker is not used for local dev" note; <code>git status --short</code> lists no new <code>Dockerfile</code>/compose/litestream config; <code>git diff</code> introduces no migrate-on-startup.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="val-cross" data-label="Cross-cutting checks">
+    <h3>Cross-cutting</h3>
+    <ul class="clean">
+      <li><b>☐ README ↔ justfile parity</b> — every recipe documented in README exists in <code>justfile</code> and vice versa (the two loop-greps in AC1/AC5 cover both directions).</li>
+      <li><b>☐ <code>db-reset</code> is safe</b> — single shebang block (<code>#!/usr/bin/env bash</code> + <code>set -euo pipefail</code> present), resolves <code>DB="${APP_DB_PATH-app.db}"</code> (<code>-</code>, not <code>:-</code>), refuses empty and <code>baseline.db</code>, <code>rm -f --</code>s only the three siblings (no <code>*.db</code> glob: <code>grep -nE 'rm .*\*\.db|rm .*\*' justfile</code> empty). Behaviour: unset/empty/custom/<code>baseline.db</code> all checked; the trailing <code>migrate</code> may fail pre-E2 — assert the <code>rm</code> ran first.</li>
+      <li><b>☐ No app/source code changed</b> — this phase only adds <code>justfile</code>, a README section, and (at most) an appended <code>.env.example</code> var; <code>git status --short</code> shows no edits under <code>app/</code> or <code>tests/</code>.</li>
+      <li><b>☐</b> <code>PLAN.md</code> acceptance criteria all met.</li>
     </ul>
   </div>
 </section>
 
 <section class="section" data-name="Adversarial review" id="adversarial-review">
   <div class="shead">
-    <div class="idx">07</div>
+    <div class="idx">06</div>
     <div class="meta">
       <div class="kick">validation · hardening</div>
       <h2>Adversarial validation</h2>
@@ -628,19 +649,19 @@ ul.check li code{color:var(--green)}
   <div class="commentable" data-anchor="val-stats" data-label="Validation headline stats">
     <div class="cards">
       <div class="card2"><div class="lab">rounds</div><div class="big green">3</div></div>
-      <div class="card2"><div class="lab">findings</div><div class="big">7</div></div>
-      <div class="card2"><div class="lab">applied</div><div class="big green">7</div></div>
+      <div class="card2"><div class="lab">findings</div><div class="big">4</div></div>
+      <div class="card2"><div class="lab">applied</div><div class="big green">4</div></div>
       <div class="card2"><div class="lab">deferred / rejected</div><div class="big violet">0</div></div>
     </div>
-    <div class="note"><b>Plan status at validation:</b> draft · <b>Run on:</b> 2026-06-02.</div>
+    <div class="note"><b>Plan status at validation:</b> draft · <b>Run on:</b> 2026-06-03 · <b>Final Codex verdict:</b> approve (round 3, no material findings).</div>
   </div>
 
   <div class="commentable" data-anchor="val-rounds" data-label="Rounds table">
     <h3>Rounds</h3>
     <table>
       <tr><th>round</th><th>findings</th><th>applied</th><th>deferred</th><th>rejected</th></tr>
-      <tr><td>1</td><td>5</td><td><span class="tag keep">5</span></td><td>0</td><td>0</td></tr>
-      <tr><td>2</td><td>2</td><td><span class="tag keep">2</span></td><td>0</td><td>0</td></tr>
+      <tr><td>1</td><td>3</td><td><span class="tag keep">3</span></td><td>0</td><td>0</td></tr>
+      <tr><td>2</td><td>1</td><td><span class="tag keep">1</span></td><td>0</td><td>0</td></tr>
       <tr><td>3</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
     </table>
     <div class="note"><b>Round 3</b> returned <b>approve</b> with no material findings.</div>
@@ -649,19 +670,16 @@ ul.check li code{color:var(--green)}
   <div class="commentable" data-anchor="val-applied-r1" data-label="Applied — Round 1">
     <h3>Applied — Round 1</h3>
     <ul class="clean">
-      <li><b>TASK-001, TASK-002</b> — add <code>httpx</code> as a dev dependency so FastAPI <code>TestClient</code> works (round-1 #1).</li>
-      <li><b>PLAN.md:Acceptance, TASK-002/003/005</b> — settings validated at app <b>startup</b> (<code>create_app()</code>), with a negative boot smoke (round-1 #2).</li>
-      <li><b>PLAN.md:Scope, TASK-001, TASK-005</b> — bound <code>requires-python</code> to <code>&gt;=3.13,&lt;3.14</code> (not a bare floor) + record <code>python --version</code> in final validation (round-1 #3).</li>
-      <li><b>TASK-004, TASK-005</b> — make camelCase JSON explicit (<code>serialize_by_alias=True</code>) and assert real wire JSON via a FastAPI route (round-1 #4).</li>
-      <li><b>TASK-005</b> — enumerate concrete, non-circular final-validation checks for every acceptance criterion (round-1 #5).</li>
+      <li><b>PLAN.md:Scope/Acceptance + TASK-003 + TASK-004</b> — split the README/clean-checkout flow into an <b>E1-now</b> path (<code>install</code> → <code>env</code> → <code>run</code> → <code>curl /health</code>, completes today, no <code>migrate</code>) and a <b>post-E2/E4</b> full flow inserting <code>migrate</code>/<code>bootstrap</code>, so the documented first-run path no longer blocks on a pre-E2 <code>migrate</code> (round-1 #1).</li>
+      <li><b>PLAN.md:Decisions/Risks + TASK-002 + TASK-004</b> — <code>db-reset</code> now resolves the DB from <code>APP_DB_PATH</code> (the settings/Alembic source of truth, E1·P1/E2·P1) instead of hard-coding <code>app.db</code>, with guards against an empty path and <code>baseline.db</code>, deleting only the explicit <code>-wal</code>/<code>-shm</code> siblings (round-1 #2).</li>
+      <li><b>TASK-004:AC6 + PLAN.md:Risks</b> — scoped the no-Docker/litestream check to <b>this phase's surface</b> (justfile, README, <code>git status</code>) instead of a repo-wide grep that would falsely fail on existing docs that already mention litestream/Docker (round-1 #3).</li>
     </ul>
   </div>
 
   <div class="commentable" data-anchor="val-applied-r2" data-label="Applied — Round 2">
     <h3>Applied — Round 2</h3>
     <ul class="clean">
-      <li><b>TASK-002</b> — remove the lifespan-only path; require construction-time <code>get_settings()</code> in <code>create_app()</code> and assert <code>create_app()</code> itself raises (round-2 #1).</li>
-      <li><b>TASK-004, TASK-005</b> — test an optional <code>T | None = None</code> field accepting both omission and explicit <code>null</code>; document the convention (round-2 #2).</li>
+      <li><b>PLAN.md:Decisions/Risks + TASK-002 + TASK-004</b> — hardened <code>db-reset</code> into a <b>single shebang Bash block</b> (<code>#!/usr/bin/env bash</code>, <code>set -euo pipefail</code>) so <code>DB=</code>/guard/<code>rm</code> share one shell (just runs plain recipe lines in separate processes); switched the fallback to <code>${APP_DB_PATH-app.db}</code> (dash, not <code>:-</code>) so an <b>explicitly empty</b> <code>APP_DB_PATH</code> is refused rather than silently collapsing to <code>app.db</code>; <code>rm -f --</code> to stop option parsing; added TASK-004 behaviour checks for unset / empty / custom / <code>baseline.db</code> (round-2 #1). Verified live against <code>just 1.51.0</code>.</li>
     </ul>
   </div>
 

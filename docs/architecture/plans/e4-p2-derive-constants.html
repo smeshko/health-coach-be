@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Coach App · E4·P2 — Derive constants → profile.yaml</title>
+<!-- set theme before first paint; prefer a #t=light|dark hint from a parent frame, else stored pref -->
+<script>(function(){try{var h=(location.hash.match(/[#&]t=(light|dark)/)||[])[1];var p=h||localStorage.getItem("md-viewer-theme")||"system";var light=p==="light"||(p==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.setAttribute("data-theme",light?"light":"dark");}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -21,6 +23,15 @@
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --sidebar:288px;
 }
+/* ── Light theme — applied when <html data-theme="light"> (set by the toggle / system pref) ── */
+:root[data-theme="light"]{
+  --bg:#f3f6f9; --panel:#ffffff; --panel-2:#eaf0f5; --panel-3:#dde6ee;
+  --line:#d6dee7; --line-bright:#bcc8d4;
+  --ink:#1a2430; --ink-dim:#55657a; --ink-faint:#8593a4;
+  --green:#0e9d6e; --amber:#bf7d12; --red:#d2433f;
+  --blue:#2f7ec4; --violet:#7a4fd0; --steel:#48657f;
+  --grid:rgba(40,80,130,.05);
+}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{
@@ -37,7 +48,7 @@ em{color:var(--ink-dim);font-style:normal}
 /* ── Sidebar ─────────────────────────────────────────── */
 aside{
   width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
-  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),var(--bg));
   display:flex; flex-direction:column; padding:22px 18px; gap:18px; z-index:5;
 }
 .brand{display:flex;flex-direction:column;gap:3px}
@@ -66,6 +77,14 @@ nav button .cc.show{display:inline-block}
 .tools .row .tbtn{flex:1;justify-content:center}
 .tools .hint{font-size:10.5px;color:var(--ink-faint);line-height:1.45;font-family:var(--f-mono)}
 .tools .hint b{color:var(--ink-dim);font-weight:500}
+.tools .hint.keys b{color:var(--green);font-weight:700}
+/* theme segmented control (dark / light / system) */
+.seg{display:flex;border:1px solid var(--line-bright);border-radius:7px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;flex:1;text-align:center;padding:7px 4px;
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.02em;color:var(--ink-dim);transition:.14s}
+.seg button + button{border-left:1px solid var(--line-bright)}
+.seg button:hover{background:var(--panel-2);color:var(--ink)}
+.seg button.on{background:var(--green);color:#04130d;font-weight:700}
 
 /* ── Main ────────────────────────────────────────────── */
 main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -91,7 +110,7 @@ p.lede{color:var(--ink-dim);font-size:14px;margin:0 0 8px}
 .commentable{position:relative;margin:0 0 8px;border-radius:9px;padding:4px;transition:.15s}
 body.comments-on .commentable{outline:1px dashed var(--line-bright);outline-offset:2px}
 body.comments-on .commentable:hover{outline-color:var(--amber)}
-.cmt-add{position:absolute;top:6px;right:6px;z-index:3;all:unset;cursor:pointer;display:none;
+.cmt-add{all:unset;cursor:pointer;position:absolute;top:6px;right:6px;z-index:3;display:none;
   font-family:var(--f-mono);font-size:10.5px;color:#1a1206;background:var(--amber);padding:3px 9px;border-radius:20px;font-weight:700}
 body.comments-on .commentable:hover > .cmt-add{display:inline-block}
 .cmt-badge{position:absolute;top:8px;right:8px;z-index:2;font-family:var(--f-mono);font-size:10px;font-weight:700;
@@ -238,7 +257,12 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   </div>
   <nav id="nav"></nav>
   <div class="tools">
-    <button class="tbtn" id="cmtToggle"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
+    <div class="seg" id="themeSeg" role="group" aria-label="Theme (press T to cycle)">
+      <button data-theme-choice="light" title="Light theme (T)">light</button>
+      <button data-theme-choice="dark" title="Dark theme (T)">dark</button>
+      <button data-theme-choice="system" title="Match system (T)">auto</button>
+    </div>
+    <button class="tbtn" id="cmtToggle" title="Toggle comment mode (C)"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
     <div class="row">
       <button class="tbtn" id="expJson" title="Download e4-p2-derive-constants-comments.json">⤓ JSON</button>
       <button class="tbtn" id="expMd" title="Download e4-p2-derive-constants-comments.md">⤓ MD</button>
@@ -246,6 +270,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     </div>
     <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
     <div class="hint"><b>To get feedback to Claude:</b> comment → Export → save the file next to the source <code>.md</code> → tell Claude to read it.</div>
+    <div class="hint keys">keys · <b>←/→</b> pages · <b>T</b> theme · <b>C</b> comments</div>
   </div>
 </aside>
 <main><div class="scroll" id="scroll">
@@ -787,9 +812,13 @@ edges = [<span class="v">round</span>(pct * max_hr) <span class="s">for</span> p
   document.getElementById("prev").addEventListener("click",function(){go(cur-1);});
   document.getElementById("next").addEventListener("click",function(){go(cur+1);});
   document.addEventListener("keydown",function(e){
-    if(e.target.tagName==="TEXTAREA")return;
+    var tag=e.target.tagName;
+    if(tag==="TEXTAREA"||tag==="INPUT"||e.target.isContentEditable)return;
+    if(e.metaKey||e.ctrlKey||e.altKey)return;        // don't hijack Cmd+T etc.
     if(e.key==="ArrowRight"||e.key==="]")go(cur+1);
-    if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="t"||e.key==="T")cycleTheme();
+    else if(e.key==="c"||e.key==="C")setComments(!on);
   });
 
   // ---- comments ----
@@ -863,9 +892,35 @@ edges = [<span class="v">round</span>(pct * max_hr) <span class="s">for</span> p
 
   // ---- comment mode toggle ----
   var on=false, tgl=document.getElementById("cmtToggle");
-  tgl.addEventListener("click",function(){
-    on=!on; document.body.classList.toggle("comments-on",on);
+  function setComments(v){
+    on=v; document.body.classList.toggle("comments-on",on);
     tgl.classList.toggle("on",on); document.getElementById("cmStat").textContent=on?"on":"off";
+  }
+  tgl.addEventListener("click",function(){setComments(!on);});
+
+  // ---- theme: dark / light / system (pref shared across all generated viewers) ----
+  var THEME_KEY="md-viewer-theme";
+  var segBtns=[].slice.call(document.querySelectorAll("#themeSeg button"));
+  var mq=window.matchMedia("(prefers-color-scheme: light)");
+  function themePref(){try{return localStorage.getItem(THEME_KEY)||"system";}catch(e){return "system";}}
+  function applyTheme(pref){
+    var eff=pref==="system"?(mq.matches?"light":"dark"):pref;
+    document.documentElement.setAttribute("data-theme",eff);
+    segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===pref);});
+  }
+  function setTheme(pref){try{localStorage.setItem(THEME_KEY,pref);}catch(e){}applyTheme(pref);}
+  function cycleTheme(){var o=["light","dark","system"];setTheme(o[(o.indexOf(themePref())+1)%o.length]);}
+  segBtns.forEach(function(b){b.addEventListener("click",function(){setTheme(b.getAttribute("data-theme-choice"));});});
+  if(mq.addEventListener)mq.addEventListener("change",function(){if(themePref()==="system")applyTheme("system");});
+  else if(mq.addListener)mq.addListener(function(){if(themePref()==="system")applyTheme("system");});
+  applyTheme(themePref());
+  // when embedded (e.g. in an index iframe), let the parent frame drive the theme — file://
+  // frames can't share localStorage, so the parent posts {type:"mdv-theme",theme} on load/toggle
+  window.addEventListener("message",function(e){
+    var d=e.data; if(d&&d.type==="mdv-theme"&&(d.theme==="light"||d.theme==="dark")){
+      document.documentElement.setAttribute("data-theme",d.theme);
+      segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===d.theme);});
+    }
   });
 
   // ---- export ----

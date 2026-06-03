@@ -4,10 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Coach App · Backend Architecture</title>
+<!-- set theme before first paint; prefer a #t=light|dark hint from a parent frame, else stored pref -->
+<script>(function(){try{var h=(location.hash.match(/[#&]t=(light|dark)/)||[])[1];var p=h||localStorage.getItem("md-viewer-theme")||"system";var light=p==="light"||(p==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.setAttribute("data-theme",light?"light":"dark");}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
+/* ── Theme tokens — override this block to re-skin the whole doc ── */
 :root{
   --bg:#0a0e13; --panel:#0f151d; --panel-2:#131c26; --panel-3:#172230;
   --line:#1e2a37; --line-bright:#2c3d4f;
@@ -19,6 +22,15 @@
   --f-body:'IBM Plex Sans',system-ui,sans-serif;
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --sidebar:288px;
+}
+/* ── Light theme — applied when <html data-theme="light"> (set by the toggle / system pref) ── */
+:root[data-theme="light"]{
+  --bg:#f3f6f9; --panel:#ffffff; --panel-2:#eaf0f5; --panel-3:#dde6ee;
+  --line:#d6dee7; --line-bright:#bcc8d4;
+  --ink:#1a2430; --ink-dim:#55657a; --ink-faint:#8593a4;
+  --green:#0e9d6e; --amber:#bf7d12; --red:#d2433f;
+  --blue:#2f7ec4; --violet:#7a4fd0; --steel:#48657f;
+  --grid:rgba(40,80,130,.05);
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
@@ -36,7 +48,7 @@ em{color:var(--ink-dim);font-style:normal}
 /* ── Sidebar ─────────────────────────────────────────── */
 aside{
   width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
-  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),var(--bg));
   display:flex; flex-direction:column; padding:22px 18px; gap:18px; z-index:5;
 }
 .brand{display:flex;flex-direction:column;gap:3px}
@@ -65,6 +77,14 @@ nav button .cc.show{display:inline-block}
 .tools .row .tbtn{flex:1;justify-content:center}
 .tools .hint{font-size:10.5px;color:var(--ink-faint);line-height:1.45;font-family:var(--f-mono)}
 .tools .hint b{color:var(--ink-dim);font-weight:500}
+.tools .hint.keys b{color:var(--green);font-weight:700}
+/* theme segmented control (dark / light / system) */
+.seg{display:flex;border:1px solid var(--line-bright);border-radius:7px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;flex:1;text-align:center;padding:7px 4px;
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.02em;color:var(--ink-dim);transition:.14s}
+.seg button + button{border-left:1px solid var(--line-bright)}
+.seg button:hover{background:var(--panel-2);color:var(--ink)}
+.seg button.on{background:var(--green);color:#04130d;font-weight:700}
 
 /* ── Main ────────────────────────────────────────────── */
 main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -90,7 +110,7 @@ p.lede{color:var(--ink-dim);font-size:14px;margin:0 0 8px}
 .commentable{position:relative;margin:0 0 8px;border-radius:9px;padding:4px;transition:.15s}
 body.comments-on .commentable{outline:1px dashed var(--line-bright);outline-offset:2px}
 body.comments-on .commentable:hover{outline-color:var(--amber)}
-.cmt-add{position:absolute;top:6px;right:6px;z-index:3;all:unset;cursor:pointer;display:none;
+.cmt-add{all:unset;cursor:pointer;position:absolute;top:6px;right:6px;z-index:3;display:none;
   font-family:var(--f-mono);font-size:10.5px;color:#1a1206;background:var(--amber);padding:3px 9px;border-radius:20px;font-weight:700}
 body.comments-on .commentable:hover > .cmt-add{display:inline-block}
 .cmt-badge{position:absolute;top:8px;right:8px;z-index:2;font-family:var(--f-mono);font-size:10px;font-weight:700;
@@ -127,12 +147,14 @@ td code,td .mono{color:var(--green);font-size:12px}
 .tag.swap{background:rgba(243,181,74,.15);color:var(--amber)}
 .tag.drop{background:rgba(239,109,109,.15);color:var(--red)}
 .tag.opt{background:rgba(95,168,224,.15);color:var(--blue)}
+.tag.code{background:rgba(133,170,203,.16);color:var(--steel)}
+.tag.llm{background:rgba(176,140,240,.18);color:var(--violet)}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px;margin:6px 0}
 .card2{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 15px}
 .card2 .lab{font-family:var(--f-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px}
 .card2 .big{font-family:var(--f-disp);font-weight:800;font-size:22px;letter-spacing:-.02em}
-.card2 .big.green{color:var(--green)} .card2 small{color:var(--ink-dim);font-size:12px}
+.card2 .big.green{color:var(--green)} .card2 .big.violet{color:var(--violet)} .card2 .big.red{color:var(--red)} .card2 small{color:var(--ink-dim);font-size:12px}
 
 ul.clean{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:7px}
 ul.clean li{padding-left:18px;position:relative;font-size:13.5px;color:var(--ink-dim)}
@@ -140,6 +162,7 @@ ul.clean li::before{content:"▸";position:absolute;left:0;color:var(--green)}
 ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 .note{font-size:12.5px;color:var(--ink-dim);border-left:2px solid var(--line-bright);padding:4px 0 4px 13px;margin:10px 0}
 .note b{color:var(--ink)}
+.note.warn{border-left-color:var(--amber)} .note.warn b{color:var(--amber)}
 
 /* ── diagrams ────────────────────────────────────────── */
 .diagram{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:20px;margin:6px 0}
@@ -167,6 +190,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 .col .ch .pill{font-size:9px;padding:2px 6px;border-radius:4px;border:1px solid currentColor}
 .col ul.clean li::before{color:currentColor}
 .col.det li::before{content:"≡";color:var(--steel)} .col.llm li::before{content:"✦";color:var(--violet)}
+.col ul.clean li{color:var(--ink-dim)}
 .gate{margin-top:13px;border:1px solid var(--amber);background:rgba(243,181,74,.07);border-radius:10px;padding:14px 16px;
   display:flex;gap:14px;align-items:center}
 .gate .gt{font-family:var(--f-mono);font-weight:700;color:var(--amber);font-size:13px;white-space:nowrap}
@@ -185,13 +209,14 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 .node.opt{opacity:.72;border-style:dashed}
 .arrow{align-self:center;color:var(--line-bright);font-size:15px;line-height:1;padding:3px 0}
 .branch{align-self:flex-start;margin:2px 0 2px 26px;font-family:var(--f-mono);font-size:11px;color:var(--amber);display:flex;align-items:center;gap:8px}
+.branch.retry{color:var(--violet)} .branch.fail{color:var(--red)}
 .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-family:var(--f-mono);font-size:11px;color:var(--ink-dim)}
 .legend span{display:flex;align-items:center;gap:6px}
 .legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
 
 .pre{font-family:var(--f-mono);font-size:12px;line-height:1.65;color:var(--ink-dim);white-space:pre;overflow:auto;
   background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:6px 0}
-.pre .g{color:var(--green)} .pre .v{color:var(--violet)} .pre .a{color:var(--amber)} .pre .d{color:var(--ink-faint)}
+.pre .g{color:var(--green)} .pre .v{color:var(--violet)} .pre .a{color:var(--amber)} .pre .d{color:var(--ink-faint)} .pre .s{color:var(--steel)}
 
 /* ── footer pager ────────────────────────────────────── */
 .pager{border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;
@@ -217,7 +242,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 }
 </style>
 </head>
-<body>
+<body data-store="coachapp-arch-comments-v1" data-doc="arch" data-export-title="Architecture review comments">
 <aside>
   <div class="brand">
     <span class="kick">Coach App</span>
@@ -226,7 +251,12 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   </div>
   <nav id="nav"></nav>
   <div class="tools">
-    <button class="tbtn" id="cmtToggle"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
+    <div class="seg" id="themeSeg" role="group" aria-label="Theme (press T to cycle)">
+      <button data-theme-choice="light" title="Light theme (T)">light</button>
+      <button data-theme-choice="dark" title="Dark theme (T)">dark</button>
+      <button data-theme-choice="system" title="Match system (T)">auto</button>
+    </div>
+    <button class="tbtn" id="cmtToggle" title="Toggle comment mode (C)"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
     <div class="row">
       <button class="tbtn" id="expJson" title="Download arch-comments.json">⤓ JSON</button>
       <button class="tbtn" id="expMd" title="Download arch-comments.md">⤓ MD</button>
@@ -234,327 +264,336 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     </div>
     <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
     <div class="hint"><b>Source of truth:</b> <b>ARCHITECTURE.md</b> — this <b>.html</b> is generated from it. <br><b>To get feedback to Claude:</b> comment → Export → save the file into <b>docs/architecture/</b> → tell Claude to read it.</div>
+    <div class="hint keys">keys · <b>←/→</b> pages · <b>T</b> theme · <b>C</b> comments</div>
   </div>
 </aside>
+<main><div class="scroll" id="scroll">
 
-<main>
-  <div class="scroll" id="scroll">
+<!-- ════════════ SECTIONS:START ════════════ -->
 
-  <!-- 00 OVERVIEW ─────────────────────────────────────── -->
-  <section class="section" data-name="Overview" id="overview">
-    <div class="shead"><div class="idx">00</div><div class="meta">
-      <div class="kick">System at a glance</div><h2>Overview</h2>
-      <p>A pull-model HTTP API. The iOS app syncs HealthKit data, then requests briefs — generated inline on request and cached.</p>
-    </div></div>
+<!-- 00 OVERVIEW ─────────────────────────────────────── -->
+<section class="section" data-name="Overview" id="overview">
+  <div class="shead"><div class="idx">00</div><div class="meta">
+    <div class="kick">System at a glance</div><h2>Overview</h2>
+    <p>A pull-model HTTP API. The iOS app syncs HealthKit data, then requests briefs — generated inline on request and cached.</p>
+  </div></div>
 
-    <div class="commentable" data-anchor="ov-context" data-label="Overview · system context diagram">
-      <h3>System context</h3>
-      <div class="diagram"><div class="sys">
-        <div class="sys-col"><div class="box io"><span class="t">iOS app</span><small>HealthKit sync · daily check-in · renders briefs</small></div></div>
-        <div class="sys-arrows">
-          <div class="awrap"><span class="alabel">POST /sync</span><span class="aglyph">→</span></div>
-          <div class="awrap"><span class="alabel">POST /brief/*</span><span class="aglyph">→</span></div>
-          <div class="awrap"><span class="aglyph">←</span><span class="alabel">plan / session</span></div>
-        </div>
-        <div class="sys-col backend">
-          <div class="box head"><span class="t">Backend — one FastAPI process</span></div>
-          <div class="box store"><span class="t">/sync → upsert</span><small>idempotent · SQLite (WAL)</small></div>
-          <div class="box engine"><span class="t">/brief → get-or-generate</span><small>Workflow engine · Node → Router → AgentNode</small></div>
-        </div>
-        <div class="sys-arrows"><div class="awrap"><span class="alabel">structured</span><span class="aglyph">→</span></div></div>
-        <div class="sys-col"><div class="box agent"><span class="t">Claude</span><small>Anthropic · constitution rendered (caching off)</small></div></div>
+  <div class="commentable" data-anchor="ov-context" data-label="Overview · system context diagram">
+    <h3>System context</h3>
+    <div class="diagram"><div class="sys">
+      <div class="sys-col"><div class="box io"><span class="t">iOS app</span><small>HealthKit sync · daily check-in · renders briefs</small></div></div>
+      <div class="sys-arrows">
+        <div class="awrap"><span class="alabel">POST /sync</span><span class="aglyph">→</span></div>
+        <div class="awrap"><span class="alabel">POST /brief/*</span><span class="aglyph">→</span></div>
+        <div class="awrap"><span class="aglyph">←</span><span class="alabel">plan / session</span></div>
       </div>
-      <div class="sys-foot">build inputs (read-only): baseline.db (ex health.db) · HEALTH-CONSITTUTION.md · medical-docs/ &nbsp;·&nbsp; runtime store: app.db (WAL)</div></div>
-    </div>
-
-    <div class="commentable" data-anchor="ov-endpoints" data-label="Overview · the three endpoints">
-      <h3>The entire endpoint surface</h3>
-      <table><thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead><tbody>
-        <tr><td><code>POST /sync</code></td><td>Upsert HealthKit samples (activity, sleep, HRV/RHR <b>and dietary-intake</b> records + <b>body weight (<code>body_mass</code>)</b>) + daily check-in (+ optional weekly strength test). Idempotent by HealthKit <code>uuid</code>; check-in upsertable by date.</td></tr>
-        <tr><td><code>POST /brief/daily</code></td><td>Get-or-generate today's tuned session — alternatives, skip-OK flag, macro focus + yesterday's intake-vs-target.</td></tr>
-        <tr><td><code>POST /brief/weekly</code></td><td>Get-or-generate this week's plan — core + extras, budgets, <b>week nutrition</b>, rationale. Folds in monthly recompute when constants are stale.</td></tr>
-      </tbody></table>
-    </div>
-
-    <div class="commentable" data-anchor="ov-props" data-label="Overview · key properties">
-      <h3>Key properties</h3>
-      <div class="cards">
-        <div class="card2"><div class="lab">Users</div><div class="big green">1</div><small>no auth/tenancy</small></div>
-        <div class="card2"><div class="lab">Model</div><div class="big">Pull</div><small>app-driven</small></div>
-        <div class="card2"><div class="lab">Process</div><div class="big">1</div><small>+ 1 SQLite file</small></div>
-        <div class="card2"><div class="lab">Brief gen</div><div class="big">3–8s</div><small>sync · spinner</small></div>
-        <div class="card2"><div class="lab">Timezone</div><div class="big">Sofia</div><small>period keys</small></div>
+      <div class="sys-col backend">
+        <div class="box head"><span class="t">Backend — one FastAPI process</span></div>
+        <div class="box store"><span class="t">/sync → upsert</span><small>idempotent · SQLite (WAL)</small></div>
+        <div class="box engine"><span class="t">/brief → get-or-generate</span><small>Workflow engine · Node → Router → AgentNode</small></div>
       </div>
+      <div class="sys-arrows"><div class="awrap"><span class="alabel">structured</span><span class="aglyph">→</span></div></div>
+      <div class="sys-col"><div class="box agent"><span class="t">Claude</span><small>Anthropic · constitution rendered (caching off)</small></div></div>
     </div>
-  </section>
+    <div class="sys-foot">build inputs (read-only): baseline.db (ex health.db) · HEALTH-CONSITTUTION.md · medical-docs/ &nbsp;·&nbsp; runtime store: app.db (WAL)</div></div>
+  </div>
 
-  <!-- 01 COMPONENTS ──────────────────────────────────── -->
-  <section class="section" data-name="Components" id="stack">
-    <div class="shead"><div class="idx">01</div><div class="meta">
-      <div class="kick">What it's made of</div><h2>Components</h2>
-      <p>One synchronous FastAPI process over a SQLite file, orchestrating a node workflow that calls Claude.</p>
-    </div></div>
+  <div class="commentable" data-anchor="ov-endpoints" data-label="Overview · the three endpoints">
+    <h3>The entire endpoint surface</h3>
+    <table><thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead><tbody>
+      <tr><td><code>POST /sync</code></td><td>Upsert HealthKit samples (activity, sleep, HRV/RHR <b>and dietary-intake</b> records + <b>body weight (<code>body_mass</code>)</b>) + daily check-in (+ optional weekly strength test). Idempotent by HealthKit <code>uuid</code>; check-in upsertable by date.</td></tr>
+      <tr><td><code>POST /brief/daily</code></td><td>Get-or-generate today's tuned session — alternatives, skip-OK flag, macro focus + yesterday's intake-vs-target.</td></tr>
+      <tr><td><code>POST /brief/weekly</code></td><td>Get-or-generate this week's plan — core + extras, budgets, <b>week nutrition</b>, rationale. Folds in monthly recompute when constants are stale.</td></tr>
+    </tbody></table>
+  </div>
 
-    <div class="commentable" data-anchor="cm-table" data-label="Components · technology table">
-      <h3>Components</h3>
-      <table><thead><tr><th>Component</th><th>Technology</th><th>Role</th></tr></thead><tbody>
-        <tr><td>Runtime</td><td><code>Python 3.13 · uv</code></td><td>—</td></tr>
-        <tr><td>API</td><td><code>FastAPI · uvicorn</code></td><td>The three endpoints; one synchronous process, no background workers or scheduler.</td></tr>
-        <tr><td>Persistence</td><td><code>SQLite (WAL) · SQLAlchemy · Alembic</code></td><td>Runtime ingest + coaching state in <code>app.db</code> (Alembic-managed). <code>baseline.db</code> is a read-only build input, never opened at runtime.</td></tr>
-        <tr><td>Orchestration</td><td>Workflow engine</td><td>DAG of nodes over a shared <code>TaskContext</code> — <code>Node</code> / <code>RouterNode</code> / <code>AgentNode</code>.</td></tr>
-        <tr><td>LLM</td><td><code>Claude (Anthropic) · PydanticAI</code></td><td>Structured outputs; the constitution is a Jinja2 system prompt rendered from <code>profile.yaml</code> constants (caching off — §LLM).</td></tr>
-        <tr><td>Observability</td><td><code>Langfuse</code></td><td>Traces every LLM call (prompt, structured output, retries, cost) — invaluable for tuning the coach against its own briefs each month.</td></tr>
-      </tbody></table>
-      <div class="note"><b>Stack note — what we keep vs drop from the GenAI Launchpad.</b> This backend builds on Datalumina's Launchpad boilerplate but uses only its <b>FastAPI app, the <code>core/</code> workflow primitives (<code>Node</code>/<code>RouterNode</code>/<code>AgentNode</code>/<code>TaskContext</code>), PydanticAI, Jinja2, and Alembic</b>. The Launchpad's <b>Postgres/pgvector, Celery, Redis, Supabase, streaming, and <code>vecs</code>/RAG</b> are <em>not</em> used — single-user scale needs none of it, so the <code>database/</code> layer is rewritten for SQLite and those deps are dropped.</div>
+  <div class="commentable" data-anchor="ov-props" data-label="Overview · key properties">
+    <h3>Key properties</h3>
+    <div class="cards">
+      <div class="card2"><div class="lab">Users</div><div class="big green">1</div><small>no auth/tenancy</small></div>
+      <div class="card2"><div class="lab">Model</div><div class="big">Pull</div><small>app-driven</small></div>
+      <div class="card2"><div class="lab">Process</div><div class="big">1</div><small>+ 1 SQLite file</small></div>
+      <div class="card2"><div class="lab">Brief gen</div><div class="big">3–8s</div><small>sync · spinner</small></div>
+      <div class="card2"><div class="lab">Timezone</div><div class="big">Sofia</div><small>period keys</small></div>
     </div>
+  </div>
+</section>
 
-    <div class="commentable" data-anchor="cm-deploy" data-label="Components · deployment & access">
-      <h3>Deployment &amp; access</h3>
-      <ul class="clean">
-        <li><b>Deploy</b> — one <code>uvicorn</code> process + one <code>app.db</code> file; optional Docker (a single <code>api</code> container).</li>
-        <li><b>Backup</b> — <code>litestream</code> streams <code>app.db</code>'s WAL to object storage continuously, so the one durable file survives disk loss.</li>
-        <li><b>Access</b> — one long-lived API token over HTTPS, on a private network / Tailscale.</li>
-      </ul>
-    </div>
-  </section>
+<!-- 01 COMPONENTS ──────────────────────────────────── -->
+<section class="section" data-name="Components" id="stack">
+  <div class="shead"><div class="idx">01</div><div class="meta">
+    <div class="kick">What it's made of</div><h2>Components</h2>
+    <p>One synchronous FastAPI process over a SQLite file, orchestrating a node workflow that calls Claude.</p>
+  </div></div>
 
-  <!-- 02 COMPUTATION ─────────────────────────────────── -->
-  <section class="section" data-name="Computation" id="principle">
-    <div class="shead"><div class="idx">02</div><div class="meta">
-      <div class="kick">Structure</div><h2>Computation &amp; judgment</h2>
-      <p>The system separates deterministic computation from LLM judgment; the node model expresses the boundary. The LLM performs no arithmetic.</p>
-    </div></div>
+  <div class="commentable" data-anchor="cm-table" data-label="Components · technology table">
+    <h3>Components</h3>
+    <table><thead><tr><th>Component</th><th>Technology</th><th>Role</th></tr></thead><tbody>
+      <tr><td>Runtime</td><td><code>Python 3.13 · uv</code></td><td>—</td></tr>
+      <tr><td>API</td><td><code>FastAPI · uvicorn</code></td><td>The three endpoints; one synchronous process, no background workers or scheduler.</td></tr>
+      <tr><td>Persistence</td><td><code>SQLite (WAL) · SQLAlchemy · Alembic</code></td><td>Runtime ingest + coaching state in <code>app.db</code> (Alembic-managed). <code>baseline.db</code> is a read-only build input, never opened at runtime.</td></tr>
+      <tr><td>Orchestration</td><td>Workflow engine</td><td>DAG of nodes over a shared <code>TaskContext</code> — <code>Node</code> / <code>RouterNode</code> / <code>AgentNode</code>.</td></tr>
+      <tr><td>LLM</td><td><code>Claude (Anthropic) · PydanticAI</code></td><td>Structured outputs; the constitution is a Jinja2 system prompt rendered from <code>profile.yaml</code> constants (caching off — §LLM).</td></tr>
+      <tr><td>Observability</td><td><code>Langfuse</code></td><td>Traces every LLM call (prompt, structured output, retries, cost) — invaluable for tuning the coach against its own briefs each month.</td></tr>
+    </tbody></table>
+    <div class="note"><b>Stack note — what we keep vs drop from the GenAI Launchpad.</b> This backend builds on Datalumina's Launchpad boilerplate but uses only its <b>FastAPI app, the <code>core/</code> workflow primitives (<code>Node</code>/<code>RouterNode</code>/<code>AgentNode</code>/<code>TaskContext</code>), PydanticAI, Jinja2, and Alembic</b>. The Launchpad's <b>Postgres/pgvector, Celery, Redis, Supabase, streaming, and <code>vecs</code>/RAG</b> are <em>not</em> used — single-user scale needs none of it, so the <code>database/</code> layer is rewritten for SQLite and those deps are dropped.</div>
+  </div>
 
-    <div class="commentable" data-anchor="pr-split" data-label="Principle · deterministic vs LLM split">
-      <h3>The split</h3>
-      <div class="diagram">
-        <div class="split">
-          <div class="col det"><div class="ch"><span class="pill">code</span> Deterministic · Node + services/</div>
-            <ul class="clean">
-              <li>HR zones <em>(§3)</em></li><li>readiness score <em>(§6.1)</em></li>
-              <li>7/28-day rolling aggregates</li><li>HRV/RHR 30-day baselines</li>
-              <li>macros / TDEE <em>(§7)</em></li><li>≤10%/wk volume ramp <em>(§9)</em></li>
-            </ul>
-          </div>
-          <div class="col llm"><div class="ch"><span class="pill">Claude</span> Judgment · AgentNode</div>
-            <ul class="clean">
-              <li>pick sessions from the pool</li><li>sequence the week</li>
-              <li>tune today's session</li><li>write the rationale</li>
-              <li><em>within budgets &amp; flags only</em></li>
-            </ul>
-          </div>
+  <div class="commentable" data-anchor="cm-deploy" data-label="Components · deployment & access">
+    <h3>Deployment &amp; access</h3>
+    <ul class="clean">
+      <li><b>Deploy</b> — one <code>uvicorn</code> process + one <code>app.db</code> file; optional Docker (a single <code>api</code> container).</li>
+      <li><b>Backup</b> — <code>litestream</code> streams <code>app.db</code>'s WAL to object storage continuously, so the one durable file survives disk loss.</li>
+      <li><b>Access</b> — one long-lived API token over HTTPS, on a private network / Tailscale.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 02 COMPUTATION ─────────────────────────────────── -->
+<section class="section" data-name="Computation" id="principle">
+  <div class="shead"><div class="idx">02</div><div class="meta">
+    <div class="kick">Structure</div><h2>Computation &amp; judgment</h2>
+    <p>The system separates deterministic computation from LLM judgment; the node model expresses the boundary. The LLM performs no arithmetic.</p>
+  </div></div>
+
+  <div class="commentable" data-anchor="pr-split" data-label="Principle · deterministic vs LLM split">
+    <h3>The split</h3>
+    <div class="diagram">
+      <div class="split">
+        <div class="col det"><div class="ch"><span class="pill">code</span> Deterministic · Node + services/</div>
+          <ul class="clean">
+            <li>HR zones <em>(§3)</em></li><li>readiness score <em>(§6.1)</em></li>
+            <li>7/28-day rolling aggregates</li><li>HRV/RHR 30-day baselines</li>
+            <li>macros / TDEE <em>(§7)</em></li><li>≤10%/wk volume ramp <em>(§9)</em></li>
+          </ul>
         </div>
-        <div class="legend">
-          <span><i style="background:var(--steel)"></i>pre-computed numbers + flags →</span>
-          <span><i style="background:var(--violet)"></i>fed to the brain as context</span>
+        <div class="col llm"><div class="ch"><span class="pill">Claude</span> Judgment · AgentNode</div>
+          <ul class="clean">
+            <li>pick sessions from the pool</li><li>sequence the week</li>
+            <li>tune today's session</li><li>write the rationale</li>
+            <li><em>within budgets &amp; flags only</em></li>
+          </ul>
         </div>
       </div>
-    </div>
-
-    <div class="commentable" data-anchor="pr-gate" data-label="Principle · training-readiness safety gate as router">
-      <h3>The training-readiness safety gate</h3>
-      <div class="gate">
-        <div class="gt">SafetyGateRouter<br>any flag TRUE → REST</div>
-        <div class="gd">A <code>RouterNode</code> short-circuits to REST / active-recovery <b>before the LLM is consulted</b>. It enforces training auto-regulation only (GI symptoms / illness / knee / sleep / HRV-RHR). The §2 medical conditions are LLM <em>context</em> (system prompt), <b>not</b> a code-enforced layer — this is a fitness app, not a medical device.</div>
+      <div class="legend">
+        <span><i style="background:var(--steel)"></i>pre-computed numbers + flags →</span>
+        <span><i style="background:var(--violet)"></i>fed to the brain as context</span>
       </div>
     </div>
-  </section>
+  </div>
 
-  <!-- 03 DATA MODEL ───────────────────────────────────── -->
-  <section class="section" data-name="Data model" id="data">
-    <div class="shead"><div class="idx">03</div><div class="meta">
-      <div class="kick">SQLite schema</div><h2>Data model</h2>
-      <p>Two databases, <b>split by lifecycle</b>: a read-only historical corpus that is only ever consumed at build time, and a runtime store that the three endpoints read and write. <em>Full column-level schema in <code>DB.md</code> / <code>db.html</code>.</em></p>
-    </div></div>
-
-    <div class="commentable" data-anchor="dm-split" data-label="Data model · two databases (lifecycle split)">
-      <h3>Two databases</h3>
-      <table><thead><tr><th>File</th><th>Role</th><th>Lifecycle</th></tr></thead><tbody>
-        <tr><td><code>baseline.db</code><br><em>(renamed from <code>health.db</code>)</em></td><td>Read-only historical corpus — 3.5M records, 925 workouts, 2019→2026. Used only to derive constants and seed the runtime window. <b>Never opened at runtime.</b></td><td>Regenerated wholesale by <code>build_db.py</code> (<code>DROP TABLE …</code> then re-parse <code>export.xml</code>). Raw ETL dump: no PKs, no <code>uuid</code>, TEXT timestamps as Apple emits them.</td></tr>
-        <tr><td><code>app.db</code></td><td>Runtime ingest + coaching state — everything the endpoints read and write.</td><td>Created and migrated by <b>Alembic</b>; never dropped. WAL; small (KB→MB); backed up.</td></tr>
-      </tbody></table>
-      <div class="note">Durable user state must not live in <code>baseline.db</code> — a baseline refresh drops every table. The runtime derives from <code>app.db</code> only.</div>
+  <div class="commentable" data-anchor="pr-gate" data-label="Principle · training-readiness safety gate as router">
+    <h3>The training-readiness safety gate</h3>
+    <div class="gate">
+      <div class="gt">SafetyGateRouter<br>any flag TRUE → REST</div>
+      <div class="gd">A <code>RouterNode</code> short-circuits to REST / active-recovery <b>before the LLM is consulted</b>. It enforces training auto-regulation only (GI symptoms / illness / knee / sleep / HRV-RHR). The §2 medical conditions are LLM <em>context</em> (system prompt), <b>not</b> a code-enforced layer — this is a fitness app, not a medical device.</div>
     </div>
+  </div>
+</section>
 
-    <div class="commentable" data-anchor="dm-ingest" data-label="Data model · app.db ingest tables">
-      <h3><code>app.db</code> — ingest <em>(synced via <code>/sync</code>)</em></h3>
-      <table><thead><tr><th>Table</th><th>Holds</th></tr></thead><tbody>
-        <tr><td><code>records</code></td><td>every HealthKit sample — HR, sleep, HRV, RHR, steps, energy, METs, running dynamics, <b>and dietary intake (energy, protein, carbs, fat, fiber, sodium, water)</b> + <b>body weight (<code>body_mass</code>)</b>. <code>uuid</code> (unique) keys idempotent sync.</td></tr>
-        <tr><td><code>workouts</code></td><td>sessions: type, duration, distance, energy. <code>effort_score</code> = RPE 1–10 from <code>WorkoutEffortScore</code>.</td></tr>
-        <tr><td><code>workout_statistics</code></td><td>per-workout avg/max (HR, speed, power, cadence).</td></tr>
-        <tr><td><code>activity_summary</code></td><td>daily move / exercise / stand.</td></tr>
-      </tbody></table>
-      <div class="note"><code>records.uuid</code> and <code>workouts.effort_score</code> are <b>new</b> in <code>app.db</code> — they do not exist in today's <code>baseline.db</code>. Sync targets a purpose-built schema, not the ETL dump.</div>
-    </div>
+<!-- 03 DATA MODEL ───────────────────────────────────── -->
+<section class="section" data-name="Data model" id="data">
+  <div class="shead"><div class="idx">03</div><div class="meta">
+    <div class="kick">SQLite schema</div><h2>Data model</h2>
+    <p>Two databases, <b>split by lifecycle</b>: a read-only historical corpus that is only ever consumed at build time, and a runtime store that the three endpoints read and write. <em>Full column-level schema in <code>DB.md</code> / <code>db.html</code>.</em></p>
+  </div></div>
 
-    <div class="commentable" data-anchor="dm-state" data-label="Data model · derived + coaching-state tables">
-      <h3><code>app.db</code> — derived + coaching state</h3>
-      <table><thead><tr><th>Table</th><th>Holds</th></tr></thead><tbody>
-        <tr><td><code>daily_metrics</code> <em>(derived)</em></td><td>1 row/day — sleep, HRV, RHR, <b>30d mean+SD / RHR mean</b>, zone-minutes, <b>nutrition intake (kcal/protein/carbs/fat/fiber/sodium/water)</b>, <b><code>body_weight</code> (latest <code>body_mass</code>)</b>, readiness, band; rollups (training <b>and</b> nutrition-adherence) sum over it</td></tr>
-        <tr><td><code>checkins</code> <em>(by date)</em></td><td><code>giSymptoms</code> (bool) · <code>illness</code> (bool) · knee pain (0–10) — objective-only, upsertable. No subjective self-report, no body weight (weight is HealthKit <code>body_mass</code>).</td></tr>
-        <tr><td><code>strength_tests</code> <em>(weekly)</em></td><td>max push-ups, max pull-ups → §9/§10 KPI (trend-smoothed)</td></tr>
-        <tr><td><code>plans</code> <em>(by ISO week)</em></td><td>generated weekly plan + rationale + inputs_snapshot — cache key</td></tr>
-        <tr><td><code>suggestions</code> <em>(by date)</em></td><td>generated daily session + alternatives + readiness/gate — cache key</td></tr>
-      </tbody></table>
-      <div class="note"><b>Constants live in <code>profile.yaml</code>, not a table</b> — maxHR / RHR / zones etc. are config (refreshed monthly, §10); live weight (latest HealthKit <code>body_mass</code> → <code>daily_metrics.body_weight</code>) + rolling baselines (<code>daily_metrics</code>) stay in the DB. Full schema: <code>DB.md</code> / <code>db.html</code>.</div>
-      <div class="note"><b>Bootstrap (one-time, at deploy):</b> a build step (a) freezes the derived constants into <code>profile.yaml</code>, and (b) copies the <b>trailing ~90 days</b> of relevant samples from <code>baseline.db</code> into <code>app.db</code>'s ingest tables — so the first <code>/brief/weekly</code> has valid 7/28-day rollups and 30-day HRV/RHR baselines on day one. After that, <code>app.db</code> grows from <code>/sync</code> forward and <code>baseline.db</code> is no longer consulted.</div>
-    </div>
+  <div class="commentable" data-anchor="dm-split" data-label="Data model · two databases (lifecycle split)">
+    <h3>Two databases</h3>
+    <table><thead><tr><th>File</th><th>Role</th><th>Lifecycle</th></tr></thead><tbody>
+      <tr><td><code>baseline.db</code><br><em>(renamed from <code>health.db</code>)</em></td><td>Read-only historical corpus — 3.5M records, 925 workouts, 2019→2026. Used only to derive constants and seed the runtime window. <b>Never opened at runtime.</b></td><td>Regenerated wholesale by <code>build_db.py</code> (<code>DROP TABLE …</code> then re-parse <code>export.xml</code>). Raw ETL dump: no PKs, no <code>uuid</code>, TEXT timestamps as Apple emits them.</td></tr>
+      <tr><td><code>app.db</code></td><td>Runtime ingest + coaching state — everything the endpoints read and write.</td><td>Created and migrated by <b>Alembic</b>; never dropped. WAL; small (KB→MB); backed up.</td></tr>
+    </tbody></table>
+    <div class="note">Durable user state must not live in <code>baseline.db</code> — a baseline refresh drops every table. The runtime derives from <code>app.db</code> only.</div>
+  </div>
 
-    <div class="commentable" data-anchor="dm-inputs" data-label="Data model · manual vs automatic inputs">
-      <h3>Inputs — manual vs. automatic</h3>
-      <table><thead><tr><th>Source</th><th>What</th><th>Your effort</th></tr></thead><tbody>
-        <tr><td>HealthKit <em>(auto)</em></td><td>HR/zones, METs, sleep, HRV, RHR, steps, workouts + effort score, <b>body weight (<code>body_mass</code>)</b>, <b>dietary intake (logged in a 3rd-party app that writes to HealthKit)</b></td><td><span class="tag keep">none</span></td></tr>
-        <tr><td>Server-derived</td><td>planned-vs-actual training adherence, executed intensity, <b>nutrition-intake adherence (consumed vs target)</b></td><td><span class="tag keep">none</span></td></tr>
-        <tr><td>Daily check-in</td><td><code>giSymptoms</code> (bool), <code>illness</code> (bool), knee pain (0–10)</td><td><span class="tag swap">a few taps</span></td></tr>
-        <tr><td>Weekly test</td><td>max push-ups / pull-ups</td><td><span class="tag swap">2 numbers/wk</span></td></tr>
-      </tbody></table>
-      <div class="note">Training adherence is derived from HealthKit workouts against the stored plan; nutrition adherence is derived from the ingested dietary records against <code>MacroFocus</code>; body weight is the latest HealthKit <code>body_mass</code>; only symptom/illness/knee flags arrive on the daily check-in.</div>
-    </div>
-  </section>
+  <div class="commentable" data-anchor="dm-ingest" data-label="Data model · app.db ingest tables">
+    <h3><code>app.db</code> — ingest <em>(synced via <code>/sync</code>)</em></h3>
+    <table><thead><tr><th>Table</th><th>Holds</th></tr></thead><tbody>
+      <tr><td><code>records</code></td><td>every HealthKit sample — HR, sleep, HRV, RHR, steps, energy, METs, running dynamics, <b>and dietary intake (energy, protein, carbs, fat, fiber, sodium, water)</b> + <b>body weight (<code>body_mass</code>)</b>. <code>uuid</code> (unique) keys idempotent sync.</td></tr>
+      <tr><td><code>workouts</code></td><td>sessions: type, duration, distance, energy. <code>effort_score</code> = RPE 1–10 from <code>WorkoutEffortScore</code>.</td></tr>
+      <tr><td><code>workout_statistics</code></td><td>per-workout avg/max (HR, speed, power, cadence).</td></tr>
+      <tr><td><code>activity_summary</code></td><td>daily move / exercise / stand.</td></tr>
+    </tbody></table>
+    <div class="note"><code>records.uuid</code> and <code>workouts.effort_score</code> are <b>new</b> in <code>app.db</code> — they do not exist in today's <code>baseline.db</code>. Sync targets a purpose-built schema, not the ETL dump.</div>
+  </div>
 
-  <!-- 04 FLOWS ────────────────────────────────────────── -->
-  <section class="section" data-name="Request flows" id="flows">
-    <div class="shead"><div class="idx">04</div><div class="meta">
-      <div class="kick">How requests move</div><h2>Request flows</h2>
-      <p>Sync before brief — the readiness score and safety gate need last night's sleep, this morning's HRV, and the check-in to be stored first.</p>
-    </div></div>
+  <div class="commentable" data-anchor="dm-state" data-label="Data model · derived + coaching-state tables">
+    <h3><code>app.db</code> — derived + coaching state</h3>
+    <table><thead><tr><th>Table</th><th>Holds</th></tr></thead><tbody>
+      <tr><td><code>daily_metrics</code> <em>(derived)</em></td><td>1 row/day — sleep, HRV, RHR, <b>30d mean+SD / RHR mean</b>, zone-minutes, <b>nutrition intake (kcal/protein/carbs/fat/fiber/sodium/water)</b>, <b><code>body_weight</code> (latest <code>body_mass</code>)</b>, readiness, band; rollups (training <b>and</b> nutrition-adherence) sum over it</td></tr>
+      <tr><td><code>checkins</code> <em>(by date)</em></td><td><code>giSymptoms</code> (bool) · <code>illness</code> (bool) · knee pain (0–10) — objective-only, upsertable. No subjective self-report, no body weight (weight is HealthKit <code>body_mass</code>).</td></tr>
+      <tr><td><code>strength_tests</code> <em>(weekly)</em></td><td>max push-ups, max pull-ups → §9/§10 KPI (trend-smoothed)</td></tr>
+      <tr><td><code>plans</code> <em>(by ISO week)</em></td><td>generated weekly plan + rationale + inputs_snapshot — cache key</td></tr>
+      <tr><td><code>suggestions</code> <em>(by date)</em></td><td>generated daily session + alternatives + readiness/gate — cache key</td></tr>
+    </tbody></table>
+    <div class="note"><b>Constants live in <code>profile.yaml</code>, not a table</b> — maxHR / RHR / zones etc. are config (refreshed monthly, §10); live weight (latest HealthKit <code>body_mass</code> → <code>daily_metrics.body_weight</code>) + rolling baselines (<code>daily_metrics</code>) stay in the DB. Full schema: <code>DB.md</code> / <code>db.html</code>.</div>
+    <div class="note"><b>Bootstrap (one-time, at deploy):</b> a build step (a) freezes the derived constants into <code>profile.yaml</code>, and (b) copies the <b>trailing ~90 days</b> of relevant samples from <code>baseline.db</code> into <code>app.db</code>'s ingest tables — so the first <code>/brief/weekly</code> has valid 7/28-day rollups and 30-day HRV/RHR baselines on day one. After that, <code>app.db</code> grows from <code>/sync</code> forward and <code>baseline.db</code> is no longer consulted.</div>
+  </div>
 
-    <div class="commentable" data-anchor="fl-sequence" data-label="Flows · app-open sequence">
-      <h3>App-open sequence</h3>
-      <div class="pre"><span class="d">1.</span> user fills the daily check-in   <span class="d">(GI symptoms / illness / knee)</span>
+  <div class="commentable" data-anchor="dm-inputs" data-label="Data model · manual vs automatic inputs">
+    <h3>Inputs — manual vs. automatic</h3>
+    <table><thead><tr><th>Source</th><th>What</th><th>Your effort</th></tr></thead><tbody>
+      <tr><td>HealthKit <em>(auto)</em></td><td>HR/zones, METs, sleep, HRV, RHR, steps, workouts + effort score, <b>body weight (<code>body_mass</code>)</b>, <b>dietary intake (logged in a 3rd-party app that writes to HealthKit)</b></td><td><span class="tag keep">none</span></td></tr>
+      <tr><td>Server-derived</td><td>planned-vs-actual training adherence, executed intensity, <b>nutrition-intake adherence (consumed vs target)</b></td><td><span class="tag keep">none</span></td></tr>
+      <tr><td>Daily check-in</td><td><code>giSymptoms</code> (bool), <code>illness</code> (bool), knee pain (0–10)</td><td><span class="tag swap">a few taps</span></td></tr>
+      <tr><td>Weekly test</td><td>max push-ups / pull-ups</td><td><span class="tag swap">2 numbers/wk</span></td></tr>
+    </tbody></table>
+    <div class="note">Training adherence is derived from HealthKit workouts against the stored plan; nutrition adherence is derived from the ingested dietary records against <code>MacroFocus</code>; body weight is the latest HealthKit <code>body_mass</code>; only symptom/illness/knee flags arrive on the daily check-in.</div>
+  </div>
+</section>
+
+<!-- 04 FLOWS ────────────────────────────────────────── -->
+<section class="section" data-name="Request flows" id="flows">
+  <div class="shead"><div class="idx">04</div><div class="meta">
+    <div class="kick">How requests move</div><h2>Request flows</h2>
+    <p>Sync before brief — the readiness score and safety gate need last night's sleep, this morning's HRV, and the check-in to be stored first.</p>
+  </div></div>
+
+  <div class="commentable" data-anchor="fl-sequence" data-label="Flows · app-open sequence">
+    <h3>App-open sequence</h3>
+    <div class="pre"><span class="d">1.</span> user fills the daily check-in   <span class="d">(GI symptoms / illness / knee)</span>
 <span class="d">2.</span> <span class="g">POST /sync</span>           push HealthKit + check-in [+ weekly test]  <span class="a">← must be first</span>
 <span class="d">3.</span> <span class="g">POST /brief/daily</span>    generates off the data just synced
 <span class="d">4.</span> if new ISO week → <span class="g">POST /brief/weekly</span></div>
-    </div>
+  </div>
 
-    <div class="commentable" data-anchor="fl-getorgen" data-label="Flows · get-or-generate">
-      <h3>Get-or-generate</h3>
-      <p class="lede">Keyed by <b>period</b>. The first request for a day/week generates (one LLM call); subsequent requests serve the cache.</p>
-      <div class="pre"><span class="g">POST /brief/daily</span>:   s = lookup(date = today)
+  <div class="commentable" data-anchor="fl-getorgen" data-label="Flows · get-or-generate">
+    <h3>Get-or-generate</h3>
+    <p class="lede">Keyed by <b>period</b>. The first request for a day/week generates (one LLM call); subsequent requests serve the cache.</p>
+    <div class="pre"><span class="g">POST /brief/daily</span>:   s = lookup(date = today)
                      <span class="d">return s if exists else</span> run <span class="v">DAILY_ADJUSTER</span> → persist → return
 <span class="g">POST /brief/weekly</span>:  p = lookup(week = current_iso_week)
                      <span class="d">return p if exists else</span> run <span class="v">WEEKLY_PLANNER</span> → persist → return</div>
-      <ul class="clean">
-        <li>Enforced by a unique constraint on <code>(brief_type, period_key)</code>.</li>
-        <li><code>?refresh=true</code> forces one regeneration (e.g. the check-in arrived late).</li>
-        <li>The morning brief, generated off this-morning HRV, <b>deliberately stays stable all day</b>.</li>
-      </ul>
-    </div>
-
-    <div class="commentable" data-anchor="fl-tz" data-label="Flows · timezone / period key">
-      <h3>Period key &amp; timezone</h3>
-      <div class="note">Timestamps are stored with <b>the actual UTC offset HealthKit emits per sample</b> (Europe/Sofia <code>+02:00</code> winter / <code>+03:00</code> summer; varies with travel), <em>not</em> a hard-coded <code>+0300</code>. Period keys (<code>date</code>, <code>iso_week</code>) are derived via the <b>Europe/Sofia tz database</b> (DST-aware), so they track DST and travel correctly. Don't assume a fixed offset anywhere — always resolve "today" / "this week" through the tz database.</div>
-    </div>
-  </section>
-
-  <!-- 05 WORKFLOWS ────────────────────────────────────── -->
-  <section class="section" data-name="Workflows" id="workflows">
-    <div class="shead"><div class="idx">05</div><div class="meta">
-      <div class="kick">Node DAGs</div><h2>Workflows</h2>
-      <p>Two workflows in the node/router/agent model, invoked synchronously from their endpoints. Each node passes a shared Pydantic <code>TaskContext</code>.</p>
-    </div></div>
-
-    <div class="commentable" data-anchor="wf-weekly" data-label="Workflows · WEEKLY_PLANNER pipeline">
-      <h3>WEEKLY_PLANNER — first request of an ISO week</h3>
-      <div class="diagram"><div class="flow">
-        <div class="node data"><span class="ty">Node</span><span class="nm">LoadAggregatesNode</span><span class="nd">7/28-day rollups + training &amp; nutrition adherence</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data opt"><span class="ty">Node</span><span class="nm">RecomputeConstants</span><span class="nd">if constants &gt; ~28d old · §10</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">ComputeBudgetsNode</span><span class="nd">hard-day budget from sleep/HRV · §5.1</span></div>
-        <div class="arrow">↓</div>
-        <div class="node agent"><span class="ty">AgentNode</span><span class="nm">GeneratePlanNode</span><span class="nd">Claude → core/extras as PURE CARD PICKS (+ dose, day)</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">DeriveSessionsNode</span><span class="nd">fill intensity/zone/isHardDay/flags/dayType from CARD_META</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">ComputeTargetsNode</span><span class="nd">derive totalRunKm/easyRatio from picks</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">ComputeNutritionNode</span><span class="nd">week nutrition: protein/fat/hydration + carb day-type pattern · §7</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">ValidatePlanNode</span><span class="nd">budgets/spacing/card-in-pool → ModelRetry ≤2</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">PersistPlanNode</span><span class="nd">→ plans</span></div>
-      </div></div>
-    </div>
-
-    <div class="commentable" data-anchor="wf-daily" data-label="Workflows · DAILY_ADJUSTER pipeline">
-      <h3>DAILY_ADJUSTER — first request of a date</h3>
-      <div class="diagram"><div class="flow">
-        <div class="node data"><span class="ty">Node</span><span class="nm">ComputeReadinessNode</span><span class="nd">readiness 0–100, clamped · §6.1</span></div>
-        <div class="arrow">↓</div>
-        <div class="node router"><span class="ty">RouterNode</span><span class="nm">SafetyGateRouter</span><span class="nd">§6.2</span></div>
-        <div class="branch">└ any flag TRUE → <span class="node router" style="padding:4px 9px;border-left-width:3px">RestDayNode · stop_workflow()</span></div>
-        <div class="arrow">↓ else</div>
-        <div class="node agent"><span class="ty">AgentNode</span><span class="nm">TuneSessionNode</span><span class="nd">Claude → card + dose + alternatives + skipOk + dayType · §6</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">DeriveSessionNode</span><span class="nd">fill derived fields from CARD_META; compute MacroFocus from dayType · §7</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">ValidateSessionNode</span><span class="nd">band gating, card-in-plan, dose-in-band, dayType fuel-floor → ModelRetry ≤2</span></div>
-        <div class="arrow">↓</div>
-        <div class="node data"><span class="ty">Node</span><span class="nm">PersistSuggestionNode</span><span class="nd">→ suggestions</span></div>
-      </div>
-      <div class="legend">
-        <span><i style="background:var(--steel)"></i>Node — deterministic</span>
-        <span><i style="background:var(--amber)"></i>RouterNode — branch / short-circuit</span>
-        <span><i style="background:var(--violet)"></i>AgentNode — Claude, structured output</span>
-      </div>
-      <div class="note">Per the <b>derive-don't-emit</b> rule (<code>CARDS.md</code> / <code>LLM.md</code>): the AgentNode emits only genuine <em>picks</em> (which card, what dose, which day); every card-determined attribute and every number is filled by a downstream <code>Node</code>, so it cannot be wrong by construction.</div></div>
-    </div>
-  </section>
-
-  <!-- 06 DATA & RULES ─────────────────────────────────── -->
-  <section class="section" data-name="Data &amp; rules" id="rules">
-    <div class="shead"><div class="idx">06</div><div class="meta">
-      <div class="kick">Where the numbers come from</div><h2>Data &amp; rules</h2>
-      <p>Baseline data builds the constitution's constants; the constitution drives the LLM; the deterministic engine does the math.</p>
-    </div></div>
-
-    <div class="commentable" data-anchor="rl-sources" data-label="Rules · data sources">
-      <h3>Sources</h3>
-      <ul class="clean">
-        <li><b><code>../../db/baseline.db</code></b> <em>(renamed from <code>health.db</code>)</em> — read-only build input: 3.5M records, 925 workouts, 1,346 activity-summary days, 2019→2026. Used at build time to derive personal constants <b>and</b> seed the trailing ~90 days into <code>app.db</code>. Not opened at runtime; regenerable from <code>export.xml</code>.</li>
-        <li><b><code>HEALTH-CONSITTUTION.md</code></b> — a Jinja2 <b>template</b> rendered fresh each call (caching off) with <code>profile.yaml</code> constants. The §2 medical conditions are <b>context</b> for the LLM, not a code-enforced layer (fitness app, not a medical device).</li>
-        <li><b><code>../../medical-docs/</code></b> — PDFs backing §2 (biopsy, epikrizas, ambulatory records); source for the constitution's medical context only.</li>
-      </ul>
-    </div>
-
-    <div class="commentable" data-anchor="rl-compute" data-label="Rules · deterministic computations">
-      <h3>Deterministic computations <em>(code, not LLM)</em></h3>
-      <div class="cards">
-        <div class="card2"><div class="lab">Zones</div><div class="big">192/58</div><small>from profile.yaml Max/RHR · §3</small></div>
-        <div class="card2"><div class="lab">Readiness</div><div class="big">0–100</div><small>clamped · §6.1</small></div>
-        <div class="card2"><div class="lab">Safety gate</div><div class="big">bools</div><small>§6.2</small></div>
-        <div class="card2"><div class="lab">Baselines</div><div class="big">30d</div><small>HRV / RHR</small></div>
-        <div class="card2"><div class="lab">Aggregates</div><div class="big">7/28d</div><small>training + nutrition intake</small></div>
-        <div class="card2"><div class="lab">CARD_META</div><div class="big">fill</div><small>derive-don't-emit attributes</small></div>
-        <div class="card2"><div class="lab">Targets</div><div class="big">weekly</div><small>derived from LLM picks</small></div>
-        <div class="card2"><div class="lab">Intensity</div><div class="big">thr↔VO₂</div><small>alternation + cadence-cue ramp</small></div>
-        <div class="card2"><div class="lab">Macros</div><div class="big">TDEE</div><small>grams from the LLM's dayType · §7</small></div>
-        <div class="card2"><div class="lab">Ramp</div><div class="big">≤10%</div><small>/wk · §9</small></div>
-      </div>
-    </div>
-
-    <div class="commentable" data-anchor="rl-effort" data-label="Rules · effort / RPE handling">
-      <h3>Effort / RPE</h3>
-      <div class="note">The app reads each workout's <code>WorkoutEffortScore</code> (RPE 1–10) from HealthKit and sends it in <code>/sync</code>; the <b>first sync backfills</b> available scores. Used when present. Auto-estimated <code>PhysicalEffort</code> (METs, 523k samples) is always available as an HR-independent intensity proxy.</div>
-    </div>
-  </section>
-
-  </div><!-- /scroll -->
-
-  <div class="pager">
-    <button id="prev">‹ prev</button>
-    <div class="ctr"><span class="pos">section <b id="posNow">1</b> / <span id="posTot">8</span></span></div>
-    <button id="next">next ›</button>
+    <ul class="clean">
+      <li>Enforced by a unique constraint on <code>(brief_type, period_key)</code>.</li>
+      <li><code>?refresh=true</code> forces one regeneration (e.g. the check-in arrived late).</li>
+      <li>The morning brief, generated off this-morning HRV, <b>deliberately stays stable all day</b>.</li>
+    </ul>
   </div>
-</main>
 
+  <div class="commentable" data-anchor="fl-tz" data-label="Flows · timezone / period key">
+    <h3>Period key &amp; timezone</h3>
+    <div class="note">Timestamps are stored with <b>the actual UTC offset HealthKit emits per sample</b> (Europe/Sofia <code>+02:00</code> winter / <code>+03:00</code> summer; varies with travel), <em>not</em> a hard-coded <code>+0300</code>. Period keys (<code>date</code>, <code>iso_week</code>) are derived via the <b>Europe/Sofia tz database</b> (DST-aware), so they track DST and travel correctly. Don't assume a fixed offset anywhere — always resolve "today" / "this week" through the tz database.</div>
+  </div>
+</section>
+
+<!-- 05 WORKFLOWS ────────────────────────────────────── -->
+<section class="section" data-name="Workflows" id="workflows">
+  <div class="shead"><div class="idx">05</div><div class="meta">
+    <div class="kick">Node DAGs</div><h2>Workflows</h2>
+    <p>Two workflows in the node/router/agent model, invoked synchronously from their endpoints. Each node passes a shared Pydantic <code>TaskContext</code>.</p>
+  </div></div>
+
+  <div class="commentable" data-anchor="wf-weekly" data-label="Workflows · WEEKLY_PLANNER pipeline">
+    <h3>WEEKLY_PLANNER — first request of an ISO week</h3>
+    <div class="diagram"><div class="flow">
+      <div class="node data"><span class="ty">Node</span><span class="nm">LoadAggregatesNode</span><span class="nd">7/28-day rollups + training &amp; nutrition adherence</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data opt"><span class="ty">Node</span><span class="nm">RecomputeConstants</span><span class="nd">if constants &gt; ~28d old · §10</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">ComputeBudgetsNode</span><span class="nd">hard-day budget from sleep/HRV · §5.1</span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="ty">AgentNode</span><span class="nm">GeneratePlanNode</span><span class="nd">Claude → core/extras as PURE CARD PICKS (+ dose, day)</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">DeriveSessionsNode</span><span class="nd">fill intensity/zone/isHardDay/flags/dayType from CARD_META</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">ComputeTargetsNode</span><span class="nd">derive totalRunKm/easyRatio from picks</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">ComputeNutritionNode</span><span class="nd">week nutrition: protein/fat/hydration + carb day-type pattern · §7</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">ValidatePlanNode</span><span class="nd">budgets/spacing/card-in-pool → ModelRetry ≤2</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">PersistPlanNode</span><span class="nd">→ plans</span></div>
+    </div></div>
+  </div>
+
+  <div class="commentable" data-anchor="wf-daily" data-label="Workflows · DAILY_ADJUSTER pipeline">
+    <h3>DAILY_ADJUSTER — first request of a date</h3>
+    <div class="diagram"><div class="flow">
+      <div class="node data"><span class="ty">Node</span><span class="nm">ComputeReadinessNode</span><span class="nd">readiness 0–100, clamped · §6.1</span></div>
+      <div class="arrow">↓</div>
+      <div class="node router"><span class="ty">RouterNode</span><span class="nm">SafetyGateRouter</span><span class="nd">§6.2</span></div>
+      <div class="branch">└ any flag TRUE → <span class="node router" style="padding:4px 9px;border-left-width:3px">SafetyRestNode · stop_workflow()</span></div>
+      <div class="arrow">↓ else</div>
+      <div class="node agent"><span class="ty">AgentNode</span><span class="nm">TuneSessionNode</span><span class="nd">Claude → card + dose + alternatives + skipOk + dayType · §6</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">DeriveSessionNode</span><span class="nd">fill derived fields from CARD_META; compute MacroFocus from dayType · §7</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">ValidateSessionNode</span><span class="nd">band gating, card-in-plan, dose-in-band, dayType fuel-floor → ModelRetry ≤2</span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="ty">Node</span><span class="nm">PersistSuggestionNode</span><span class="nd">→ suggestions</span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--steel)"></i>Node — deterministic</span>
+      <span><i style="background:var(--amber)"></i>RouterNode — branch / short-circuit</span>
+      <span><i style="background:var(--violet)"></i>AgentNode — Claude, structured output</span>
+    </div>
+    <div class="note">Per the <b>derive-don't-emit</b> rule (<code>CARDS.md</code> / <code>LLM.md</code>): the AgentNode emits only genuine <em>picks</em> (which card, what dose, which day); every card-determined attribute and every number is filled by a downstream <code>Node</code>, so it cannot be wrong by construction.</div></div>
+  </div>
+
+  <div class="commentable" data-anchor="wf-rest" data-label="Workflows · two kinds of rest">
+    <h3>Two kinds of rest</h3>
+    <div class="note warn"><b>Two kinds of "rest" — don't conflate them.</b> <code>SafetyRestNode</code> is the <em>deterministic</em> safety-gate terminal: when <code>SafetyGateRouter</code> trips on an objective flag (§6.2), it routes <b>to</b> <code>SafetyRestNode</code>, which code-writes the REST/active-recovery brief (no LLM, no arithmetic) and <b>then</b> calls <code>stop_workflow()</code> — so the <code>AgentNode</code> is skipped entirely. <code>stop_workflow()</code> lives on that terminal precisely because the gated path bypasses the LLM. An LLM-<em>recommended</em> rest or easy day is a different thing: it's a normal <code>TuneSessionNode</code> pick (an easy/recovery <code>dayType</code>) that flows through the full pipeline (<code>DeriveSessionNode → ValidateSessionNode → PersistSuggestionNode</code>) and never touches <code>SafetyRestNode</code> or <code>stop_workflow()</code>.</div>
+  </div>
+</section>
+
+<!-- 06 DATA & RULES ─────────────────────────────────── -->
+<section class="section" data-name="Data &amp; rules" id="rules">
+  <div class="shead"><div class="idx">06</div><div class="meta">
+    <div class="kick">Where the numbers come from</div><h2>Data &amp; rules</h2>
+    <p>Baseline data builds the constitution's constants; the constitution drives the LLM; the deterministic engine does the math.</p>
+  </div></div>
+
+  <div class="commentable" data-anchor="rl-sources" data-label="Rules · data sources">
+    <h3>Sources</h3>
+    <ul class="clean">
+      <li><b><code>../../db/baseline.db</code></b> <em>(renamed from <code>health.db</code>)</em> — read-only build input: 3.5M records, 925 workouts, 1,346 activity-summary days, 2019→2026. Used at build time to derive personal constants <b>and</b> seed the trailing ~90 days into <code>app.db</code>. Not opened at runtime; regenerable from <code>export.xml</code>.</li>
+      <li><b><code>HEALTH-CONSITTUTION.md</code></b> — a Jinja2 <b>template</b> rendered fresh each call (caching off) with <code>profile.yaml</code> constants. The §2 medical conditions are <b>context</b> for the LLM, not a code-enforced layer (fitness app, not a medical device).</li>
+      <li><b><code>../../medical-docs/</code></b> — PDFs backing §2 (biopsy, epikrizas, ambulatory records); source for the constitution's medical context only.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="rl-compute" data-label="Rules · deterministic computations">
+    <h3>Deterministic computations <em>(code, not LLM)</em></h3>
+    <div class="cards">
+      <div class="card2"><div class="lab">Zones</div><div class="big">192/58</div><small>from profile.yaml Max/RHR · §3</small></div>
+      <div class="card2"><div class="lab">Readiness</div><div class="big">0–100</div><small>clamped · §6.1</small></div>
+      <div class="card2"><div class="lab">Safety gate</div><div class="big">bools</div><small>§6.2</small></div>
+      <div class="card2"><div class="lab">Baselines</div><div class="big">30d</div><small>HRV / RHR</small></div>
+      <div class="card2"><div class="lab">Aggregates</div><div class="big">7/28d</div><small>training + nutrition intake</small></div>
+      <div class="card2"><div class="lab">CARD_META</div><div class="big">fill</div><small>derive-don't-emit attributes</small></div>
+      <div class="card2"><div class="lab">Targets</div><div class="big">weekly</div><small>derived from LLM picks</small></div>
+      <div class="card2"><div class="lab">Intensity</div><div class="big">thr↔VO₂</div><small>alternation + cadence-cue ramp</small></div>
+      <div class="card2"><div class="lab">Macros</div><div class="big">TDEE</div><small>grams from the LLM's dayType · §7</small></div>
+      <div class="card2"><div class="lab">Ramp</div><div class="big">≤10%</div><small>/wk · §9</small></div>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="rl-effort" data-label="Rules · effort / RPE handling">
+    <h3>Effort / RPE</h3>
+    <div class="note">The app reads each workout's <code>WorkoutEffortScore</code> (RPE 1–10) from HealthKit and sends it in <code>/sync</code>; the <b>first sync backfills</b> available scores. Used when present. Auto-estimated <code>PhysicalEffort</code> (METs, 523k samples) is always available as an HR-independent intensity proxy.</div>
+  </div>
+</section>
+<!-- ════════════ SECTIONS:END ════════════ -->
+
+</div>
+<div class="pager">
+  <button id="prev">‹ prev</button>
+  <div class="ctr"><span class="pos">section <b id="posNow">1</b> / <span id="posTot">1</span></span></div>
+  <button id="next">next ›</button>
+</div></main>
 <div class="toast" id="toast"></div>
-
 <script>
+/* ── Reusable viewer + comment harness. Config comes from <body> data-* —
+      do not hard-code doc identity here. Works verbatim for any doc. ── */
 (function(){
   "use strict";
-  var STORE="coachapp-arch-comments-v1", LASTSEC="coachapp-arch-lastsec";
+  var body=document.body;
+  var STORE=body.dataset.store||"doc-comments-v1";
+  var LASTSEC=STORE+"-lastsec";
+  var DOC=body.dataset.doc||"doc";
+  var EXPORT_TITLE=body.dataset.exportTitle||"Review comments";
   var sections=[].slice.call(document.querySelectorAll(".section"));
   var nav=document.getElementById("nav");
   var scroll=document.getElementById("scroll");
@@ -594,9 +633,13 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   document.getElementById("prev").addEventListener("click",function(){go(cur-1);});
   document.getElementById("next").addEventListener("click",function(){go(cur+1);});
   document.addEventListener("keydown",function(e){
-    if(e.target.tagName==="TEXTAREA")return;
+    var tag=e.target.tagName;
+    if(tag==="TEXTAREA"||tag==="INPUT"||e.target.isContentEditable)return;
+    if(e.metaKey||e.ctrlKey||e.altKey)return;        // don't hijack Cmd+T etc.
     if(e.key==="ArrowRight"||e.key==="]")go(cur+1);
-    if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="t"||e.key==="T")cycleTheme();
+    else if(e.key==="c"||e.key==="C")setComments(!on);
   });
 
   // ---- comments ----
@@ -670,9 +713,35 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 
   // ---- comment mode toggle ----
   var on=false, tgl=document.getElementById("cmtToggle");
-  tgl.addEventListener("click",function(){
-    on=!on; document.body.classList.toggle("comments-on",on);
+  function setComments(v){
+    on=v; document.body.classList.toggle("comments-on",on);
     tgl.classList.toggle("on",on); document.getElementById("cmStat").textContent=on?"on":"off";
+  }
+  tgl.addEventListener("click",function(){setComments(!on);});
+
+  // ---- theme: dark / light / system (pref shared across all generated viewers) ----
+  var THEME_KEY="md-viewer-theme";
+  var segBtns=[].slice.call(document.querySelectorAll("#themeSeg button"));
+  var mq=window.matchMedia("(prefers-color-scheme: light)");
+  function themePref(){try{return localStorage.getItem(THEME_KEY)||"system";}catch(e){return "system";}}
+  function applyTheme(pref){
+    var eff=pref==="system"?(mq.matches?"light":"dark"):pref;
+    document.documentElement.setAttribute("data-theme",eff);
+    segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===pref);});
+  }
+  function setTheme(pref){try{localStorage.setItem(THEME_KEY,pref);}catch(e){}applyTheme(pref);}
+  function cycleTheme(){var o=["light","dark","system"];setTheme(o[(o.indexOf(themePref())+1)%o.length]);}
+  segBtns.forEach(function(b){b.addEventListener("click",function(){setTheme(b.getAttribute("data-theme-choice"));});});
+  if(mq.addEventListener)mq.addEventListener("change",function(){if(themePref()==="system")applyTheme("system");});
+  else if(mq.addListener)mq.addListener(function(){if(themePref()==="system")applyTheme("system");});
+  applyTheme(themePref());
+  // when embedded (e.g. in an index iframe), let the parent frame drive the theme — file://
+  // frames can't share localStorage, so the parent posts {type:"mdv-theme",theme} on load/toggle
+  window.addEventListener("message",function(e){
+    var d=e.data; if(d&&d.type==="mdv-theme"&&(d.theme==="light"||d.theme==="dark")){
+      document.documentElement.setAttribute("data-theme",d.theme);
+      segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===d.theme);});
+    }
   });
 
   // ---- export ----
@@ -693,7 +762,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   }
   function toMarkdown(){
     var p=payload();
-    var s="# Architecture review comments\n\n_Exported "+p.exportedAt+" · "+p.total+" comment(s)_\n";
+    var s="# "+EXPORT_TITLE+"\n\n_Exported "+p.exportedAt+" · "+p.total+" comment(s)_\n";
     var curSec=null;
     p.comments.forEach(function(c){
       if(c.section!==curSec){curSec=c.section;s+="\n## "+curSec+"\n";}
@@ -705,11 +774,11 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   }
   document.getElementById("expJson").addEventListener("click",function(){
     if(!totalCount())return toast("No comments to export");
-    download("arch-comments.json",JSON.stringify(payload(),null,2),"application/json");toast("Saved arch-comments.json");
+    download(DOC+"-comments.json",JSON.stringify(payload(),null,2),"application/json");toast("Saved "+DOC+"-comments.json");
   });
   document.getElementById("expMd").addEventListener("click",function(){
     if(!totalCount())return toast("No comments to export");
-    download("arch-comments.md",toMarkdown(),"text/markdown");toast("Saved arch-comments.md");
+    download(DOC+"-comments.md",toMarkdown(),"text/markdown");toast("Saved "+DOC+"-comments.md");
   });
   document.getElementById("copyMd").addEventListener("click",function(){
     if(!totalCount())return toast("No comments to copy");
@@ -726,7 +795,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   // ---- initial section ----
   var start=0;
   if(location.hash){var idx=sections.findIndex(function(s){return "#"+s.id===location.hash;});if(idx>=0)start=idx;}
-  else{var ls=parseInt(localStorage.getItem(LASTSEC),10);if(!isNaN(ls))start=ls;}
+  else{var ls=parseInt(localStorage.getItem(LASTSEC),10);if(!isNaN(ls)&&ls<sections.length)start=ls;}
   sections[0].classList.add("active");navBtns[0].classList.add("active");go(start);
 })();
 </script>

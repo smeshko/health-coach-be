@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Coach App · E1·P3 — Workflow engine primitives</title>
+<!-- set theme before first paint; prefer a #t=light|dark hint from a parent frame, else stored pref -->
+<script>(function(){try{var h=(location.hash.match(/[#&]t=(light|dark)/)||[])[1];var p=h||localStorage.getItem("md-viewer-theme")||"system";var light=p==="light"||(p==="system"&&window.matchMedia("(prefers-color-scheme: light)").matches);document.documentElement.setAttribute("data-theme",light?"light":"dark");}catch(e){}})();</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -21,6 +23,15 @@
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
   --sidebar:288px;
 }
+/* ── Light theme — applied when <html data-theme="light"> (set by the toggle / system pref) ── */
+:root[data-theme="light"]{
+  --bg:#f3f6f9; --panel:#ffffff; --panel-2:#eaf0f5; --panel-3:#dde6ee;
+  --line:#d6dee7; --line-bright:#bcc8d4;
+  --ink:#1a2430; --ink-dim:#55657a; --ink-faint:#8593a4;
+  --green:#0e9d6e; --amber:#bf7d12; --red:#d2433f;
+  --blue:#2f7ec4; --violet:#7a4fd0; --steel:#48657f;
+  --grid:rgba(40,80,130,.05);
+}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%}
 body{
@@ -37,7 +48,7 @@ em{color:var(--ink-dim);font-style:normal}
 /* ── Sidebar ─────────────────────────────────────────── */
 aside{
   width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
-  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),var(--bg));
   display:flex; flex-direction:column; padding:22px 18px; gap:18px; z-index:5;
 }
 .brand{display:flex;flex-direction:column;gap:3px}
@@ -66,6 +77,14 @@ nav button .cc.show{display:inline-block}
 .tools .row .tbtn{flex:1;justify-content:center}
 .tools .hint{font-size:10.5px;color:var(--ink-faint);line-height:1.45;font-family:var(--f-mono)}
 .tools .hint b{color:var(--ink-dim);font-weight:500}
+.tools .hint.keys b{color:var(--green);font-weight:700}
+/* theme segmented control (dark / light / system) */
+.seg{display:flex;border:1px solid var(--line-bright);border-radius:7px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;flex:1;text-align:center;padding:7px 4px;
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.02em;color:var(--ink-dim);transition:.14s}
+.seg button + button{border-left:1px solid var(--line-bright)}
+.seg button:hover{background:var(--panel-2);color:var(--ink)}
+.seg button.on{background:var(--green);color:#04130d;font-weight:700}
 
 /* ── Main ────────────────────────────────────────────── */
 main{flex:1;min-width:0;display:flex;flex-direction:column}
@@ -91,7 +110,7 @@ p.lede{color:var(--ink-dim);font-size:14px;margin:0 0 8px}
 .commentable{position:relative;margin:0 0 8px;border-radius:9px;padding:4px;transition:.15s}
 body.comments-on .commentable{outline:1px dashed var(--line-bright);outline-offset:2px}
 body.comments-on .commentable:hover{outline-color:var(--amber)}
-.cmt-add{position:absolute;top:6px;right:6px;z-index:3;all:unset;cursor:pointer;display:none;
+.cmt-add{all:unset;cursor:pointer;position:absolute;top:6px;right:6px;z-index:3;display:none;
   font-family:var(--f-mono);font-size:10.5px;color:#1a1206;background:var(--amber);padding:3px 9px;border-radius:20px;font-weight:700}
 body.comments-on .commentable:hover > .cmt-add{display:inline-block}
 .cmt-badge{position:absolute;top:8px;right:8px;z-index:2;font-family:var(--f-mono);font-size:10px;font-weight:700;
@@ -238,7 +257,12 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   </div>
   <nav id="nav"></nav>
   <div class="tools">
-    <button class="tbtn" id="cmtToggle"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
+    <div class="seg" id="themeSeg" role="group" aria-label="Theme (press T to cycle)">
+      <button data-theme-choice="light" title="Light theme (T)">light</button>
+      <button data-theme-choice="dark" title="Dark theme (T)">dark</button>
+      <button data-theme-choice="system" title="Match system (T)">auto</button>
+    </div>
+    <button class="tbtn" id="cmtToggle" title="Toggle comment mode (C)"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
     <div class="row">
       <button class="tbtn" id="expJson" title="Download e1-p3-workflow-engine-comments.json">⤓ JSON</button>
       <button class="tbtn" id="expMd" title="Download e1-p3-workflow-engine-comments.md">⤓ MD</button>
@@ -246,6 +270,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     </div>
     <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
     <div class="hint"><b>To get feedback to Claude:</b> comment → Export → save the file next to the source <code>.md</code> → tell Claude to read it.</div>
+    <div class="hint keys">keys · <b>←/→</b> pages · <b>T</b> theme · <b>C</b> comments</div>
   </div>
 </aside>
 <main><div class="scroll" id="scroll">
@@ -307,7 +332,8 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
         <ul class="clean">
           <li><b>Real LLM wiring</b> — PydanticAI <code>Agent</code>, provider models, structured <code>OutputType</code>s, constitution prompt: all <b>E9</b>.</li>
           <li><b>The two real workflows</b> <code>WEEKLY_PLANNER</code> / <code>DAILY_ADJUSTER</code> + domain nodes (<code>LoadAggregatesNode</code>, <code>SafetyGateRouter</code>, …): E5/E9/E10/E11.</li>
-          <li><b>Langfuse tracing</b>, <b>streaming</b> (<code>run_stream_async</code>, <code>AgentStreamingNode</code>), <b><code>concurrent_nodes</code></b>, Celery/Redis/Postgres/Supabase/<code>vecs</code> — dropped, never carried over.</li>
+          <li><b>Streaming</b> (<code>run_stream_async</code>, <code>AgentStreamingNode</code>), <b><code>concurrent_nodes</code></b>, Celery/Redis/Postgres/Supabase/<code>vecs</code> — genuinely dropped, never carried over.</li>
+          <li><b>Langfuse tracing / spans / <code>trace_id</code></b> — <b>deferred to E12, not dropped.</b> Langfuse is kept-stack observability (ARCHITECTURE §1 Components; epic R2/§7); P3 just doesn't wire spans yet (no LLM calls until <code>AgentNode</code> is filled in E9). E12 re-adds tracing in <code>app/core</code> — like <code>pydantic_ai</code>, <code>langfuse</code> is NOT in the durable import ban.</li>
           <li>DB persistence, endpoints, settings / auth / health (E1·P1, E1·P2, E2, E5).</li>
         </ul>
       </div>
@@ -319,14 +345,15 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     <p class="lede">From <code>RESEARCH.md</code> — the curated port matrix for the sibling boilerplate at <code>../genai-launchpad-main/app/launchpad/core/</code>.</p>
     <table>
       <tr><th>Launchpad item</th><th>decision</th><th>note</th></tr>
-      <tr><td><code>TaskContext</code></td><td><span class="tag keep">keep</span></td><td>drop <code>trace_id</code> (Langfuse-only)</td></tr>
+      <tr><td><code>TaskContext</code></td><td><span class="tag keep">keep</span></td><td>leave <code>trace_id</code> off for now (Langfuse-specific); returns with tracing in E12</td></tr>
       <tr><td><code>Node</code></td><td><span class="tag keep">keep</span></td><td>as-is; <code>process()</code> abstract async</td></tr>
       <tr><td><code>BaseRouter</code> + <code>RouterNode</code></td><td><span class="tag keep">keep</span></td><td>the conditional-branch / short-circuit primitive</td></tr>
       <tr><td><code>AgentNode</code></td><td><span class="tag swap">adapt</span></td><td>→ abstract placeholder; strip PydanticAI/provider construction (E9 fills it)</td></tr>
       <tr><td><code>WorkflowSchema</code> / <code>NodeConfig</code></td><td><span class="tag swap">adapt</span></td><td>drop <code>concurrent_nodes</code></td></tr>
       <tr><td><code>WorkflowValidator</code></td><td><span class="tag keep">keep</span></td><td>DAG / cycle / reachability / router-fanout; + new <code>is_router</code>↔<code>BaseRouter</code> type-check</td></tr>
-      <tr><td><code>Workflow.run()</code> / walk / <code>_handle_router()</code></td><td><span class="tag swap">trim + harden</span></td><td>drop Langfuse spans, streaming, <code>trace_id</code>; add the off-DAG route rejection</td></tr>
-      <tr><td>Langfuse · streaming · <code>concurrent_nodes</code></td><td><span class="tag drop">drop</span></td><td>not in kept stack (ARCHITECTURE §1)</td></tr>
+      <tr><td><code>Workflow.run()</code> / walk / <code>_handle_router()</code></td><td><span class="tag swap">trim + harden</span></td><td>strip Langfuse spans (re-added E12), streaming, <code>trace_id</code>; add the off-DAG route rejection</td></tr>
+      <tr><td>Langfuse (<code>get_client</code>, spans, <code>trace_id</code>)</td><td><span class="tag swap">defer → E12</span></td><td>kept-stack observability (ARCHITECTURE §1 Components); not ported into the P3 primitives (no LLM calls yet); NOT in the durable import ban — same treatment as <code>pydantic_ai</code></td></tr>
+      <tr><td>Streaming · <code>concurrent_nodes</code></td><td><span class="tag drop">drop</span></td><td>not in kept stack (ARCHITECTURE §1)</td></tr>
       <tr><td>Celery / Redis / Postgres / Supabase / <code>vecs</code></td><td><span class="tag drop">drop</span></td><td>ARCHITECTURE §1 stack note</td></tr>
     </table>
   </div>
@@ -334,9 +361,9 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   <div class="commentable" data-anchor="ov-decisions" data-label="Decisions">
     <h3>Decisions</h3>
     <ul class="clean">
-      <li><b>Port (not import) the Launchpad <code>core/</code>, trimmed</b> — the Launchpad is a sibling boilerplate, not a dependency; we own the primitives and strip Langfuse / streaming / concurrency / Celery so the kept-stack invariant (ARCHITECTURE §1) holds in our tree.</li>
+      <li><b>Port (not import) the Launchpad <code>core/</code>, trimmed</b> — the Launchpad is a sibling boilerplate, not a dependency; we own the primitives and strip streaming / concurrency / Celery so the kept-stack invariant (ARCHITECTURE §1) holds in our tree. Langfuse spans are stripped <em>for now</em> — deferred to E12, not dropped (kept-stack observability).</li>
       <li><b><code>AgentNode</code> is an abstract placeholder, no provider/LLM wiring</b> — real PydanticAI <code>Agent</code>/model construction is <b>E9</b>. <code>pydantic_ai</code> <em>is</em> kept stack and NOT durably banned; the phase-scoped forbid is narrower: <code>app/core/nodes.py</code> must not yet import <code>pydantic_ai</code> / <code>boto3</code> / <code>google</code>.</li>
-      <li><b>The safety-gate short-circuit runs its terminal node, then stops</b> — the router routes <em>to</em> a terminal override (e.g. <code>RestDayNode</code>) whose <code>process()</code> writes the code-only REST brief <em>and</em> calls <code>ctx.stop_workflow()</code>; the runner breaks before downstream nodes. The router itself does not stop first (that would skip the brief).</li>
+      <li><b>The safety-gate short-circuit runs its terminal node, then stops</b> — the router routes <em>to</em> a terminal override (e.g. <code>SafetyRestNode</code>) whose <code>process()</code> writes the code-only REST brief <em>and</em> calls <code>ctx.stop_workflow()</code>; the runner breaks before downstream nodes. The router itself does not stop first (that would skip the brief).</li>
       <li><b><code>TaskContext</code> is plain snake_case <code>BaseModel</code>, not the camelCase wire base</b> — it is internal engine state, never serialized to the client (MODELS "Conventions → Casing"); camelCase brief payloads are separate response models in later epics.</li>
       <li><b>Keep both sync <code>run()</code> and async <code>run_async()</code></b> — workflows are invoked synchronously inline from endpoints, but nodes' <code>process()</code> is async; <code>run()</code> wraps <code>asyncio.run</code> while <code>run_async()</code> lets an async route <code>await</code> it.</li>
       <li><b>Drop <code>concurrent_nodes</code></b> — single-user synchronous flows never fan out concurrently; carrying it would be dead surface.</li>
@@ -349,7 +376,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     <h3>Risks &amp; mitigations</h3>
     <table>
       <tr><th>risk</th><th>mitigation</th></tr>
-      <tr><td>Carrying over genuinely dropped-stack imports while porting (Langfuse, streaming, Celery, Redis, Postgres/pgvector, Supabase, <code>vecs</code>)</td><td>TASK-004 + final validation <code>grep</code> <code>app/core/</code> for <code>langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3</code> and assert none. <code>pydantic_ai</code> deliberately NOT in this list — kept stack.</td></tr>
+      <tr><td>Carrying over genuinely dropped-stack imports while porting (streaming, Celery, Redis, Postgres/pgvector, Supabase, <code>vecs</code>)</td><td>TASK-004 + final validation <code>grep</code> <code>app/core/</code> for <code>celery|redis|psycopg|pgvector|supabase|vecs|boto3</code> and assert none. <code>pydantic_ai</code> (E9) and <code>langfuse</code> (E12) deliberately NOT in this list — both kept stack; banning either durably would block a later epic. The P3 port still strips the Launchpad's inline Langfuse spans (no LLM calls yet) — a phase-scoped concern, not a durable ban.</td></tr>
       <tr><td><code>AgentNode</code> accidentally instantiable / requiring an LLM</td><td>keep <code>process()</code> and <code>get_agent_config()</code> <code>@abstractmethod</code>; a test asserts it can't instantiate directly and a trivial subclass needs no provider; phase-scoped grep over <code>nodes.py</code>.</td></tr>
       <tr><td>Gated short-circuit skips its terminal brief (stop fires too early)</td><td>runner checks <code>should_stop</code> at the <b>top</b> of each iteration, so the routed-to terminal runs and sets stop in its own <code>process()</code> before the break; test asserts the terminal output IS present and the downstream sentinel is NOT executed.</td></tr>
       <tr><td>Router contract drift (can't read context / can't stop / jumps off-DAG)</td><td>preserve Launchpad's <code>BaseRouter.route(ctx)</code> assigning <code>ctx</code> to each sub-router; <code>_handle_router</code> rejects a returned class not in declared <code>connections</code>; tests route via context state and assert an undeclared route/fallback raises.</td></tr>
@@ -394,7 +421,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
       <tr><th>#</th><th>criterion</th></tr>
       <tr><td><span class="tag keep">AC7</span></td><td>A <b>linear</b> workflow (Node → Node) runs end-to-end over one <code>TaskContext</code>, both nodes' outputs present.</td></tr>
       <tr><td><span class="tag keep">AC8</span></td><td>A <b>router-branch</b> workflow (the epic §4 <code>Node → RouterNode → Node</code> 3-node shape) runs end-to-end and reaches the branch the context selects.</td></tr>
-      <tr><td><span class="tag swap">AC9</span></td><td><b>Gated short-circuit (terminal-then-stop):</b> a router routes to a terminal override that does its work in <code>process()</code> <b>and</b> calls <code>ctx.stop_workflow()</code>; the terminal's output IS present, a sentinel wired downstream is NOT executed, and the run returns the partial <code>TaskContext</code> with <code>should_stop=True</code>. (The §2 <code>SafetyGateRouter → RestDayNode + stop</code> pattern.)</td></tr>
+      <tr><td><span class="tag swap">AC9</span></td><td><b>Gated short-circuit (terminal-then-stop):</b> a router routes to a terminal override that does its work in <code>process()</code> <b>and</b> calls <code>ctx.stop_workflow()</code>; the terminal's output IS present, a sentinel wired downstream is NOT executed, and the run returns the partial <code>TaskContext</code> with <code>should_stop=True</code>. (The §2 <code>SafetyGateRouter → SafetyRestNode + stop</code> pattern.)</td></tr>
       <tr><td><span class="tag keep">AC10</span></td><td>Both <code>run()</code> (sync) and <code>run_async()</code> (async) drive the same workflow to the same result.</td></tr>
     </table>
   </div>
@@ -403,7 +430,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     <h3>Clean engine</h3>
     <table>
       <tr><th>#</th><th>criterion</th></tr>
-      <tr><td><span class="tag drop">AC11</span></td><td><b>No dropped-stack imports</b> anywhere under <code>app/core/</code>: <code>grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> is empty. <code>pydantic_ai</code> is intentionally excluded — kept stack (E9 uses it).</td></tr>
+      <tr><td><span class="tag drop">AC11</span></td><td><b>No dropped-stack imports</b> anywhere under <code>app/core/</code>: <code>grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> is empty. <code>pydantic_ai</code> (E9) and <code>langfuse</code> (E12) are intentionally excluded — both kept stack; the P3 port ships no Langfuse spans yet, but the durable ban must not block E12.</td></tr>
       <tr><td><span class="tag keep">AC12</span></td><td><code>uv run ruff check .</code> and <code>uv run pytest tests/core</code> pass.</td></tr>
     </table>
   </div>
@@ -477,10 +504,11 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
     <div class="flow">
       <div class="node data"><span class="nm">Node(ABC)</span><span class="ty">DATA</span><span class="nd">inner <code>OutputType(BaseModel)</code>; <code>save_output</code>/<code>get_output</code>; <code>node_name</code>; abstract async <code>process(ctx)</code>; async <code>cleanup()</code> no-op</span></div>
       <div class="arrow">↓</div>
-      <div class="node router"><span class="nm">RouterNode(ABC)</span><span class="ty">ROUTER</span><span class="nd">abstract <code>determine_next_node(ctx) -> Node | None</code>; <code>node_name</code>/<code>save_output</code>/<code>get_output</code> as base</span></div>
+      <div class="node router"><span class="nm">RouterNode(ABC)</span><span class="ty">ROUTER</span><span class="nd">a <em>single routing predicate</em> — NOT a graph <code>Node</code>; abstract <code>determine_next_node(ctx) -> Node | None</code> returns the next node or <code>None</code>; <code>node_name</code>/<code>save_output</code>/<code>get_output</code> as base</span></div>
       <div class="arrow">↓</div>
-      <div class="node router"><span class="nm">BaseRouter(Node)</span><span class="ty">ROUTER</span><span class="nd">holds <code>routes: list[RouterNode]</code> + <code>fallback: Node | None</code>; <code>route(ctx)</code> assigns <code>ctx</code> to each sub-router, returns first non-None next node else <code>fallback</code>; <code>process()</code> is a no-op</span></div>
+      <div class="node router"><span class="nm">BaseRouter(Node)</span><span class="ty">ROUTER</span><span class="nd">the <em>router node placed in the DAG</em> — the runner calls its <code>.route(ctx)</code>; owns <code>routes: list[RouterNode]</code> + <code>fallback: Node | None</code>; <code>route(ctx)</code> assigns <code>ctx</code> to each sub-router, returns first non-None next node else <code>fallback</code>; <code>process()</code> is a no-op</span></div>
     </div>
+    <div class="note warn"><b>Two distinct roles, kept from Launchpad — the names invert intuition.</b> <code>BaseRouter(Node)</code> is the concrete <em>in-graph</em> router node the runner calls <code>.route(ctx)</code> on; <code>RouterNode</code> is a <em>single routing predicate</em> (not a graph <code>Node</code>) whose <code>determine_next_node(ctx)</code> returns the next node or <code>None</code>. <code>BaseRouter.route()</code> walks its <code>routes</code> in order, taking the first non-<code>None</code>, else <code>fallback</code>. Our one router (<code>SafetyGateRouter</code>) needs only one predicate + fallback; the split is kept for port fidelity, so <b>docstrings must spell out the two roles</b>.</div>
     <div class="note">Ported from Launchpad <code>core/nodes/base.py</code> and <code>core/nodes/router.py</code>. Re-exports added to <code>app/core/__init__.py</code> for <code>Node</code>, <code>RouterNode</code>, <code>BaseRouter</code>. Tests in <code>tests/core/test_nodes.py</code>.</div>
   </div>
 
@@ -490,7 +518,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
       <li><b>Abstractness + run</b> — <code>Node</code> cannot be instantiated without <code>process</code>; a concrete <code>Node</code> runs via <code>await node.process(ctx)</code> and returns the <code>TaskContext</code>.</li>
       <li><b>Output round-trip</b> — <code>save_output(model)</code> stores under <code>node_name</code>; <code>get_output(NodeClass)</code> returns it; a missing node returns <code>None</code>.</li>
       <li><b>Router selection + fallback</b> — <code>BaseRouter.route(ctx)</code> returns the first matching sub-router's node, assigns <code>ctx</code> to each before evaluating, and returns <code>fallback</code> when none match (and <code>None</code> when no fallback).</li>
-      <li><b>Router only routes — it does not stop</b> — <code>determine_next_node</code> only returns the next node (the terminal override, e.g. <code>RestDayNode</code>); it does not call <code>ctx.stop_workflow()</code>. The stop is the terminal node's <code>process()</code> job. A plain <code>Node.process()</code> calling <code>ctx.stop_workflow()</code> is enough to show the flag is observable here; the runner-level "terminal runs, downstream skipped" assertion is TASK-004.</li>
+      <li><b>Router only routes — it does not stop</b> — <code>determine_next_node</code> only returns the next node (the terminal override, e.g. <code>SafetyRestNode</code>); it does not call <code>ctx.stop_workflow()</code>. The stop is the terminal node's <code>process()</code> job. A plain <code>Node.process()</code> calling <code>ctx.stop_workflow()</code> is enough to show the flag is observable here; the runner-level "terminal runs, downstream skipped" assertion is TASK-004.</li>
       <li><b>No leak</b> — no <code>boto3</code>/<code>google</code>/Langfuse imports (and no <code>pydantic_ai</code> in <code>nodes.py</code> this phase).</li>
     </ul>
   </div>
@@ -608,17 +636,17 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
       <tr><td><code>WorkflowValidator</code></td><td><code>validate()</code> runs <code>_validate_dag()</code> (cycle-free via DFS + all-reachable from <code>start</code> via BFS) and <code>_validate_connections()</code> (only <code>is_router</code> nodes may have &gt;1 connection, <b>and</b> <code>is_router=True</code> only on a <code>BaseRouter</code> subclass — <code>ValueError</code> otherwise). Ported from Launchpad <code>validate.py</code> + the type-check (new).</td></tr>
       <tr><td><code>Workflow(ABC)</code></td><td><code>workflow_schema: ClassVar[WorkflowSchema]</code>; <code>__init__</code> validates &amp; builds the registry; <code>run(event=None, *, context=None) -> TaskContext</code> (sync, wraps <code>asyncio.run</code>) and async <code>run_async(...)</code>; the walk checks <code>ctx.should_stop</code> at the <b>top</b> of each iteration, runs non-router <code>process()</code> (router edges via <code>BaseRouter.route</code>), and calls each node's <code>cleanup()</code> in a <code>finally</code>. Routing via <code>_get_next_node_class</code> + <code>_handle_router</code>.</td></tr>
     </table>
-    <div class="note">Ported/trimmed from Launchpad <code>workflow.py</code> — <b>drop</b> Langfuse spans / <code>_observation_context</code> / <code>NoOpSpan</code>, <code>run_stream_async</code>, the <code>AgentStreamingNode</code> branch, and <code>trace_id</code> handling. Re-exports added for <code>Workflow</code>, <code>WorkflowSchema</code>, <code>NodeConfig</code>, <code>WorkflowValidator</code>.</div>
+    <div class="note">Ported/trimmed from Launchpad <code>workflow.py</code> — <b>strip</b> Langfuse spans / <code>_observation_context</code> / <code>NoOpSpan</code> (tracing is <b>deferred to E12</b>, re-added there — not dropped), <code>run_stream_async</code> and the <code>AgentStreamingNode</code> branch (streaming dropped), and <code>trace_id</code> handling (returns with Langfuse in E12). Re-exports added for <code>Workflow</code>, <code>WorkflowSchema</code>, <code>NodeConfig</code>, <code>WorkflowValidator</code>.</div>
   </div>
 
   <div class="commentable" data-anchor="t4-stop" data-label="TASK-004 terminal-then-stop semantics">
     <h3>Stop semantics — terminal-then-stop</h3>
     <p class="lede">The §2 safety-gate pattern the runner must support: the router routes to a terminal that writes a code-only brief and then stops — the LLM is never consulted.</p>
     <div class="flow">
-      <div class="node router"><span class="nm">SafetyGateRouter</span><span class="ty">ROUTER</span><span class="nd">reads context, routes <em>to</em> <code>RestDayNode</code> — does not stop</span></div>
-      <div class="branch fail">└─ routes to → RestDayNode (terminal override)</div>
+      <div class="node router"><span class="nm">SafetyGateRouter</span><span class="ty">ROUTER</span><span class="nd">reads context, routes <em>to</em> <code>SafetyRestNode</code> — does not stop</span></div>
+      <div class="branch fail">└─ routes to → SafetyRestNode (terminal override)</div>
       <div class="arrow">↓</div>
-      <div class="node data"><span class="nm">RestDayNode</span><span class="ty">DATA</span><span class="nd"><code>process()</code> writes the REST brief <b>and</b> calls <code>ctx.stop_workflow()</code></span></div>
+      <div class="node data"><span class="nm">SafetyRestNode</span><span class="ty">DATA</span><span class="nd"><code>process()</code> writes the REST brief <b>and</b> calls <code>ctx.stop_workflow()</code></span></div>
       <div class="arrow">↓</div>
       <div class="node agent opt"><span class="nm">AgentNode</span><span class="ty">LLM</span><span class="nd">SKIPPED — loop breaks at top of next iteration (should_stop)</span></div>
     </div>
@@ -650,7 +678,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
       <li><b>Gated short-circuit</b> — a router routes to a terminal override that writes output <b>and</b> calls <code>ctx.stop_workflow()</code> in <code>process()</code>; the terminal's output IS present, a downstream sentinel does NOT run, the run returns the partial <code>TaskContext</code> with <code>should_stop=True</code>.</li>
       <li><b>Router DAG-constraint</b> — <code>_handle_router</code> raises <code>ValueError</code> for an undeclared route and for an undeclared fallback (two tests).</li>
       <li><b>Sync == async</b> — <code>run()</code> and <code>run_async()</code> drive the same workflow to the same <code>TaskContext</code> result.</li>
-      <li><b>No dropped-stack imports</b> — <code>grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> returns nothing, asserted by <code>test_core_imports.py</code>. <code>pydantic_ai</code> excluded (kept stack).</li>
+      <li><b>No dropped-stack imports</b> — <code>grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> returns nothing, asserted by <code>test_core_imports.py</code>. <code>pydantic_ai</code> (E9) and <code>langfuse</code> (E12) excluded (both kept stack).</li>
       <li><b>Green</b> — <code>uv run pytest tests/core</code> and <code>uv run ruff check .</code> pass.</li>
     </ul>
   </div>
@@ -658,7 +686,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   <div class="commentable" data-anchor="t4-flow" data-label="TASK-004 RED/GREEN/REFACTOR">
     <h3>RED → GREEN → REFACTOR</h3>
     <div class="flow">
-      <div class="node data"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd">tiny concrete test doubles; validator accept/reject (incl. <code>is_router=True</code> on a non-<code>BaseRouter</code>), linear run, router-branch (both directions), gated short-circuit (terminal output present, downstream sentinel NOT run, <code>should_stop=True</code>), router DAG-constraint (undeclared route + fallback), sync/async parity; plus <code>test_core_imports.py</code> guard banning the dropped names but not <code>pydantic_ai</code></span></div>
+      <div class="node data"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd">tiny concrete test doubles; validator accept/reject (incl. <code>is_router=True</code> on a non-<code>BaseRouter</code>), linear run, router-branch (both directions), gated short-circuit (terminal output present, downstream sentinel NOT run, <code>should_stop=True</code>), router DAG-constraint (undeclared route + fallback), sync/async parity; plus <code>test_core_imports.py</code> guard banning the dropped names but not <code>pydantic_ai</code> (E9) or <code>langfuse</code> (E12)</span></div>
       <div class="arrow">↓</div>
       <div class="node data"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">implement <code>workflow.py</code> (schema + validator + runner) and the re-exports</span></div>
       <div class="arrow">↓</div>
@@ -700,7 +728,7 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
       <tr><td>Router-branch (epic §4 3-node)</td><td><code>uv run pytest tests/core/test_workflow.py -k branch</code> — only the context-selected branch executes</td></tr>
       <tr><td>Gated short-circuit</td><td><code>uv run pytest tests/core/test_workflow.py -k stop</code> — terminal output present, downstream sentinel NOT executed, partial <code>TaskContext</code> with <code>should_stop=True</code></td></tr>
       <tr><td>Sync == async parity</td><td><code>uv run pytest tests/core/test_workflow.py -k "parity or async"</code></td></tr>
-      <tr><td>No dropped-stack imports</td><td><code>uv run pytest tests/core/test_core_imports.py</code> <b>and</b> <code>! grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> (<code>pydantic_ai</code> excluded — kept stack)</td></tr>
+      <tr><td>No dropped-stack imports</td><td><code>uv run pytest tests/core/test_core_imports.py</code> <b>and</b> <code>! grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core</code> (<code>pydantic_ai</code> (E9) and <code>langfuse</code> (E12) excluded — both kept stack)</td></tr>
       <tr><td>Public API</td><td><code>uv run python -c "from app.core import TaskContext, Node, RouterNode, BaseRouter, AgentNode, AgentConfig, Workflow, WorkflowSchema, NodeConfig, WorkflowValidator"</code> succeeds</td></tr>
     </table>
   </div>
@@ -829,9 +857,13 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
   document.getElementById("prev").addEventListener("click",function(){go(cur-1);});
   document.getElementById("next").addEventListener("click",function(){go(cur+1);});
   document.addEventListener("keydown",function(e){
-    if(e.target.tagName==="TEXTAREA")return;
+    var tag=e.target.tagName;
+    if(tag==="TEXTAREA"||tag==="INPUT"||e.target.isContentEditable)return;
+    if(e.metaKey||e.ctrlKey||e.altKey)return;        // don't hijack Cmd+T etc.
     if(e.key==="ArrowRight"||e.key==="]")go(cur+1);
-    if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+    else if(e.key==="t"||e.key==="T")cycleTheme();
+    else if(e.key==="c"||e.key==="C")setComments(!on);
   });
 
   // ---- comments ----
@@ -905,9 +937,35 @@ ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
 
   // ---- comment mode toggle ----
   var on=false, tgl=document.getElementById("cmtToggle");
-  tgl.addEventListener("click",function(){
-    on=!on; document.body.classList.toggle("comments-on",on);
+  function setComments(v){
+    on=v; document.body.classList.toggle("comments-on",on);
     tgl.classList.toggle("on",on); document.getElementById("cmStat").textContent=on?"on":"off";
+  }
+  tgl.addEventListener("click",function(){setComments(!on);});
+
+  // ---- theme: dark / light / system (pref shared across all generated viewers) ----
+  var THEME_KEY="md-viewer-theme";
+  var segBtns=[].slice.call(document.querySelectorAll("#themeSeg button"));
+  var mq=window.matchMedia("(prefers-color-scheme: light)");
+  function themePref(){try{return localStorage.getItem(THEME_KEY)||"system";}catch(e){return "system";}}
+  function applyTheme(pref){
+    var eff=pref==="system"?(mq.matches?"light":"dark"):pref;
+    document.documentElement.setAttribute("data-theme",eff);
+    segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===pref);});
+  }
+  function setTheme(pref){try{localStorage.setItem(THEME_KEY,pref);}catch(e){}applyTheme(pref);}
+  function cycleTheme(){var o=["light","dark","system"];setTheme(o[(o.indexOf(themePref())+1)%o.length]);}
+  segBtns.forEach(function(b){b.addEventListener("click",function(){setTheme(b.getAttribute("data-theme-choice"));});});
+  if(mq.addEventListener)mq.addEventListener("change",function(){if(themePref()==="system")applyTheme("system");});
+  else if(mq.addListener)mq.addListener(function(){if(themePref()==="system")applyTheme("system");});
+  applyTheme(themePref());
+  // when embedded (e.g. in an index iframe), let the parent frame drive the theme — file://
+  // frames can't share localStorage, so the parent posts {type:"mdv-theme",theme} on load/toggle
+  window.addEventListener("message",function(e){
+    var d=e.data; if(d&&d.type==="mdv-theme"&&(d.theme==="light"||d.theme==="dark")){
+      document.documentElement.setAttribute("data-theme",d.theme);
+      segBtns.forEach(function(b){b.classList.toggle("on",b.getAttribute("data-theme-choice")===d.theme);});
+    }
   });
 
   // ---- export ----
