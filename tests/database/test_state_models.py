@@ -143,3 +143,49 @@ def test_strength_tests_duplicate_iso_week_rejected(engine):
         conn.exec_driver_sql(
             "INSERT INTO strength_tests (date, iso_week, max_pushups) VALUES ('2026-06-03', '2026-W23', 42)"
         )
+
+
+# ----------------------- plans + suggestions (TASK-003) -----------------------
+
+def test_plans_duplicate_iso_week_rejected(engine):
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO plans (iso_week, payload) VALUES ('2026-W23', '{}')"
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO plans (iso_week, payload) VALUES ('2026-W23', '{}')"
+        )
+
+
+def test_plans_null_payload_rejected(engine):
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO plans (iso_week, payload) VALUES ('2026-W24', NULL)")
+
+
+def test_suggestions_duplicate_date_rejected(engine):
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO suggestions (date, payload) VALUES ('2026-06-01', '{}')"
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO suggestions (date, payload) VALUES ('2026-06-01', '{}')"
+        )
+
+
+def test_suggestions_null_payload_rejected(engine):
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql("INSERT INTO suggestions (date, payload) VALUES ('2026-06-02', NULL)")
+
+
+def test_suggestions_gate_reason_nullable(engine):
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO suggestions (date, payload, safety_gate_tripped) VALUES ('2026-06-05', '{}', 0)"
+        )
+    with sqlite3.connect(engine.url.database) as raw:
+        row = raw.execute(
+            "SELECT gate_reason FROM suggestions WHERE date='2026-06-05'"
+        ).fetchone()
+    assert row == (None,)
