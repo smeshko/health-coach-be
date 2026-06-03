@@ -165,10 +165,15 @@ class Workflow(ABC):
     ) -> TaskContext:
         if existing_context is not None:
             task_context = existing_context
+            # Let the child run its own walk, but remember the parent's stop decision so
+            # composing a child can't silently erase a parent's stop_workflow() (the
+            # incoming flag is OR-restored on exit).
+            incoming_stop = task_context.should_stop
             task_context.should_stop = False
         else:
             task_context = TaskContext(event=event)
             task_context.event = self.workflow_schema.event_schema(**event)
+            incoming_stop = False
 
         # Preserve a parent's registry across nested (composed) runs; restore on EVERY
         # exit (incl. an exception from a node/router/cleanup) so a parent that catches
@@ -197,6 +202,8 @@ class Workflow(ABC):
                 task_context.metadata["nodes"] = parent_nodes
             else:
                 task_context.metadata.pop("nodes", None)
+            # The parent's stop decision survives the child run.
+            task_context.should_stop = task_context.should_stop or incoming_stop
         return task_context
 
     async def _next_node_class(

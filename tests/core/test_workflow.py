@@ -233,6 +233,16 @@ class _BoomWF(Workflow):
     )
 
 
+def test_nested_run_preserves_parent_stop_signal():
+    # A parent that called stop_workflow() then composes a child on the same context
+    # must keep its stop after the child returns (review round-2 #1).
+    ctx = TaskContext(event={"direction": "left"})
+    ctx.stop_workflow()
+    _LinearWF().run(context=ctx)  # child runs its own walk...
+    assert "_A" in ctx.nodes  # ...the child did execute,
+    assert ctx.should_stop is True  # ...but the parent's stop survived
+
+
 def test_parent_registry_restored_when_a_node_raises():
     # A child run that raises must restore the parent's metadata["nodes"], not leave it
     # pointing at the child's registry (review round-1 #3).
