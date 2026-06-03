@@ -77,5 +77,5 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-001: Initialize uv project, pin Python 3.13, declare deps, create package layout
 - [x] TASK-002: FastAPI app factory and uvicorn entrypoint
 - [x] TASK-003: Typed settings module loaded from environment
-- [ ] TASK-004: camelCase Pydantic base model
+- [x] TASK-004: camelCase Pydantic base model
 - [ ] TASK-005: Final Validation
