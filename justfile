@@ -1,9 +1,9 @@
 # Local-dev runner for the Coach App backend — just `uv` + `just`, no containers.
 # Bare `just` lists every recipe. See the README "Local development" section.
-
-# Load .env into recipe env (process env still wins) so recipes resolve APP_DB_PATH
-# from the SAME source the app/Alembic do — e.g. db-reset deletes the configured DB.
-set dotenv-load := true
+#
+# Note: no file-wide `dotenv-load` — that would promote a developer's local .env into
+# every recipe's env and make `just test` non-deterministic. Only `db-reset` reads .env
+# (scoped), to resolve the same DB path the app/Alembic use before deleting it.
 
 # List all recipes (runs when `just` is invoked with no arguments).
 _default:
@@ -48,11 +48,23 @@ bootstrap: install migrate seed
 db-reset:
     #!/usr/bin/env bash
     set -euo pipefail
-    # ${VAR-default}: unset -> app.db; an explicitly empty APP_DB_PATH stays empty (refused below).
-    DB="${APP_DB_PATH-app.db}"
+    # Resolve APP_DB_PATH from the same sources as the app, same precedence (process env
+    # wins, then .env, then app.db). Only this recipe reads .env — `just test` stays clean.
+    if [ -n "${APP_DB_PATH+x}" ]; then
+        DB="$APP_DB_PATH"                       # process env (possibly explicitly empty)
+    elif [ -f .env ] && grep -qE '^[[:space:]]*APP_DB_PATH=' .env; then
+        DB="$(sed -n 's/^[[:space:]]*APP_DB_PATH=[[:space:]]*//p' .env | tail -n1)"
+        DB="${DB%\"}"; DB="${DB#\"}"; DB="${DB%\'}"; DB="${DB#\'}"   # strip surrounding quotes
+    else
+        DB="app.db"                             # unset everywhere -> default
+    fi
     [ -n "$DB" ] || { echo "db-reset: APP_DB_PATH is empty; refusing" >&2; exit 1; }
-    # Mirror the settings forbidden-basename guard (read-only build inputs, ARCHITECTURE §3).
-    case "$(basename "$DB")" in
+    # Mirror app.core.settings._db_target_basename: drop query/fragment, strip a leading URL
+    # scheme, basename, lowercase — so Baseline.db / sqlite:///baseline.db?x are caught too
+    # (read-only build inputs, ARCHITECTURE §3).
+    norm="${DB%%[?#]*}"
+    norm="$(printf '%s' "$norm" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*:(//)?##')"
+    case "$(basename "$norm" | tr '[:upper:]' '[:lower:]')" in
         baseline.db|health.db) echo "db-reset: refusing to delete the read-only build DB ($DB)" >&2; exit 1 ;;
     esac
     rm -f -- "$DB" "$DB-wal" "$DB-shm"
