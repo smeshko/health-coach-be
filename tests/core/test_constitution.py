@@ -13,9 +13,12 @@ import re
 from pathlib import Path
 
 import app.core
+import jinja2
+import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from app.core.profile import load_profile
+from app.core.constitution import _env, render_constitution
+from app.core.profile import Profile, load_profile
 
 TEMPLATES_DIR = Path(app.core.__file__).parent / "templates"
 TEMPLATE_PATH = TEMPLATES_DIR / "constitution.md.j2"
@@ -154,3 +157,52 @@ def test_j2_equals_root_constitution_minus_raw_tags():
     root = ROOT_CONSTITUTION.read_text(encoding="utf-8")
     stripped = re.sub(r"\{%\s*raw\s*%\}|\{%\s*endraw\s*%\}", "", j2)
     assert stripped == root
+
+
+# --- TASK-002: renderer fills placeholders under StrictUndefined ---
+
+
+def test_render_shipped_profile_leaves_no_unresolved_real_placeholder():
+    rendered = render_constitution(load_profile())
+    assert isinstance(rendered, str) and rendered
+    # No real `{{ athlete.* / thresholds.* / zones.* / nutrition.* }}` survives.
+    assert not re.search(r"\{\{\s*(athlete|thresholds|zones|nutrition)\.", rendered)
+    # The 3 escaped literal examples DO remain as literal text (transparent).
+    assert rendered.count("{{ … }}") == 3
+
+
+def test_rendered_output_contains_live_constants():
+    rendered = render_constitution(load_profile())
+    for value in ("192", "177", "146", "138", "172", "1.8"):
+        assert value in rendered, f"expected constant {value!r} in rendered output"
+
+
+def test_env_uses_strict_undefined():
+    assert _env.undefined is StrictUndefined
+
+
+def test_missing_placeholder_raises_undefined_error():
+    p = load_profile()
+    # A placeholder the section object can't resolve must fail loud, not blank.
+    probe = _env.from_string("{{ thresholds.does_not_exist }}")
+    with pytest.raises(jinja2.UndefinedError):
+        probe.render(thresholds=p.thresholds)
+
+
+def test_autoescape_off_special_chars_survive():
+    rendered = render_constitution(load_profile())
+    for substring in ("180−age", "≤", "Z1–Z2"):
+        assert substring in rendered, f"special-char prose mangled/missing: {substring!r}"
+
+
+def test_render_is_fresh_each_call():
+    p1 = load_profile()
+    data = p1.model_dump()
+    # max_hr and z5.high move together (E3·P1 invariant z5.high == max_hr).
+    data["thresholds"]["max_hr"] = 201
+    data["zones"]["z5"] = (177, 201)
+    p2 = Profile(**data)
+    r1 = render_constitution(p1)
+    r2 = render_constitution(p2)
+    assert r1 != r2  # no stale memoized result
+    assert "201" in r2 and "201" not in r1
