@@ -34,23 +34,31 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
+def _assert_bearer_challenge(resp):
+    # Every 401 must carry the RFC 7235 Bearer challenge (review round-2 #2).
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
+
+
 def test_missing_header_is_unauthorized_envelope():
     resp = _client().get("/protected")
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
     assert resp.json()["error"]["detail"] is None
+    _assert_bearer_challenge(resp)
 
 
 def test_wrong_token_is_unauthorized():
     resp = _client().get("/protected", headers={"Authorization": "Bearer wrong-token-value"})
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
+    _assert_bearer_challenge(resp)
 
 
 def test_non_bearer_scheme_is_unauthorized():
     resp = _client().get("/protected", headers={"Authorization": "Basic abc123"})
     assert resp.status_code == 401
     assert resp.json()["error"]["code"] == "unauthorized"
+    _assert_bearer_challenge(resp)
 
 
 def test_correct_token_passes():

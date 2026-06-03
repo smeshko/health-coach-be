@@ -18,6 +18,10 @@ from app.core.settings import Settings, get_settings
 # than FastAPI's own 401/403 that would bypass the envelope handler.
 _bearer = HTTPBearer(auto_error=False)
 
+# Every 401 carries the RFC 7235 challenge so clients/intermediaries know how to
+# authenticate; the error handler forwards these headers onto the envelope.
+_UNAUTHORIZED_HEADERS = {"WWW-Authenticate": "Bearer"}
+
 
 def require_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
@@ -26,7 +30,7 @@ def require_auth(
     """Gate a route via `Depends(require_auth)`; returns the token on success, 401 otherwise."""
     if credentials is None:
         # Missing Authorization header or a non-Bearer scheme.
-        raise HTTPException(status_code=401)
+        raise HTTPException(status_code=401, headers=_UNAUTHORIZED_HEADERS)
     if not secrets.compare_digest(credentials.credentials, settings.api_token):
-        raise HTTPException(status_code=401)
+        raise HTTPException(status_code=401, headers=_UNAUTHORIZED_HEADERS)
     return credentials.credentials
