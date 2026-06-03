@@ -1,9 +1,10 @@
-"""Ingest + derived ORM models.
+"""ORM models for the nine `app.db` tables.
 
 Importing this package registers every model on the shared `Base.metadata`, so
-`alembic/env.py` (which imports it) sees them as the autogenerate target. Re-export
-each model here as it lands (records: TASK-001; workouts/workout_statistics:
-TASK-002; activity_summary: TASK-003).
+`alembic/env.py` (which imports it) sees them as the autogenerate target. Four
+ingest tables (E2·P2: records, workouts, workout_statistics, activity_summary) plus
+five derived/coaching-state tables (E2·P3: daily_metrics, checkins, strength_tests,
+plans, suggestions) — re-export each below.
 """
 
 from app.database.models.activity_summary import ActivitySummary
