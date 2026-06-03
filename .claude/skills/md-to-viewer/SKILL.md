@@ -14,9 +14,11 @@ vocabulary of styled primitives (semantic tables, callouts, stat cards, system d
 workflow flows, two-column comparisons, syntax-colored code blocks).
 
 Signature features baked into the template:
-- **Sidebar + pagination** — one `<section>` per page; sidebar nav, prev/next pager, `←`/`→`/`[`/`]` keys, deep-linkable `#hash`, last-section memory.
+- **Sidebar + pagination** — one `<section>` per page; sidebar nav, prev/next pager, deep-linkable `#hash`, last-section memory.
 - **Comment harness** — toggle comment mode, click any block to add a note, notes persist in `localStorage`. Export all comments to JSON or Markdown, or copy to clipboard. The intended loop: *reader comments → exports the file → drops it beside the source `.md` → tells Claude to read it.*
-- **Consistent design system** — dark grid background; Archivo / IBM Plex Sans / JetBrains Mono; a fixed color semantics (green=good, amber=attention, red=removed, blue=optional, steel=code, violet=LLM).
+- **Theming** — dark / light / system (auto) toggle in the sidebar; persists in `localStorage` and follows the OS when set to auto. A head script applies the theme before first paint (no flash). When embedded in a parent index (e.g. an `<iframe>`), the viewer also accepts the parent's theme via a `#t=light|dark` URL hint and `postMessage` — needed because `file://` frames don't share `localStorage`.
+- **Keyboard shortcuts** — `←`/`→` (or `[`/`]`) page nav · `T` cycle theme · `C` toggle comment mode.
+- **Consistent design system** — themable grid background (dark + light token sets); Archivo / IBM Plex Sans / JetBrains Mono; fixed color semantics (green=good, amber=attention, red=removed, blue=optional, steel=code, violet=LLM).
 
 ## Bundled resources
 
