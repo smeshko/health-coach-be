@@ -53,6 +53,14 @@ def _app_with_routes() -> FastAPI:
     def _r400_detail():
         raise HTTPException(status_code=400, detail="internal sql: SELECT secret")
 
+    @app.get("/raise-401-detail")
+    def _r401_detail():
+        raise HTTPException(status_code=401, detail="token prefix secret")
+
+    @app.get("/raise-404-detail")
+    def _r404_detail():
+        raise HTTPException(status_code=404, detail="tenant/user secret")
+
     @app.post("/validate")
     def _validate(body: Body):
         return {"ok": body.n}
@@ -102,6 +110,21 @@ def test_internal_error_never_echoes_caller_detail():
         assert err["code"] == "internal_error"
         assert err["detail"] is None
         assert "leaked" not in json.dumps(resp.json())
+        assert "secret" not in json.dumps(resp.json())
+
+
+def test_mapped_http_exception_detail_is_never_echoed():
+    # Safe by default: even mapped 401/404 must not echo caller detail (review round-2 #1).
+    client = TestClient(_app_with_routes())
+    for path, status, code in [
+        ("/raise-401-detail", 401, "unauthorized"),
+        ("/raise-404-detail", 404, "not_found"),
+    ]:
+        resp = client.get(path)
+        assert resp.status_code == status
+        err = resp.json()["error"]
+        assert err["code"] == code
+        assert err["detail"] is None
         assert "secret" not in json.dumps(resp.json())
 
 

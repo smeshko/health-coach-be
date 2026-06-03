@@ -7,7 +7,6 @@ can never emit a code outside the contract, and `message` is always a non-empty 
 string (never raw exception text), keeping internals off the wire.
 """
 
-import http
 import logging
 from enum import Enum
 
@@ -72,25 +71,6 @@ def error_response(
     )
 
 
-def _status_phrase(status_code: int) -> str | None:
-    try:
-        return http.HTTPStatus(status_code).phrase
-    except ValueError:
-        return None
-
-
-def _http_detail(exc: StarletteHTTPException) -> str | None:
-    # Starlette auto-fills `detail` with the status phrase ("Not Found", …) when the
-    # caller passes none. Treat that auto-fill (and blanks) as "no detail" so a bare
-    # HTTPException — like auth's 401 — renders `detail: null`, never a status phrase.
-    detail = exc.detail
-    if not isinstance(detail, str) or not detail.strip():
-        return None
-    if detail == _status_phrase(exc.status_code):
-        return None
-    return detail
-
-
 def _summarize_validation(exc: RequestValidationError) -> str:
     parts: list[str] = []
     for err in exc.errors()[:5]:
@@ -115,13 +95,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _on_http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code, message = STATUS_TO_CODE.get(exc.status_code, _DEFAULT_CODE_MESSAGE)
-        # Never echo caller-supplied detail on the internal_error fallback (unmapped
-        # statuses) — that path must leak nothing, even if a route passed a detail.
-        detail = None if code is ErrorCode.internal_error else _http_detail(exc)
+        # Safe by default: never echo a route's HTTPException detail onto the wire —
+        # the public message comes from the status table, and detail stays null so no
+        # caller text (auto status phrase or sensitive string) can leak. The only
+        # handler that sets a detail is the validation one, which builds it itself.
         # Preserve HTTP recovery headers (405 Allow, 401 WWW-Authenticate, Retry-After, …)
         # that Starlette attached to the exception; the fresh JSONResponse would drop them.
         return error_response(
-            code, message, status_code=exc.status_code, detail=detail, headers=exc.headers
+            code, message, status_code=exc.status_code, detail=None, headers=exc.headers
         )
 
     @app.exception_handler(Exception)
