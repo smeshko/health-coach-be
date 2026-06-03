@@ -60,6 +60,14 @@ def _has_index(conn, table, cols, *, unique):
     return any(u == unique and c == list(cols) for u, c in _indexes(conn, table))
 
 
+def _fks(conn, table):
+    # list of (from_col, ref_table, to_col)
+    return [
+        (r[3], r[2], r[4])
+        for r in conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+    ]
+
+
 def _table_names(conn):
     return {
         r[0]
@@ -122,3 +130,58 @@ def test_round_trip_with_ingest_tables(tmp_path):
     command.upgrade(cfg, "head")  # round-trips back cleanly (FK drop order safe)
     with sqlite3.connect(db_path) as conn:
         assert "records" in _table_names(conn)
+
+
+# ------------------- workouts + workout_statistics (TASK-002) -----------------
+
+def test_workouts_table_exists(migrated_db):
+    assert "workouts" in _table_names(migrated_db)
+
+
+def test_workouts_columns_and_types(migrated_db):
+    info = _table_info(migrated_db, "workouts")
+    assert info["id"]["affinity"] == "INTEGER"
+    assert info["id"]["pk"] == 1
+    assert info["uuid"]["affinity"] == "TEXT"
+    assert info["uuid"]["notnull"] == 0
+    assert info["activity_type"]["affinity"] == "TEXT"
+    assert info["activity_type"]["notnull"] == 1
+    for real_col in ("duration", "total_distance", "total_energy_burned"):
+        assert info[real_col]["affinity"] == "REAL"
+    for unit_col in ("duration_unit", "total_distance_unit", "total_energy_burned_unit"):
+        assert info[unit_col]["affinity"] == "TEXT"
+    assert info["effort_score"]["affinity"] == "REAL"
+    assert info["effort_score"]["notnull"] == 0
+    assert info["physical_effort"]["affinity"] == "REAL"
+    assert info["physical_effort"]["notnull"] == 0
+    for prov in ("source_name", "source_version", "device", "creation_date"):
+        assert info[prov]["affinity"] == "TEXT"
+    assert info["start_date"]["affinity"] == "TEXT"
+    assert info["start_date"]["notnull"] == 1
+    assert info["end_date"]["affinity"] == "TEXT"
+    assert info["origin"]["affinity"] == "TEXT"
+    assert info["origin"]["notnull"] == 1
+
+
+def test_workouts_unique_uuid_index(migrated_db):
+    assert _has_index(migrated_db, "workouts", ["uuid"], unique=True)
+
+
+def test_workout_statistics_columns_and_types(migrated_db):
+    info = _table_info(migrated_db, "workout_statistics")
+    assert info["id"]["affinity"] == "INTEGER"
+    assert info["id"]["pk"] == 1
+    assert info["workout_id"]["affinity"] == "INTEGER"
+    assert info["workout_id"]["notnull"] == 1
+    assert info["type"]["affinity"] == "TEXT"
+    assert info["type"]["notnull"] == 1
+    assert info["start_date"]["affinity"] == "TEXT"
+    assert info["end_date"]["affinity"] == "TEXT"
+    for agg in ("sum", "average", "minimum", "maximum"):
+        assert info[agg]["affinity"] == "REAL"
+    assert info["unit"]["affinity"] == "TEXT"
+
+
+def test_workout_statistics_fk_and_index(migrated_db):
+    assert ("workout_id", "workouts", "id") in _fks(migrated_db, "workout_statistics")
+    assert _has_index(migrated_db, "workout_statistics", ["workout_id", "type"], unique=False)

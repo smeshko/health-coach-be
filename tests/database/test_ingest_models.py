@@ -57,3 +57,37 @@ def test_records_duplicate_non_null_uuid_rejected(engine):
         conn.exec_driver_sql(
             "INSERT INTO records (uuid, type, start_date, origin) VALUES ('U1', 'HKt', '2026-01-02T00:00:00+02:00', 'sync')"
         )
+
+
+# ------------------- workouts + workout_statistics (TASK-002) -----------------
+
+def test_workouts_null_uuid_rows_both_insert(engine):
+    # The E4 90-day seed path: workouts mirror records (NULL uuid is seedable).
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workouts (activity_type, start_date, origin) VALUES ('running', '2026-01-01T06:00:00+02:00', 'seed')"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO workouts (activity_type, start_date, origin) VALUES ('boxing', '2026-01-02T06:00:00+02:00', 'seed')"
+        )
+    with sqlite3.connect(engine.url.database) as raw:
+        assert raw.execute("SELECT COUNT(*) FROM workouts WHERE uuid IS NULL").fetchone()[0] == 2
+
+
+def test_workouts_duplicate_non_null_uuid_rejected(engine):
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workouts (uuid, activity_type, start_date, origin) VALUES ('W1', 'running', '2026-01-01T06:00:00+02:00', 'sync')"
+        )
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workouts (uuid, activity_type, start_date, origin) VALUES ('W1', 'boxing', '2026-01-02T06:00:00+02:00', 'sync')"
+        )
+
+
+def test_workout_statistics_orphan_workout_id_rejected(engine):
+    # FK enforced via E2·P1's PRAGMA foreign_keys=ON (carried by make_engine).
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO workout_statistics (workout_id, type) VALUES (9999, 'HKQuantityTypeIdentifierHeartRate')"
+        )

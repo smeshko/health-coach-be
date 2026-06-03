@@ -43,8 +43,62 @@ def upgrade() -> None:
     op.create_index(op.f("ix_records_type"), "records", ["type", "start_date"], unique=False)
     op.create_index(op.f("ix_records_start_date"), "records", ["start_date"], unique=False)
 
+    op.create_table(
+        "workouts",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("uuid", sa.Text(), nullable=True),
+        sa.Column("activity_type", sa.Text(), nullable=False),
+        sa.Column("duration", sa.Float(), nullable=True),
+        sa.Column("duration_unit", sa.Text(), nullable=True),
+        sa.Column("total_distance", sa.Float(), nullable=True),
+        sa.Column("total_distance_unit", sa.Text(), nullable=True),
+        sa.Column("total_energy_burned", sa.Float(), nullable=True),
+        sa.Column("total_energy_burned_unit", sa.Text(), nullable=True),
+        sa.Column("effort_score", sa.Float(), nullable=True),
+        sa.Column("physical_effort", sa.Float(), nullable=True),
+        sa.Column("source_name", sa.Text(), nullable=True),
+        sa.Column("source_version", sa.Text(), nullable=True),
+        sa.Column("device", sa.Text(), nullable=True),
+        sa.Column("creation_date", sa.Text(), nullable=True),
+        sa.Column("start_date", sa.Text(), nullable=False),
+        sa.Column("end_date", sa.Text(), nullable=True),
+        sa.Column("origin", sa.Text(), nullable=False),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_workouts")),
+        sa.UniqueConstraint("uuid", name=op.f("uq_workouts_uuid")),
+    )
+
+    op.create_table(
+        "workout_statistics",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("workout_id", sa.Integer(), nullable=False),
+        sa.Column("type", sa.Text(), nullable=False),
+        sa.Column("start_date", sa.Text(), nullable=True),
+        sa.Column("end_date", sa.Text(), nullable=True),
+        sa.Column("sum", sa.Float(), nullable=True),
+        sa.Column("average", sa.Float(), nullable=True),
+        sa.Column("minimum", sa.Float(), nullable=True),
+        sa.Column("maximum", sa.Float(), nullable=True),
+        sa.Column("unit", sa.Text(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["workout_id"],
+            ["workouts.id"],
+            name=op.f("fk_workout_statistics_workout_id_workouts"),
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_workout_statistics")),
+    )
+    op.create_index(
+        op.f("ix_workout_statistics_workout_id"),
+        "workout_statistics",
+        ["workout_id", "type"],
+        unique=False,
+    )
+
 
 def downgrade() -> None:
+    # Drop children before parents so the workout_statistics → workouts FK never dangles.
+    op.drop_index(op.f("ix_workout_statistics_workout_id"), table_name="workout_statistics")
+    op.drop_table("workout_statistics")
+    op.drop_table("workouts")
     op.drop_index(op.f("ix_records_start_date"), table_name="records")
     op.drop_index(op.f("ix_records_type"), table_name="records")
     op.drop_table("records")

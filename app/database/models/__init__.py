@@ -7,5 +7,7 @@ TASK-002; activity_summary: TASK-003).
 """
 
 from app.database.models.records import Records
+from app.database.models.workout_statistics import WorkoutStatistics
+from app.database.models.workouts import Workouts
 
-__all__ = ["Records"]
+__all__ = ["Records", "WorkoutStatistics", "Workouts"]
