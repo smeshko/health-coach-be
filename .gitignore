@@ -9,3 +9,7 @@ venv/
 .env
 .pytest_cache/
 .ruff_cache/
+
+.claude/
+/docs
+/epics
