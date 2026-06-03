@@ -339,6 +339,29 @@ def test_deficit_pct_zero_accepted(tmp_path):
     assert p.nutrition.deficit_pct == 0
 
 
+# A duplicate key in a hand-edited single-source-of-truth file silently
+# discards one value under plain safe_load — reject it loudly. (review round-1 #3)
+def test_duplicate_top_level_key_rejected(tmp_path):
+    text = yaml.safe_dump(valid_profile_dict(), sort_keys=False)
+    text += "meta:\n  derived_from: baseline.db\n  computed_at: 2026-06-02\n  constitution_version: v2\n"
+    path = tmp_path / "profile.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        load_profile(path)
+
+
+def test_duplicate_nested_key_rejected(tmp_path):
+    text = yaml.safe_dump(valid_profile_dict(), sort_keys=False)
+    # Inject a second `deficit_pct` under nutrition (same indent as the first).
+    text = text.replace(
+        "  deficit_pct: 0.12\n", "  deficit_pct: 0.12\n  deficit_pct: 0.05\n", 1
+    )
+    path = tmp_path / "profile.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate"):
+        load_profile(path)
+
+
 # --- TASK-003: shipped example file + constant accessors ---
 
 

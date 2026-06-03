@@ -27,6 +27,30 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 PROFILE_PATH = Path(__file__).resolve().parents[2] / "profile.yaml"
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """`SafeLoader` that rejects duplicate mapping keys.
+
+    Plain `yaml.safe_load` keeps the *last* of duplicate keys, silently
+    discarding a value. For a hand-edited single source of truth, that is the
+    same class of error `extra="forbid"` guards against — a duplicate must fail
+    loudly, not silently override. (review round-1 #3)
+    """
+
+    def construct_mapping(self, node, deep=False):  # type: ignore[override]
+        seen: set = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 class Athlete(BaseModel):
     """Static athlete profile (DB.md §5 `athlete`)."""
 
@@ -194,7 +218,7 @@ def load_profile(path: Path | None = None) -> Profile:
     if not resolved.is_file():
         raise FileNotFoundError(f"profile.yaml not found at {resolved}")
     try:
-        data = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+        data = yaml.load(resolved.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
     except yaml.YAMLError as exc:
         raise ValueError(f"profile.yaml at {resolved} is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
