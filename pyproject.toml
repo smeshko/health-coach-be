@@ -11,7 +11,10 @@ dependencies = [
     "pydantic-settings>=2.6",
     "sqlalchemy>=2.0",
     "alembic>=1.14",
-    "pydantic-ai>=1.0",
+    # Claude-only surface: the slim package with just the Anthropic extra, so the
+    # lock stays free of other providers + worker libs (Temporal/MCP/boto3/…) that
+    # the full `pydantic-ai` meta-package pulls in (ARCHITECTURE §1 kept stack).
+    "pydantic-ai-slim[anthropic]>=1.0",
     "jinja2>=3.1",
 ]
 

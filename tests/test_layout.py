@@ -13,8 +13,10 @@ import pytest
 
 KEPT_SUBPACKAGES = ["app.api", "app.core", "app.database", "app.services"]
 
-# Dropped-stack distributions that must never enter the dependency tree.
+# Dropped-stack distributions that must never enter the dependency tree
+# (ARCHITECTURE §1 stack note).
 FORBIDDEN_DISTS = {
+    # Postgres / workers / RAG — never carried over.
     "psycopg2",
     "psycopg2-binary",
     "asyncpg",
@@ -23,6 +25,22 @@ FORBIDDEN_DISTS = {
     "pgvector",
     "vecs",
     "supabase",
+    # Other LLM providers + worker/MCP/observability libs that the full
+    # `pydantic-ai` meta-package dragged in. We pin `pydantic-ai-slim[anthropic]`
+    # (Claude only, one synchronous process), so these must stay out of the lock.
+    "temporalio",
+    "openai",
+    "cohere",
+    "groq",
+    "mistralai",
+    "google-genai",
+    "xai-sdk",
+    "boto3",
+    "botocore",
+    "mcp",
+    "fastmcp",
+    "logfire",
+    "huggingface-hub",
 }
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
