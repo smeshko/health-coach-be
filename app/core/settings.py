@@ -6,9 +6,15 @@ lazily at first use (ARCHITECTURE §1 — env-driven config, one process).
 """
 
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, StringConstraints
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Required string that is stripped and must be non-empty, so a blank or
+# whitespace-only value fails fast at startup rather than silently arming the
+# auth boundary / DB path with an unusable value.
+RequiredStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
 class Settings(BaseSettings):
@@ -23,11 +29,11 @@ class Settings(BaseSettings):
         protected_namespaces=(),
     )
 
-    # --- Required (no sensible default; boot fails if unset) ---
-    api_token: str = Field(
+    # --- Required (no sensible default, must be non-empty; boot fails otherwise) ---
+    api_token: RequiredStr = Field(
         ..., description="Long-lived bearer token gating every authenticated route (E1·P2)."
     )
-    app_db_path: str = Field(..., description="Filesystem path to the SQLite app database.")
+    app_db_path: RequiredStr = Field(..., description="Filesystem path to the SQLite app database.")
 
     # --- LLM / coaching ---
     model_id: str = Field("claude-opus-4-8", description="Default Claude model id for AgentNodes (E9).")

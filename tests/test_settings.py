@@ -41,6 +41,28 @@ def test_missing_required_raises(monkeypatch):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_blank_or_whitespace_required_raises(monkeypatch, blank):
+    # A present-but-empty/whitespace secret or DB path must fail fast, not arm
+    # the auth boundary with an unusable value (review round-1 #1).
+    monkeypatch.setenv("API_TOKEN", blank)
+    monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    monkeypatch.setenv("APP_DB_PATH", blank)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_required_values_are_stripped(monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "  test-token  ")
+    monkeypatch.setenv("APP_DB_PATH", "  /tmp/app.db  ")
+    s = Settings(_env_file=None)
+    assert s.api_token == "test-token"
+    assert s.app_db_path == "/tmp/app.db"
+
+
 def test_env_overrides_default(monkeypatch):
     _set_required(monkeypatch)
     monkeypatch.setenv("MODEL_ID", "claude-sonnet-4-6")
