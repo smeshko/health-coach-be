@@ -1,6 +1,7 @@
 # Plan: E1·P1 — Project scaffold & config
 
 Status: draft
+Branch: feature/e1-p1-project-scaffold
 Risk: small
 Created: 2026-06-03
 
