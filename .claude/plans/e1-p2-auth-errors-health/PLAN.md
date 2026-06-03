@@ -1,6 +1,6 @@
 # Plan: E1·P2 — Auth, error envelope & health
 
-Status: in-progress
+Status: done
 Branch: feature/e1-p2-auth-errors-health
 Risk: small
 Created: 2026-06-03
@@ -147,4 +147,4 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-001: Error envelope models and exception handlers
 - [x] TASK-002: Bearer-token auth dependency
 - [x] TASK-003: GET /health endpoint (unauthenticated)
-- [ ] TASK-004: Final Validation
+- [x] TASK-004: Final Validation
