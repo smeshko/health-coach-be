@@ -48,12 +48,28 @@ bootstrap: install migrate seed
 db-reset:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Resolve APP_DB_PATH through the SAME parser the app uses — pydantic-settings reads .env
-    # via python-dotenv's dotenv_values — with the same precedence (process env > .env >
-    # app.db) and the same forbidden-basename guard (app.core.settings). So every dotenv form
-    # (export/spaces/comments/quotes) and every case/URI variant the app accepts maps here too,
-    # before any rm. Only this recipe reads .env, so `just test` stays deterministic.
-    DB="$(uv run python -c 'import os, sys; from dotenv import dotenv_values; from app.core.settings import _db_target_basename as base, _FORBIDDEN_DB_BASENAMES as forbidden; env = dotenv_values(".env"); path = (os.environ["APP_DB_PATH"] if "APP_DB_PATH" in os.environ else (env["APP_DB_PATH"] or "") if "APP_DB_PATH" in env else "app.db").strip(); sys.exit("db-reset: APP_DB_PATH is empty; refusing") if not path else (sys.exit(f"db-reset: refusing to delete the read-only build DB ({path})") if base(path) in forbidden else print(path))')" || exit 1
+    # Resolve APP_DB_PATH through the app's OWN pydantic-settings (a tiny BaseSettings that
+    # reuses Settings.model_config), so .env parsing, case-insensitive env matching, and
+    # process-env > .env precedence are IDENTICAL to runtime — there is no "format/case the
+    # app accepts but db-reset doesn't" gap. The shared forbidden-DB guard runs before any rm.
+    # Only this recipe reads .env, so `just test` stays deterministic.
+    DB="$(uv run python - <<'PY'
+    import sys
+    from pydantic_settings import BaseSettings
+    from app.core.settings import Settings, _db_target_basename, _FORBIDDEN_DB_BASENAMES
+
+    class _Resolver(BaseSettings):
+        model_config = Settings.model_config
+        app_db_path: str = "app.db"
+
+    path = _Resolver().app_db_path.strip()
+    if not path:
+        sys.exit("db-reset: APP_DB_PATH is empty; refusing")
+    if _db_target_basename(path) in _FORBIDDEN_DB_BASENAMES:
+        sys.exit(f"db-reset: refusing to delete the read-only build DB ({path})")
+    print(path)
+    PY
+    )" || exit 1
     rm -f -- "$DB" "$DB-wal" "$DB-shm"
     just migrate
 
