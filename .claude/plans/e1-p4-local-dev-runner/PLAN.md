@@ -1,6 +1,7 @@
 # Plan: E1·P4 — Local dev runner (justfile)
 
 Status: draft
+Branch: feature/e1-p4-local-dev-runner
 Risk: small
 Created: 2026-06-03
 
