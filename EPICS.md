@@ -26,7 +26,7 @@
 
 | # | Epic | Phases | Status | Depends on | Plans |
 |---|---|---|---|---|---|
-| E1 | [Foundation & API Skeleton](./epics/E01-foundation.md) | 3 | 🔵 ready for dev | — | ✅ planned |
+| E1 | [Foundation & API Skeleton](./epics/E01-foundation.md) | 4 | 🔵 ready for dev | — | ✅ planned |
 | E2 | [Persistence Layer (`app.db`)](./epics/E02-persistence.md) | 3 | 🔵 ready for dev | E1 | ✅ planned |
 | E3 | [Profile & Constitution](./epics/E03-profile-constitution.md) | 2 | 🔵 ready for dev | E1 | ✅ planned |
 | E4 | [Baseline ETL & Bootstrap](./epics/E04-baseline-bootstrap.md) | 3 | 🔵 ready for dev | E2, E3 | ✅ planned |
@@ -39,7 +39,7 @@
 | E11 | [Daily Brief (`POST /brief/daily`)](./epics/E11-daily-brief.md) | 3 | 🔵 ready for dev | E9, E8, E6, E10 | — |
 | E12 | [Observability & Deployment](./epics/E12-observability-deployment.md) | 3 | 🔵 ready for dev | E10, E11 | — |
 
-**Totals:** 12 epics · 35 phases · 3 endpoints · 9 DB tables.
+**Totals:** 12 epics · 36 phases · 3 endpoints · 9 DB tables.
 
 > **No PDF/embeddings/RAG epic by design** — the architecture explicitly drops Postgres/pgvector/RAG
 > (ARCHITECTURE §1 stack note). The `medical-docs/` PDFs are only a build-time source for the
@@ -57,6 +57,7 @@ Status per phase. Phase IDs are `E<n>·P<m>`.
 | E1·P1 | Project scaffold & config | 🔵 ready for dev |
 | E1·P2 | Auth, error envelope & health | 🔵 ready for dev |
 | E1·P3 | Workflow engine primitives | 🔵 ready for dev |
+| E1·P4 | Local dev runner (justfile) | 🔵 ready for dev |
 
 ### E2 — Persistence Layer (`app.db`)
 | Phase | Title | Status |
@@ -150,6 +151,7 @@ open a viewer directly.
 | E1·P1 | [`e1-p1-project-scaffold`](./.claude/plans/e1-p1-project-scaffold/PLAN.md) | [viewer](./docs/architecture/plans/e1-p1-project-scaffold.html) | 3 rounds · codex |
 | E1·P2 | [`e1-p2-auth-errors-health`](./.claude/plans/e1-p2-auth-errors-health/PLAN.md) | [viewer](./docs/architecture/plans/e1-p2-auth-errors-health.html) | 3 rounds · codex |
 | E1·P3 | [`e1-p3-workflow-engine`](./.claude/plans/e1-p3-workflow-engine/PLAN.md) | [viewer](./docs/architecture/plans/e1-p3-workflow-engine.html) | 3 rounds · codex |
+| E1·P4 | [`e1-p4-local-dev-runner`](./.claude/plans/e1-p4-local-dev-runner/PLAN.md) | [viewer](./docs/architecture/plans/e1-p4-local-dev-runner.html) | 3 rounds · codex |
 | E2·P1 | [`e2-p1-db-engine-alembic`](./.claude/plans/e2-p1-db-engine-alembic/PLAN.md) | [viewer](./docs/architecture/plans/e2-p1-db-engine-alembic.html) | 3 rounds · codex |
 | E2·P2 | [`e2-p2-ingest-tables`](./.claude/plans/e2-p2-ingest-tables/PLAN.md) | [viewer](./docs/architecture/plans/e2-p2-ingest-tables.html) | 3 rounds · codex |
 | E2·P3 | [`e2-p3-derived-state-tables`](./.claude/plans/e2-p3-derived-state-tables/PLAN.md) | [viewer](./docs/architecture/plans/e2-p3-derived-state-tables.html) | 3 rounds · codex |
