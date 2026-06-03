@@ -193,7 +193,7 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
 - [x] TASK-001: TaskContext shared Pydantic state
-- [ ] TASK-002: Node and RouterNode base types
+- [x] TASK-002: Node and RouterNode base types
 - [ ] TASK-003: AgentNode base type (LLM placeholder)
 - [ ] TASK-004: WorkflowRunner executor with stop_workflow and tests
 - [ ] TASK-005: Final Validation
