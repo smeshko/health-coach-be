@@ -22,7 +22,7 @@ def _clear_cache():
 
 
 def _set_required(monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "test-token")
+    monkeypatch.setenv("API_TOKEN", "test-api-token-0123456789")
     monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
 
 

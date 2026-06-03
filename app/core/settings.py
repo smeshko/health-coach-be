@@ -8,13 +8,25 @@ lazily at first use (ARCHITECTURE §1 — env-driven config, one process).
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Required string that is stripped and must be non-empty, so a blank or
 # whitespace-only value fails fast at startup rather than silently arming the
 # auth boundary / DB path with an unusable value.
 RequiredStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+# The api_token is the sole auth secret (E1·P2 compares requests against it), so
+# it must be a real secret — not a short string and not a copied example value.
+_MIN_API_TOKEN_LEN = 16
+_SENTINEL_TOKEN_FRAGMENTS = (
+    "replace-me",
+    "change-me",
+    "changeme",
+    "your-token",
+    "example",
+    "placeholder",
+)
 
 
 class Settings(BaseSettings):
@@ -43,6 +55,20 @@ class Settings(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
+
+    @field_validator("api_token")
+    @classmethod
+    def _reject_weak_or_example_token(cls, value: str) -> str:
+        # `value` is already stripped + non-empty via RequiredStr.
+        if len(value) < _MIN_API_TOKEN_LEN:
+            raise ValueError(f"api_token must be at least {_MIN_API_TOKEN_LEN} characters")
+        lowered = value.lower()
+        if any(fragment in lowered for fragment in _SENTINEL_TOKEN_FRAGMENTS):
+            raise ValueError(
+                "api_token looks like a placeholder/example value — set a real secret "
+                "(a copied .env.example must not boot)"
+            )
+        return value
 
 
 @lru_cache

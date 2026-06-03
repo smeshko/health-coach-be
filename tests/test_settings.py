@@ -9,6 +9,9 @@ from pydantic import ValidationError
 
 from app.core.settings import Settings, get_settings
 
+# A realistic api_token: long enough and free of any example/sentinel fragment.
+VALID_TOKEN = "test-api-token-0123456789"
+
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
@@ -18,14 +21,14 @@ def _clear_cache():
 
 
 def _set_required(monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "test-token")
+    monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
     monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
 
 
 def test_loads_with_required_env(monkeypatch):
     _set_required(monkeypatch)
     s = Settings(_env_file=None)
-    assert s.api_token == "test-token"
+    assert s.api_token == VALID_TOKEN
     assert s.app_db_path == "/tmp/app.db"
     # Defaults
     assert s.model_id == "claude-opus-4-8"
@@ -49,18 +52,33 @@ def test_blank_or_whitespace_required_raises(monkeypatch, blank):
     monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
-    monkeypatch.setenv("API_TOKEN", "test-token")
+    monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
     monkeypatch.setenv("APP_DB_PATH", blank)
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
 def test_required_values_are_stripped(monkeypatch):
-    monkeypatch.setenv("API_TOKEN", "  test-token  ")
+    monkeypatch.setenv("API_TOKEN", f"  {VALID_TOKEN}  ")
     monkeypatch.setenv("APP_DB_PATH", "  /tmp/app.db  ")
     s = Settings(_env_file=None)
-    assert s.api_token == "test-token"
+    assert s.api_token == VALID_TOKEN
     assert s.app_db_path == "/tmp/app.db"
+
+
+def test_example_placeholder_token_rejected(monkeypatch):
+    # The exact value shipped in .env.example must not boot (review round-2 #1).
+    monkeypatch.setenv("API_TOKEN", "replace-me-with-a-long-random-token")
+    monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_short_token_rejected(monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "short")
+    monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_env_overrides_default(monkeypatch):
