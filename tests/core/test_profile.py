@@ -16,6 +16,7 @@ import pytest
 import yaml
 
 from app.core.profile import (
+    PROFILE_PATH,
     Athlete,
     CarbsPerKg,
     Meta,
@@ -279,3 +280,52 @@ def test_fat_low_greater_than_high_rejected(tmp_path):
 def test_max_hr_not_above_rhr_rejected(tmp_path):
     with pytest.raises(pydantic.ValidationError):
         load_profile(write_yaml(tmp_path, {"thresholds": {"max_hr": 50, "rhr_baseline": 58}}))
+
+
+# --- TASK-003: shipped example file + constant accessors ---
+
+
+def test_shipped_profile_yaml_loads_via_default_path():
+    # load_profile() with no arg resolves PROFILE_PATH (the committed §5 example).
+    p = load_profile()
+    assert isinstance(p, Profile)
+    assert p.meta.constitution_version == "v1"
+
+
+def test_zone_bounds_accessor_returns_db_md_bounds():
+    p = load_profile()
+    assert p.zone_bounds() == {
+        "z1": (96, 125),
+        "z2": (125, 150),
+        "z3": (150, 167),
+        "z4": (167, 177),
+        "z5": (177, 192),
+    }
+
+
+def test_nutrition_constants_reachable_for_macro_engine():
+    p = load_profile()
+    assert p.nutrition.deficit_pct == 0.12
+    assert p.nutrition.activity_factor == 1.65
+    assert p.nutrition.protein_g_per_kg == 1.8
+    assert p.nutrition.carbs_g_per_kg.hard_high == 5
+
+
+def test_constitution_version_convenience_property():
+    p = load_profile()
+    assert p.constitution_version == "v1"
+    assert p.constitution_version == p.meta.constitution_version
+
+
+def test_shipped_profile_top_level_keys_equal_the_five_sections():
+    # A defaulted top-level field would pass extra="forbid"; assert the shipped
+    # file's own top-level keys are exactly the five §5 sections.
+    raw = yaml.safe_load(PROFILE_PATH.read_text(encoding="utf-8"))
+    assert set(raw) == {"athlete", "thresholds", "zones", "nutrition", "meta"}
+
+
+def test_loaded_profile_exposes_no_live_or_derived_field():
+    # Re-assert the static-vs-live guard against the real loaded model.
+    p = load_profile()
+    for model in (type(p), type(p.athlete), type(p.thresholds), type(p.zones), type(p.nutrition), type(p.meta)):
+        assert not (LIVE_DERIVED_NAMES & set(model.model_fields))

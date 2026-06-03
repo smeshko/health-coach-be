@@ -156,6 +156,21 @@ class Profile(BaseModel):
     nutrition: Nutrition
     meta: Meta
 
+    def zone_bounds(self) -> dict[str, tuple[int, int]]:
+        """The Z1–Z5 bpm bounds the zone-minute math (E8) buckets against."""
+        return {
+            "z1": self.zones.z1,
+            "z2": self.zones.z2,
+            "z3": self.zones.z3,
+            "z4": self.zones.z4,
+            "z5": self.zones.z5,
+        }
+
+    @property
+    def constitution_version(self) -> str:
+        """The version tag stamped onto each brief (E9). Delegates to `meta`."""
+        return self.meta.constitution_version
+
 
 def load_profile(path: Path | None = None) -> Profile:
     """Load and validate `profile.yaml` into a typed `Profile`.
