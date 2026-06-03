@@ -1,6 +1,7 @@
 # Plan: E1·P2 — Auth, error envelope & health
 
 Status: draft
+Branch: feature/e1-p2-auth-errors-health
 Risk: small
 Created: 2026-06-03
 
