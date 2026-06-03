@@ -29,6 +29,12 @@ def test_base_is_declarative_and_shares_metadata():
     assert Base.metadata is metadata
 
 
-def test_no_tables_defined_in_this_phase():
-    # This phase ships zero tables; the nine tables land in E2·P2/P3.
-    assert Base.metadata.tables == {}
+def test_registered_tables_inherit_the_naming_convention():
+    # E2·P2+ attach their tables to this same Base. Whatever is registered must
+    # inherit the metadata naming convention so constraint/index names stay
+    # deterministic (order-independent: don't assert emptiness now that tables exist).
+    import app.database.models  # noqa: F401 — register models on Base.metadata
+
+    assert Base.metadata.naming_convention == EXPECTED_CONVENTION
+    for name, table in Base.metadata.tables.items():
+        assert table.primary_key.name == f"pk_{name}"

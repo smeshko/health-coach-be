@@ -55,11 +55,14 @@ def _table_names(db_path: Path) -> set[str]:
     return {r[0] for r in rows}
 
 
+# These two tests are about the E2·P1 *initial* (empty) migration specifically, so
+# they pin to revision "0001" rather than "head" — later phases (E2·P2+) add tables
+# at higher revisions, which is covered by their own migration tests.
 def test_round_trip_on_temp_file_db(tmp_path):
     db_path = tmp_path / "app.db"
     cfg = _make_cfg(db_path)
 
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0001")
     with sqlite3.connect(db_path) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     assert version == [("0001",)]
@@ -69,15 +72,15 @@ def test_round_trip_on_temp_file_db(tmp_path):
         rows = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     assert rows == []  # version row removed at base
 
-    command.upgrade(cfg, "head")  # round-trips back to head
+    command.upgrade(cfg, "0001")  # round-trips back to the initial revision
     with sqlite3.connect(db_path) as conn:
         version = conn.execute("SELECT version_num FROM alembic_version").fetchall()
     assert version == [("0001",)]
 
 
-def test_no_application_tables_after_upgrade(tmp_path):
+def test_no_application_tables_in_initial_migration(tmp_path):
     db_path = tmp_path / "app.db"
-    command.upgrade(_make_cfg(db_path), "head")
+    command.upgrade(_make_cfg(db_path), "0001")
     # The initial migration is empty: only Alembic's bookkeeping table exists.
     assert _table_names(db_path) == {"alembic_version"}
 
