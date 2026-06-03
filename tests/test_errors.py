@@ -100,6 +100,22 @@ def test_no_detail_http_exceptions_have_message_and_null_detail():
         assert err["detail"] is None
 
 
+def test_server_http_exception_is_logged(caplog):
+    # A 5xx raised as HTTPException must leave a server-side trail too (review round-3 #1),
+    # while the client envelope stays sanitized.
+    import logging
+
+    client = TestClient(_app_with_routes())
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        resp = client.get("/raise-500-detail")
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "internal_error"
+    assert resp.json()["error"]["detail"] is None
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "expected an error log for the 5xx HTTPException"
+    assert any("/raise-500-detail" in r.getMessage() for r in errors)
+
+
 def test_internal_error_never_echoes_caller_detail():
     # An HTTPException that resolves to internal_error must not leak its detail,
     # even when the caller passed one (review round-1 #1).

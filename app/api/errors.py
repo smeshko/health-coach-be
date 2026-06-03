@@ -95,6 +95,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _on_http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code, message = STATUS_TO_CODE.get(exc.status_code, _DEFAULT_CODE_MESSAGE)
+        # A 5xx HTTPException is a server failure too — log it (like the catch-all does)
+        # so a route that wraps a DB/upstream error as HTTPException(500) still leaves a
+        # root-cause trail, even though the client envelope is sanitized.
+        if exc.status_code >= 500:
+            logger.error(
+                "Server HTTPException %s on %s %s",
+                exc.status_code,
+                request.method,
+                request.url.path,
+                exc_info=exc,
+            )
         # Safe by default: never echo a route's HTTPException detail onto the wire —
         # the public message comes from the status table, and detail stays null so no
         # caller text (auto status phrase or sensitive string) can leak. The only
