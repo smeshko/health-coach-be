@@ -1,6 +1,7 @@
 # Plan: E1·P3 — Workflow engine primitives
 
 Status: draft
+Branch: feature/e1-p3-workflow-engine
 Risk: medium
 Created: 2026-06-03
 
