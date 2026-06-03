@@ -211,7 +211,7 @@ WEEKLY_PLANNER  (POST /brief/weekly, first request of an ISO week)
 
 DAILY_ADJUSTER  (POST /brief/daily, first request of a date)
   ComputeReadinessNode (Node)       readiness score 0–100, clamped                          (§6.1)
-  SafetyGateRouter     (RouterNode) any flag TRUE → RestDayNode + stop                       (§6.2)
+  SafetyGateRouter     (RouterNode) any flag TRUE → SafetyRestNode + stop                    (§6.2)
   TuneSessionNode      (AgentNode)  Claude picks card + dose + alternatives + skipOk + dayType (§6)
   DeriveSessionNode    (Node)       fill derived fields from CARD_META; compute MacroFocus from dayType (§7)
   ValidateSessionNode  (Node)       band gating, card-in-plan, dose-in-band, dayType fuel-floor → ModelRetry ≤2 (§LLM.md §4)
@@ -223,6 +223,15 @@ short-circuit · **AgentNode** = LLM call (Claude, structured output). Per the *
 ([`MODELS.md`](./MODELS.md) / [`LLM.md`](./LLM.md) §3): the AgentNode emits only genuine *picks* (which card,
 what dose, which day); every card-determined attribute and every number is filled by a downstream `Node`,
 so it cannot be wrong by construction.
+
+> **Two kinds of "rest" — don't conflate them.** `SafetyRestNode` is the *deterministic* safety-gate
+> terminal: when `SafetyGateRouter` trips on an objective flag (§6.2), it routes **to** `SafetyRestNode`,
+> which code-writes the REST/active-recovery brief (no LLM, no arithmetic) and **then** calls
+> `stop_workflow()` — so the `AgentNode` is skipped entirely. `stop_workflow()` lives on that terminal
+> precisely because the gated path bypasses the LLM. An LLM-*recommended* rest or easy day is a different
+> thing: it's a normal `TuneSessionNode` pick (an easy/recovery `dayType`) that flows through the full
+> pipeline (`DeriveSessionNode → ValidateSessionNode → PersistSuggestionNode`) and never touches
+> `SafetyRestNode` or `stop_workflow()`.
 
 ---
 

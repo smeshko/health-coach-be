@@ -22,7 +22,7 @@ call ([`ARCHITECTURE.md`](../docs/architecture/ARCHITECTURE.md) §4, §5;
 ## 2. Requirements
 
 - **R1** — The node graph ([`ARCHITECTURE.md`](../docs/architecture/ARCHITECTURE.md) §5):
-  `ComputeReadinessNode` → `SafetyGateRouter` (any flag ⇒ `RestDayNode` + `stop_workflow()`) →
+  `ComputeReadinessNode` → `SafetyGateRouter` (any flag ⇒ `SafetyRestNode` + `stop_workflow()`) →
   `TuneSessionNode` (AgentNode) → `DeriveSessionNode` → `ValidateSessionNode` (ModelRetry ≤2) →
   `PersistSuggestionNode`.
 - **R2** — `TuneSessionNode` emits **`DailyBriefLLMOutput`** — `session` + `alternatives` (≤2) + `skipOk` +
@@ -51,7 +51,7 @@ call ([`ARCHITECTURE.md`](../docs/architecture/ARCHITECTURE.md) §4, §5;
 - Narrative types: `summary` | `session` | `nutrition` | `caution`.
 
 ### E11·P2 — DAILY_ADJUSTER workflow assembly
-- Wire readiness (E8·P1) → `SafetyGateRouter` (E8·P2; on trip → `RestDayNode` code-writes the REST brief
+- Wire readiness (E8·P1) → `SafetyGateRouter` (E8·P2; on trip → `SafetyRestNode` code-writes the REST brief
   and stops) → tune → `DeriveSessionNode` (E7 expand + E8 MacroFocus + yesterday IntakeSummary) →
   `ValidateSessionNode` (ModelRetry ≤2) → `PersistSuggestionNode` (+ write readiness/band to
   `daily_metrics`).
