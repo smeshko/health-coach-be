@@ -254,7 +254,7 @@ const EPICS = [
         items:["`uv` project + pinned Python 3.13","FastAPI + `uvicorn` app factory","Settings via env (token, DB path, model, Langfuse keys)","camelCase Pydantic base (`alias_generator`)"],
         refs:["ARCHITECTURE §1 (Components)","ARCHITECTURE §1 (stack note: keep FastAPI/core/PydanticAI/Jinja2/Alembic; drop Postgres/Celery/Redis/RAG)"]},
       {t:"Auth, error envelope & health", deliver:"Single long-lived bearer-token auth dependency, the one error envelope for all non-2xx, and a health endpoint.",
-        items:["Bearer token in `Authorization` header (single user, no tenancy)","`Error { code, message, detail }` envelope + handlers","Stable codes: `validation_error`, `unauthorized`, `not_found`, `brief_generation_failed`, `upstream_timeout`","`GET /health`"],
+        items:["Bearer token in `Authorization` header (single user, no tenancy)","`Error { code, message, detail }` envelope + handlers","Stable codes: `validation_error`, `unauthorized`, `not_found`, `brief_generation_failed`, `upstream_timeout`, `internal_error`","`GET /health`"],
         refs:["MODELS · Errors","MODELS · Conventions (Auth)"]},
       {t:"Workflow engine primitives", deliver:"Adopt and verify the Launchpad `core/` primitives — `Node`, `RouterNode`, `AgentNode`, `TaskContext` — with `stop_workflow()` and unit tests.",
         items:["DAG runner over a shared Pydantic `TaskContext`","`Node` / `RouterNode` / `AgentNode` base types","`stop_workflow()` short-circuit","Tests: linear flow, router branch, early stop"],

@@ -747,7 +747,7 @@ One envelope for all non-2xx responses.
 
 | Field | Type | Notes |
 |---|---|---|
-| `error.code` | string | stable machine code — `validation_error`, `not_found`, `brief_generation_failed`, `upstream_timeout`, `unauthorized`. |
+| `error.code` | string | stable machine code — `validation_error`, `not_found`, `brief_generation_failed`, `upstream_timeout`, `unauthorized`, `internal_error`. |
 | `error.message` | string | human-readable summary. |
 | `error.detail` | string \| null | optional extra context. |
 

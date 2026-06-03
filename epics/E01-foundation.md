@@ -32,7 +32,8 @@ Redis, Supabase, streaming, and `vecs`/RAG are **not** used and must not be carr
   user, no tenancy ([`MODELS.md`](../docs/architecture/MODELS.md) Conventions → Auth).
 - **R4** — One **error envelope** for all non-2xx with stable machine codes
   ([`MODELS.md`](../docs/architecture/MODELS.md) Errors): `validation_error`, `unauthorized`, `not_found`,
-  `brief_generation_failed`, `upstream_timeout`.
+  `brief_generation_failed`, `upstream_timeout`, `internal_error` (named fallback for unmapped statuses /
+  unhandled exceptions).
 - **R5** — A **camelCase wire / snake_case Python** Pydantic base via `alias_generator`
   ([`MODELS.md`](../docs/architecture/MODELS.md) Conventions → Casing).
 - **R6** — The `core/` workflow engine: a DAG of nodes over a shared Pydantic `TaskContext`, node types
