@@ -1,6 +1,7 @@
 # Plan: E1·P4 — Local dev runner (justfile)
 
-Status: draft
+Status: done
+Branch: feature/e1-p4-local-dev-runner
 Risk: small
 Created: 2026-06-03
 
@@ -156,7 +157,7 @@ too; E1·P1 owns the committed `.env.example`.
 Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
-- [ ] TASK-001: justfile with core dev recipes (install, run, test, lint, fmt)
-- [ ] TASK-002: Forward-declared lifecycle recipes (migrate, seed, bootstrap, db-reset) and .env handling
-- [ ] TASK-003: README Local development section
-- [ ] TASK-004: Final Validation
+- [x] TASK-001: justfile with core dev recipes (install, run, test, lint, fmt)
+- [x] TASK-002: Forward-declared lifecycle recipes (migrate, seed, bootstrap, db-reset) and .env handling
+- [x] TASK-003: README Local development section
+- [x] TASK-004: Final Validation
