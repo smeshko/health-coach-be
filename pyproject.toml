@@ -16,6 +16,9 @@ dependencies = [
     # the full `pydantic-ai` meta-package pulls in (ARCHITECTURE §1 kept stack).
     "pydantic-ai-slim[anthropic]>=1.0",
     "jinja2>=3.1",
+    # profile.yaml is the single source of truth for every numeric constant
+    # (DB.md §5) — parsed with yaml.safe_load into the typed loader (E3·P1).
+    "pyyaml>=6.0",
     # Portable IANA tz database so ZoneInfo("Europe/Sofia") resolves in CI /
     # containers that lack the system copy — period keys must be DST-aware (E2 R2).
     "tzdata>=2024.1",

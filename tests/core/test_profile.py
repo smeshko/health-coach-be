@@ -9,9 +9,11 @@ those live in `app.db`) is modelled here.
 
 import copy
 from datetime import date
+from pathlib import Path
 
 import pydantic
 import pytest
+import yaml
 
 from app.core.profile import (
     Athlete,
@@ -21,6 +23,7 @@ from app.core.profile import (
     Profile,
     Thresholds,
     Zones,
+    load_profile,
 )
 
 # The DB.md §5 example block, as a plain dict — the known-valid baseline every
@@ -193,3 +196,86 @@ def test_no_live_or_derived_field_is_modelled():
     for model in (Profile, Athlete, Thresholds, Zones, Nutrition, CarbsPerKg, Meta):
         leaked = LIVE_DERIVED_NAMES & set(model.model_fields)
         assert not leaked, f"{model.__name__} leaks live/derived field(s): {leaked}"
+
+
+# --- TASK-002: loader + cap/monotonicity/contiguity validators ---
+
+
+def write_yaml(tmp_path: Path, overrides: dict | None = None, *, name: str = "profile.yaml") -> Path:
+    """Dump the valid §5 dict (with optional per-section overrides) to a temp file."""
+    d = valid_profile_dict()
+    for section, patch in (overrides or {}).items():
+        if patch is None:
+            del d[section]
+        else:
+            d[section].update(patch)
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_load_profile_reads_valid_file(tmp_path):
+    p = load_profile(write_yaml(tmp_path))
+    assert isinstance(p, Profile)
+    assert p.thresholds.max_hr == 192
+    assert p.zones.z1 == (96, 125)
+    assert p.nutrition.carbs_g_per_kg.hard_low == 4
+    assert p.meta.computed_at == date(2026, 6, 2)
+
+
+def test_load_profile_missing_path_raises_filenotfound(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_profile(tmp_path / "does-not-exist.yaml")
+
+
+def test_deficit_cap_boundary_inclusive_and_rejects_above(tmp_path):
+    # 0.20 accepted (inclusive), 0.25 rejected naming the field.
+    load_profile(write_yaml(tmp_path, {"nutrition": {"deficit_pct": 0.20}}))
+    with pytest.raises(pydantic.ValidationError) as exc:
+        load_profile(write_yaml(tmp_path, {"nutrition": {"deficit_pct": 0.25}}))
+    assert "deficit_pct" in str(exc.value)
+
+
+def test_protein_cap_boundary_inclusive_and_rejects_above(tmp_path):
+    load_profile(write_yaml(tmp_path, {"nutrition": {"protein_g_per_kg": 2.0}}))
+    with pytest.raises(pydantic.ValidationError) as exc:
+        load_profile(write_yaml(tmp_path, {"nutrition": {"protein_g_per_kg": 2.5}}))
+    assert "protein_g_per_kg" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "bad_zones",
+    [
+        # z3 low >= high (degenerate zone).
+        {"z3": [167, 167]},
+        # lows not strictly increasing (z2.low == z1.low).
+        {"z1": [96, 125], "z2": [96, 150]},
+    ],
+)
+def test_non_monotonic_zones_rejected(tmp_path, bad_zones):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"zones": bad_zones}))
+
+
+def test_non_contiguous_zones_rejected(tmp_path):
+    # Monotonic but gapped: z1.high (124) != z2.low (125).
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"zones": {"z1": [96, 124], "z2": [125, 150]}}))
+
+
+def test_contiguous_zones_accepted(tmp_path):
+    # The §5 set is exactly contiguous — it must pass.
+    p = load_profile(write_yaml(tmp_path))
+    assert p.zones.z1[1] == p.zones.z2[0]
+
+
+def test_fat_low_greater_than_high_rejected(tmp_path):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(
+            write_yaml(tmp_path, {"nutrition": {"fat_g_per_kg_low": 1.2, "fat_g_per_kg_high": 1.0}})
+        )
+
+
+def test_max_hr_not_above_rhr_rejected(tmp_path):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"thresholds": {"max_hr": 50, "rhr_baseline": 58}}))
