@@ -45,6 +45,14 @@ def _app_with_routes() -> FastAPI:
     def _boom():
         raise RuntimeError("secret internal detail")
 
+    @app.get("/raise-500-detail")
+    def _r500_detail():
+        raise HTTPException(status_code=500, detail="db password leaked")
+
+    @app.get("/raise-400-detail")
+    def _r400_detail():
+        raise HTTPException(status_code=400, detail="internal sql: SELECT secret")
+
     @app.post("/validate")
     def _validate(body: Body):
         return {"ok": body.n}
@@ -82,6 +90,19 @@ def test_no_detail_http_exceptions_have_message_and_null_detail():
         err = resp.json()["error"]
         assert isinstance(err["message"], str) and err["message"].strip()
         assert err["detail"] is None
+
+
+def test_internal_error_never_echoes_caller_detail():
+    # An HTTPException that resolves to internal_error must not leak its detail,
+    # even when the caller passed one (review round-1 #1).
+    client = TestClient(_app_with_routes())
+    for path in ("/raise-500-detail", "/raise-400-detail"):
+        resp = client.get(path)
+        err = resp.json()["error"]
+        assert err["code"] == "internal_error"
+        assert err["detail"] is None
+        assert "leaked" not in json.dumps(resp.json())
+        assert "secret" not in json.dumps(resp.json())
 
 
 def test_validation_error_envelope():

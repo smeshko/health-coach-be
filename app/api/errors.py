@@ -106,7 +106,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def _on_http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         code, message = STATUS_TO_CODE.get(exc.status_code, _DEFAULT_CODE_MESSAGE)
-        return error_response(code, message, status_code=exc.status_code, detail=_http_detail(exc))
+        # Never echo caller-supplied detail on the internal_error fallback (unmapped
+        # statuses) — that path must leak nothing, even if a route passed a detail.
+        detail = None if code is ErrorCode.internal_error else _http_detail(exc)
+        return error_response(code, message, status_code=exc.status_code, detail=detail)
 
     @app.exception_handler(Exception)
     async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:
