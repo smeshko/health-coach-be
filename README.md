@@ -19,7 +19,7 @@ uv sync                 # create the venv and install deps (Python 3.13)
 ## Run
 
 ```bash
-uv run uvicorn app.main:create_app --factory --reload
+uv run uvicorn app.main:app --reload
 ```
 
 The server reads its configuration from the environment (see `app/core/config.py`). Required vars must be
