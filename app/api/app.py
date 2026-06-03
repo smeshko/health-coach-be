@@ -11,6 +11,7 @@ Routers (health/errors in E1·P2, endpoints in later epics) are attached here vi
 
 from fastapi import FastAPI
 
+from app.api.errors import register_exception_handlers
 from app.core.settings import Settings, get_settings
 
 
@@ -25,5 +26,8 @@ def create_app() -> FastAPI:
     )
     # Keep a handle on validated config for routers/dependencies added later.
     app.state.settings = settings
+
+    # Every non-2xx response renders the single error envelope (E1·P2).
+    register_exception_handlers(app)
 
     return app

@@ -1,6 +1,6 @@
 # Plan: E1·P2 — Auth, error envelope & health
 
-Status: draft
+Status: in-progress
 Branch: feature/e1-p2-auth-errors-health
 Risk: small
 Created: 2026-06-03
@@ -144,7 +144,7 @@ setting, and the `CamelModel` base this phase reuses.
 Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
-- [ ] TASK-001: Error envelope models and exception handlers
+- [x] TASK-001: Error envelope models and exception handlers
 - [ ] TASK-002: Bearer-token auth dependency
 - [ ] TASK-003: GET /health endpoint (unauthenticated)
 - [ ] TASK-004: Final Validation
