@@ -48,25 +48,12 @@ bootstrap: install migrate seed
 db-reset:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Resolve APP_DB_PATH from the same sources as the app, same precedence (process env
-    # wins, then .env, then app.db). Only this recipe reads .env — `just test` stays clean.
-    if [ -n "${APP_DB_PATH+x}" ]; then
-        DB="$APP_DB_PATH"                       # process env (possibly explicitly empty)
-    elif [ -f .env ] && grep -qE '^[[:space:]]*APP_DB_PATH=' .env; then
-        DB="$(sed -n 's/^[[:space:]]*APP_DB_PATH=[[:space:]]*//p' .env | tail -n1)"
-        DB="${DB%\"}"; DB="${DB#\"}"; DB="${DB%\'}"; DB="${DB#\'}"   # strip surrounding quotes
-    else
-        DB="app.db"                             # unset everywhere -> default
-    fi
-    [ -n "$DB" ] || { echo "db-reset: APP_DB_PATH is empty; refusing" >&2; exit 1; }
-    # Mirror app.core.settings._db_target_basename: drop query/fragment, strip a leading URL
-    # scheme, basename, lowercase — so Baseline.db / sqlite:///baseline.db?x are caught too
-    # (read-only build inputs, ARCHITECTURE §3).
-    norm="${DB%%[?#]*}"
-    norm="$(printf '%s' "$norm" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*:(//)?##')"
-    case "$(basename "$norm" | tr '[:upper:]' '[:lower:]')" in
-        baseline.db|health.db) echo "db-reset: refusing to delete the read-only build DB ($DB)" >&2; exit 1 ;;
-    esac
+    # Resolve APP_DB_PATH through the SAME parser the app uses — pydantic-settings reads .env
+    # via python-dotenv's dotenv_values — with the same precedence (process env > .env >
+    # app.db) and the same forbidden-basename guard (app.core.settings). So every dotenv form
+    # (export/spaces/comments/quotes) and every case/URI variant the app accepts maps here too,
+    # before any rm. Only this recipe reads .env, so `just test` stays deterministic.
+    DB="$(uv run python -c 'import os, sys; from dotenv import dotenv_values; from app.core.settings import _db_target_basename as base, _FORBIDDEN_DB_BASENAMES as forbidden; env = dotenv_values(".env"); path = (os.environ["APP_DB_PATH"] if "APP_DB_PATH" in os.environ else (env["APP_DB_PATH"] or "") if "APP_DB_PATH" in env else "app.db").strip(); sys.exit("db-reset: APP_DB_PATH is empty; refusing") if not path else (sys.exit(f"db-reset: refusing to delete the read-only build DB ({path})") if base(path) in forbidden else print(path))')" || exit 1
     rm -f -- "$DB" "$DB-wal" "$DB-shm"
     just migrate
 
