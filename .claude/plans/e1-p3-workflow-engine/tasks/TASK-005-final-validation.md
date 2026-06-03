@@ -46,8 +46,8 @@ test), and the engine ships clean.
 - [ ] **Sync == async parity** — `uv run pytest tests/core/test_workflow.py -k "parity or async"` proves
       `run()` and `run_async()` produce the same result.
 - [ ] **No dropped-stack imports** — `uv run pytest tests/core/test_core_imports.py` passes **and**
-      `! grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` (no match;
-      `pydantic_ai` excluded — kept stack) — epic §4; ARCHITECTURE §1 stack note.
+      `! grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` (no match; `pydantic_ai`
+      (E9) and `langfuse` (E12) excluded — both kept stack) — epic §4; ARCHITECTURE §1 stack note.
 - [ ] **Public API** — `uv run python -c "from app.core import TaskContext, Node, RouterNode, BaseRouter,
       AgentNode, AgentConfig, Workflow, WorkflowSchema, NodeConfig, WorkflowValidator"` succeeds.
 

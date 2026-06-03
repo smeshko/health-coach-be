@@ -27,10 +27,11 @@ Add the workflow schema, DAG validator, and the `Workflow` runner that walks the
     each iteration, runs non-router nodes' `process()` (router edges resolved via `BaseRouter.route`),
     and calls each instantiated node's `cleanup()` in a `finally`. Routing via `_get_next_node_class` +
     `_handle_router`. Ported/trimmed from `../genai-launchpad-main/app/launchpad/core/workflow.py` —
-    **drop** Langfuse spans/`_observation_context`/`NoOpSpan`, `run_stream_async`, the `AgentStreamingNode`
-    branch, and `trace_id` handling.
+    **strip** Langfuse spans/`_observation_context`/`NoOpSpan` (tracing is **deferred to E12**, re-added
+    there — not dropped), `run_stream_async` and the `AgentStreamingNode` branch (streaming dropped), and
+    `trace_id` handling (returns with Langfuse in E12).
   - **Stop semantics (terminal-then-stop):** because `should_stop` is checked at the **top** of the loop,
-    a routed-to terminal override node (e.g. `RestDayNode`) runs its `process()` — writing its output —
+    a routed-to terminal override node (e.g. `SafetyRestNode`) runs its `process()` — writing its output —
     and calls `ctx.stop_workflow()` *inside* `process()`; the loop then breaks before the next node. The
     runner must never short-circuit *before* a routed-to node runs (that would skip the §2 gated REST
     brief — ARCHITECTURE §2/§5, E11).
@@ -56,16 +57,16 @@ Add the workflow schema, DAG validator, and the `Workflow` runner that walks the
 - [ ] **Gated short-circuit (terminal-then-stop)** — a router routes to a terminal override node that
       writes its output **and** calls `ctx.stop_workflow()` in `process()`; the terminal's output IS
       present, a sentinel `Node` wired downstream of the router does NOT run, and the run returns the
-      partial `TaskContext` with `should_stop=True` (the §2 `SafetyGateRouter → RestDayNode + stop`
+      partial `TaskContext` with `should_stop=True` (the §2 `SafetyGateRouter → SafetyRestNode + stop`
       pattern — REST brief written, AgentNode-stand-in skipped).
 - [ ] **Router DAG-constraint** — `_handle_router` raises `ValueError` when a router returns a route whose
       class is not in the current node's `connections`, and likewise for an undeclared `fallback` (two
       tests).
 - [ ] `run()` (sync) and `run_async()` (async, via `pytest.mark.asyncio` or `asyncio.run`) drive the same
       workflow to the same `TaskContext` result.
-- [ ] `grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` returns nothing
-      (epic §4; ARCHITECTURE §1 stack note) — asserted by `test_core_imports.py`. `pydantic_ai` is
-      **excluded** (kept stack; E9 uses it).
+- [ ] `grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` returns nothing
+      (epic §4; ARCHITECTURE §1 stack note) — asserted by `test_core_imports.py`. `pydantic_ai` (E9) and
+      `langfuse` (E12) are **excluded** (both kept stack).
 - [ ] `uv run pytest tests/core` and `uv run ruff check .` pass.
 
 ## Steps
@@ -79,7 +80,8 @@ Add the workflow schema, DAG validator, and the `Workflow` runner that walks the
       sync/async parity.
 - [ ] `tests/core/test_core_imports.py`: walk `app/core/*.py` source (or import the package and inspect
       `sys.modules`) and assert none of the dropped-stack names appear — banning
-      `langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3` but **not** `pydantic_ai` (kept stack).
+      `celery|redis|psycopg|pgvector|supabase|vecs|boto3` but **not** `pydantic_ai` (E9) or `langfuse`
+      (E12) — both kept stack.
 
 ### GREEN
 - [ ] Implement `app/core/workflow.py` (schema + validator + runner) and the re-exports.
@@ -90,7 +92,7 @@ Add the workflow schema, DAG validator, and the `Workflow` runner that walks the
 ## Notes
 
 The runner checks `should_stop` at the **top** of each loop iteration. The §2 gate pattern is:
-`SafetyGateRouter` routes **to** `RestDayNode`; `RestDayNode.process()` writes the REST brief **and** calls
+`SafetyGateRouter` routes **to** `SafetyRestNode`; `SafetyRestNode.process()` writes the REST brief **and** calls
 `ctx.stop_workflow()`; the loop then breaks before the `AgentNode`. So a routed-to terminal always runs —
 the runner must not short-circuit before it (else the REST brief is skipped — ARCHITECTURE §2/§5, E11).
 `_handle_router` instantiates the router, calls `route(ctx)`, maps the returned instance's class to the next
@@ -98,5 +100,7 @@ config, and **rejects (raises `ValueError`) any returned class not in the curren
 `connections`** (a hardening over Launchpad, which leaves this unguarded — preventing off-DAG jumps /
 mid-run `KeyError`). Nodes' `process()` is `async`; `run()` wraps `asyncio.run` for sync endpoint/script
 callers (workflows are invoked synchronously inline — ARCHITECTURE §5). `cleanup()` runs in a `finally` so
-resources release even on error. **`pydantic_ai` is kept stack** — the dropped-stack import guard must not
-ban it (E9 wires the `Agent` in `app/core`).
+resources release even on error. **`pydantic_ai` (E9) and `langfuse` (E12) are kept stack** — the durable
+dropped-stack import guard must not ban either (E9 wires the `Agent` in `app/core`; E12 wires Langfuse
+tracing in `app/core`). The P3 port just strips the Launchpad spans for now; nothing to trace until E9's
+LLM call lands.

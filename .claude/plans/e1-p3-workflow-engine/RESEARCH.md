@@ -40,9 +40,9 @@ repo at `../genai-launchpad-main/`.
   branch / short-circuit · **AgentNode** = LLM call (Claude, structured output). A node may
   `stop_workflow()`.
 - **Safety gate is a RouterNode** (ARCHITECTURE §2, §5; E11): `SafetyGateRouter` routes to a
-  `RestDayNode` + stop **before** the LLM is consulted — the canonical early-`stop_workflow()` usage. The
+  `SafetyRestNode` + stop **before** the LLM is consulted — the canonical early-`stop_workflow()` usage. The
   gated path must still return a **code-written** REST/active-recovery brief (no LLM), so the terminal
-  override node (`RestDayNode`) must **run, write its output, then stop** — the router must not stop before
+  override node (`SafetyRestNode`) must **run, write its output, then stop** — the router must not stop before
   the terminal runs (that would skip the REST brief). Stop is checked at the top of the next iteration.
 - **The two real workflows** (ARCHITECTURE §5) that build on these primitives later:
   `WEEKLY_PLANNER` (`/brief/weekly`) and `DAILY_ADJUSTER` (`/brief/daily`), each with exactly one
@@ -64,19 +64,22 @@ repo at `../genai-launchpad-main/`.
 ## Constraints
 
 - **Keep ONLY the workflow primitives.** Drop everything the Coach App doesn't use (ARCHITECTURE §1
-  stack note): Langfuse tracing/spans, Celery/Redis, streaming (`run_stream_async`,
-  `AgentStreamingNode`), `concurrent_nodes`, Postgres/Supabase, `vecs`/RAG.
+  stack note): Celery/Redis, streaming (`run_stream_async`, `AgentStreamingNode`), `concurrent_nodes`,
+  Postgres/Supabase, `vecs`/RAG. **Langfuse tracing/spans are the exception — deferred to E12, not
+  dropped** (Langfuse is the kept-stack Observability component, ARCHITECTURE §1 Components; epic R2/§7);
+  P3 just doesn't wire spans yet because there are no LLM calls.
 - **AgentNode is abstract here** — no PydanticAI `Agent` construction, no provider SDK imports
   (`boto3` / `google`) and no `pydantic_ai` in `app/core/nodes.py` **for this phase**. Real wiring lands
   in E9 (LLM.md §0). `process()` stays `@abstractmethod`; `get_agent_config()` is the abstract seam
   subclasses fill in E9. NOTE: `pydantic_ai` is **kept stack** (ARCHITECTURE §1) — E9 *will* import it in
   `app/core`, so the durable dropped-stack guard must NOT ban `pydantic_ai`; the P3 no-provider check is
   scoped to `app/core/nodes.py` only.
-- **No genuinely-dropped imports anywhere** under `app/core/`: Langfuse, Celery, Redis,
+- **No genuinely-dropped imports anywhere** under `app/core/`: Celery, Redis,
   Postgres/`psycopg`/pgvector, Supabase, `vecs`, `boto3` (epic §4 acceptance / ARCHITECTURE §1).
-  `pydantic_ai` is excluded from this ban (kept stack).
+  `pydantic_ai` (E9) **and `langfuse` (E12)** are excluded from this durable ban — both kept stack; the
+  P3 port simply strips the Launchpad spans for now (phase-scoped, not a durable ban).
 - **`stop_workflow()` short-circuits — but the routed-to terminal runs first.** Stop is checked at the
-  top of each iteration. The §2 gate pattern is: router routes **to** `RestDayNode`; `RestDayNode.process`
+  top of each iteration. The §2 gate pattern is: router routes **to** `SafetyRestNode`; `SafetyRestNode.process`
   writes the REST brief **and** calls `ctx.stop_workflow()`; the loop then breaks before the `AgentNode`.
   A router must not stop *before* its terminal runs (ARCHITECTURE §2/§5; E11).
 - **DAG validation + runtime DAG-constraint**: statically, only `is_router` nodes may have multiple
@@ -93,14 +96,14 @@ repo at `../genai-launchpad-main/`.
 
 | Item | Decision | Notes |
 |---|---|---|
-| `TaskContext` (event/nodes/metadata/should_stop, `update_node`, `stop_workflow`) | **KEEP** | Drop `trace_id` (Langfuse-only). |
+| `TaskContext` (event/nodes/metadata/should_stop, `update_node`, `stop_workflow`) | **KEEP** | Leave `trace_id` off for now (Langfuse-specific); it returns with Langfuse tracing in E12. |
 | `Node` (OutputType/process/save_output/get_output/node_name/cleanup) | **KEEP** | As-is; `process()` abstract async. |
 | `BaseRouter` + `RouterNode` (routes/fallback/route/determine_next_node) | **KEEP** | The conditional-branch/short-circuit primitive. |
 | `AgentNode` | **ADAPT → abstract placeholder** | Keep the class + `OutputType`/`DepsType` seam + abstract `get_agent_config()`/`process()`; **strip** PydanticAI/provider construction (E9 fills it). |
 | `WorkflowSchema` / `NodeConfig` | **ADAPT** | Drop `concurrent_nodes` (no concurrency in single-user sync flows). Keep `event_schema`, `start`, `nodes`, `is_router`. |
 | `WorkflowValidator` (DAG/cycle/reachability/router-fanout) | **KEEP** | Core correctness guard. |
 | `Workflow.run()` / `run_async()` / `__run()` graph walk + `_handle_router()` | **KEEP (trimmed) + HARDEN** | Keep sync `run()` + async `run_async()` and the walk honoring `should_stop`. **Drop** Langfuse spans/`_observation_context`/`NoOpSpan`, `run_stream_async`, `AgentStreamingNode` branch. Keep `cleanup()` in a `finally`. **Add** a DAG-constraint in `_handle_router`: reject a route/fallback whose class is not in the current node's declared `connections` (Launchpad leaves this unguarded). |
-| Langfuse (`get_client`, spans, `LangfuseAuthenticationError`, `trace_id`) | **DROP** | E12 concern; not in kept stack. |
+| Langfuse (`get_client`, spans, `LangfuseAuthenticationError`, `trace_id`) | **DEFER → E12** | **Kept-stack** observability (ARCHITECTURE §1 Components — "trace every LLM call"). Not ported into the P3 primitives (no LLM calls yet); **not** in the durable import ban — same treatment as `pydantic_ai`. E12 re-adds tracing in `app/core`. |
 | Streaming (`run_stream_async`, `AgentStreamingNode`) | **DROP** | Streaming dropped (ARCHITECTURE §1). |
 | `concurrent_nodes` / `core/nodes/concurrent.py` | **DROP** | No concurrency needed. |
 | Celery/Redis/Postgres/Supabase/`vecs` | **DROP** | ARCHITECTURE §1 stack note. |
@@ -110,8 +113,8 @@ repo at `../genai-launchpad-main/`.
 ```bash
 # inspect the kept Launchpad primitives we adopt
 ls ../genai-launchpad-main/app/launchpad/core ../genai-launchpad-main/app/launchpad/core/nodes
-# guard: no genuinely-dropped-stack imports leak into app/core (pydantic_ai is kept stack — excluded)
-grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core || echo "clean"
+# guard: no genuinely-dropped-stack imports leak into app/core (pydantic_ai E9 + langfuse E12 are kept stack — excluded)
+grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core || echo "clean"
 # phase-scoped: P3 nodes.py must stay provider-free (pydantic_ai/agent wiring is E9)
 grep -nE "pydantic_ai|boto3|google\." app/core/nodes.py || echo "nodes.py provider-free"
 # run the engine tests
@@ -128,10 +131,10 @@ uv run ruff check .
 - **Does the router instance get the context?** In Launchpad `_handle_router()` instantiates the router
   with no args then calls `route(task_context)`, which assigns `task_context` onto each sub-router before
   `determine_next_node`. Resolved: preserve that exact contract so the §2 `SafetyGateRouter` can read
-  context and **select** the terminal (`RestDayNode`). The router does not stop — `task_context.`
+  context and **select** the terminal (`SafetyRestNode`). The router does not stop — `task_context.`
   `stop_workflow()` is called by the routed-to terminal's `process()` (see next bullet).
 - **Where does `stop_workflow()` get called from, and does the terminal still run?** The §2 gate must
-  route **to** a terminal (`RestDayNode`) that writes a code-only REST brief, so stop cannot fire before
+  route **to** a terminal (`SafetyRestNode`) that writes a code-only REST brief, so stop cannot fire before
   that node runs. Resolved: the terminal node's own `process()` writes its output **and** calls
   `ctx.stop_workflow()`; the runner checks `should_stop` at the top of the *next* iteration, so the
   terminal runs and the downstream `AgentNode` is skipped. Test asserts the terminal's output is present

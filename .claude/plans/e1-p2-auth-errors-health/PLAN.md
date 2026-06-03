@@ -86,6 +86,13 @@ setting, and the `CamelModel` base this phase reuses.
   construction, and no status can produce a code outside the closed enum.
 - **Constant-time token comparison (`secrets.compare_digest`)** — avoids a timing side-channel on the one
   long-lived token; cheap and standard.
+- **`GET /health` is intentionally unauthenticated** — it is a pure liveness ping (`status: "ok"` +
+  `serverTime`) that leaks nothing, and keeping it credential-free lets the E12 Docker `HEALTHCHECK`,
+  `litestream`, and uptime monitors probe it without baking the API token into the probe (epic §3 E1·P2,
+  §4 acceptance). Every *other* route — including the probe shipped here — is gated by the auth dependency.
+  If richer status is ever needed (DB reachable, migration head), it belongs on a **separate
+  authenticated** `/readyz`-style probe, not on `/health`. (Resolves review comment §ov-scope — confirmed
+  with the maintainer: keep `/health` unauthenticated.)
 - **`serverTime` via `datetime.now(ZoneInfo("Europe/Sofia"))` → `.isoformat()`** — emits the real
   DST-aware offset; never hard-codes `+03:00` (MODELS "Conventions → Timestamps"; runbook pitfall 6).
 - **Generic `500` envelope hides internal detail** — unhandled exceptions return a fixed message and

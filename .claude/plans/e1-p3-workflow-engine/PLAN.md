@@ -27,10 +27,17 @@ workflows (E5/E9/E10/E11) have an engine to plug into, with no business logic ye
 - **`app/core/nodes.py`** — the three node base types (ARCHITECTURE §5 node legend):
   - `Node(ABC)` — deterministic processing; abstract `async process(ctx) -> TaskContext`; `save_output()`,
     `get_output()`, `node_name`, async `cleanup()`.
-  - `RouterNode` (+ `BaseRouter`) — conditional branch / short-circuit; `BaseRouter.route()` walks its
-    `routes` and falls back to `fallback`; each `RouterNode.determine_next_node(ctx)` **returns the next
-    node** or `None`. It does not itself stop — the §2 short-circuit is a router *routing to* a terminal
-    override node whose `process()` writes the brief and calls `ctx.stop_workflow()` (see Decisions).
+  - `RouterNode` (+ `BaseRouter`) — conditional branch / short-circuit. **Two distinct roles, kept from
+    Launchpad:** `BaseRouter(Node)` is the *router node placed in the DAG* — the runner calls its
+    `.route(ctx)` to pick the next edge — and it owns `routes: list[RouterNode]` + a `fallback`;
+    `RouterNode` is a *single routing predicate* (not itself a graph `Node`) whose
+    `determine_next_node(ctx)` **returns the next node** or `None`. `BaseRouter.route()` walks its `routes`
+    in order, taking the first non-`None`, else `fallback`. It does not itself stop — the §2 short-circuit
+    is a router *routing to* a terminal override node whose `process()` writes the brief and calls
+    `ctx.stop_workflow()` (see Decisions). Our one router (`SafetyGateRouter`) needs only a single
+    predicate + fallback; the split is kept for port fidelity, so **docstrings must spell out the two
+    roles** — the names invert intuition (`BaseRouter` is the concrete in-graph node; `RouterNode` is the
+    predicate).
   - `AgentNode(Node, ABC)` — **abstract LLM-call placeholder**: keeps the `OutputType`/`DepsType` seam and
     an abstract `get_agent_config()` + abstract `process()`, but **no** PydanticAI/provider construction
     (real wiring is E9 — LLM.md §0). No `pydantic_ai`/`boto3`/`google` imports.
@@ -54,9 +61,16 @@ workflows (E5/E9/E10/E11) have an engine to plug into, with no business logic ye
   constitution prompt: all E9 (LLM.md §0). `AgentNode` stays abstract here.
 - **The two real workflows** `WEEKLY_PLANNER` / `DAILY_ADJUSTER` and their domain nodes
   (`LoadAggregatesNode`, `SafetyGateRouter`, `GeneratePlanNode`, …) — E5/E9/E10/E11 (ARCHITECTURE §5).
-- **Langfuse tracing / spans / `trace_id`**, **streaming** (`run_stream_async`, `AgentStreamingNode`),
-  **`concurrent_nodes`**, Celery/Redis/Postgres/Supabase/`vecs` — dropped, never carried over
-  (ARCHITECTURE §1 stack note).
+- **Streaming** (`run_stream_async`, `AgentStreamingNode`), **`concurrent_nodes`**, and
+  Celery/Redis/Postgres/Supabase/`vecs` — genuinely dropped, never carried over (ARCHITECTURE §1 stack
+  note).
+- **Langfuse tracing / spans / `trace_id`** — **deferred to E12, not dropped.** Langfuse is *kept-stack*
+  observability (ARCHITECTURE §1 Components — "trace every LLM call"; epic R2 settings carry Langfuse keys;
+  epic §7 "Langfuse (E12)"). It is simply not wired into the P3 primitives because there are no LLM calls
+  yet (`AgentNode` is an abstract placeholder). The P3 port strips the Launchpad's inline spans; **E12
+  re-adds tracing in `app/core`**, so — exactly like `pydantic_ai` — `langfuse` is **NOT** in the durable
+  dropped-stack import ban (banning it would block E12). `trace_id` is left off `TaskContext` for now and
+  returns with Langfuse in E12.
 - DB persistence, endpoints, settings/auth/health (E1·P1, E1·P2, E2, E5).
 
 ## Research Summary
@@ -87,7 +101,7 @@ canonical early-stop the engine must support. Full keep/adapt/drop matrix and ci
   (Langfuse/Celery/Redis/Postgres/pgvector/Supabase/`vecs`).
 - **The safety-gate short-circuit runs its terminal node, *then* stops** — per ARCHITECTURE §2/§5 and
   E11, the gated path must still return a **code-written** REST/active-recovery brief (no LLM). So the
-  router routes **to** the terminal override node (e.g. a `RestDayNode`); that node does its work in
+  router routes **to** the terminal override node (e.g. a `SafetyRestNode`); that node does its work in
   `process()` **and** calls `ctx.stop_workflow()`; the runner then breaks before downstream nodes
   (notably the `AgentNode`). The router itself does not stop before the terminal runs — that would skip
   the REST brief. This matches the Launchpad walk (stop checked at the top of the *next* iteration).
@@ -113,11 +127,13 @@ canonical early-stop the engine must support. Full keep/adapt/drop matrix and ci
 
 ## Risks
 
-- **Carrying over genuinely dropped-stack imports while porting** (Langfuse, streaming, Celery, Redis,
+- **Carrying over genuinely dropped-stack imports while porting** (streaming, Celery, Redis,
   Postgres/pgvector, Supabase, `vecs`) — mitigation: TASK-004 + final validation `grep` `app/core/` for
-  `langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3` and assert none (epic §4 "no Postgres/
-  Celery/Redis/pgvector imports"). **`pydantic_ai` is deliberately NOT in this list** — it is kept stack
-  (ARCHITECTURE §1) and E9 will import it in `app/core`; banning it durably would block E9.
+  `celery|redis|psycopg|pgvector|supabase|vecs|boto3` and assert none (epic §4 "no Postgres/Celery/Redis/
+  pgvector imports"). **`pydantic_ai` and `langfuse` are deliberately NOT in this list** — both are kept
+  stack (ARCHITECTURE §1): E9 imports `pydantic_ai` and E12 imports `langfuse` in `app/core`, so banning
+  either durably would block a later epic. The P3 port still strips the Launchpad's inline Langfuse spans
+  (no LLM calls yet) — a phase-scoped concern handled in the port (TASK-004 REFACTOR), not a durable ban.
 - **`AgentNode` accidentally instantiable / requiring an LLM** — mitigation: keep `process()` and
   `get_agent_config()` `@abstractmethod`; a test asserts `AgentNode` cannot be instantiated directly and
   that a trivial concrete subclass needs no network/provider. A **phase-scoped** check
@@ -161,12 +177,13 @@ canonical early-stop the engine must support. Full keep/adapt/drop matrix and ci
 - [ ] **Gated short-circuit (terminal-then-stop):** a router routes to a terminal override node that does
       its work in `process()` **and** calls `ctx.stop_workflow()`; the terminal node's output IS present,
       a sentinel node wired downstream of the router is NOT executed, and the run returns the partial
-      `TaskContext` with `should_stop=True` (test). This is the §2 `SafetyGateRouter → RestDayNode + stop`
+      `TaskContext` with `should_stop=True` (test). This is the §2 `SafetyGateRouter → SafetyRestNode + stop`
       pattern (REST brief still written, AgentNode skipped).
 - [ ] Both `run()` (sync) and `run_async()` (async) drive the same workflow to the same result (test).
 - [ ] **No dropped-stack imports** anywhere under `app/core/`:
-      `grep -REn "langfuse|celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` is empty (epic §4;
-      ARCHITECTURE §1 stack note). `pydantic_ai` is intentionally excluded — it is kept stack (E9 uses it).
+      `grep -REn "celery|redis|psycopg|pgvector|supabase|vecs|boto3" app/core` is empty (epic §4;
+      ARCHITECTURE §1 stack note). `pydantic_ai` (E9) and `langfuse` (E12) are intentionally excluded —
+      both are kept stack; the P3 port ships no Langfuse spans yet, but the durable ban must not block E12.
 - [ ] `uv run ruff check .` and `uv run pytest tests/core` pass.
 
 ## Tasks
