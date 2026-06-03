@@ -131,6 +131,18 @@ class CarbsPerKg(BaseModel):
     rest_low: float = Field(gt=0)
     rest_high: float = Field(gt=0)
 
+    @model_validator(mode="after")
+    def _carb_bands_low_below_high(self) -> "CarbsPerKg":
+        # Each day-type band (hard, rest) is a `low..high` range; an inverted
+        # band would invert the carb target the macro engine reads.
+        for low_name, low, high_name, high in (
+            ("hard_low", self.hard_low, "hard_high", self.hard_high),
+            ("rest_low", self.rest_low, "rest_high", self.rest_high),
+        ):
+            if low > high:
+                raise ValueError(f"{low_name} ({low}) must be <= {high_name} ({high})")
+        return self
+
 
 class Nutrition(BaseModel):
     """§7 macro/hydration constants the macro engine reads (DB.md §5 `nutrition`)."""

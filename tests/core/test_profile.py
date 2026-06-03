@@ -362,6 +362,24 @@ def test_duplicate_nested_key_rejected(tmp_path):
         load_profile(path)
 
 
+# An inverted carb band (low > high) would invert the fuelling target the macro
+# engine reads — the positive floors alone don't catch it. (review round-2 #1)
+@pytest.mark.parametrize(
+    "carb_patch",
+    [
+        {"hard_low": 5, "hard_high": 4},
+        {"rest_low": 3, "rest_high": 2},
+    ],
+)
+def test_inverted_carb_range_rejected(tmp_path, carb_patch):
+    d = valid_profile_dict()
+    d["nutrition"]["carbs_g_per_kg"].update(carb_patch)
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(path)
+
+
 # --- TASK-003: shipped example file + constant accessors ---
 
 
