@@ -54,7 +54,7 @@ class _UniqueKeySafeLoader(yaml.SafeLoader):
 class Athlete(BaseModel):
     """Static athlete profile (DB.md §5 `athlete`)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     age: int
     sex: str
@@ -121,7 +121,7 @@ class CarbsPerKg(BaseModel):
     `ValidationError`, a stray key is rejected by `extra="forbid"`, so "all five
     present" (DB.md §5) is enforced structurally."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     # All multipliers are g/kg per day — strictly positive; a negative/zero
     # multiplier is a bad hand-edit that would zero out or invert carb targets.
@@ -147,7 +147,7 @@ class CarbsPerKg(BaseModel):
 class Nutrition(BaseModel):
     """§7 macro/hydration constants the macro engine reads (DB.md §5 `nutrition`)."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     # Every numeric constant feeds the macro/hydration engine (E8), so each has
     # a positive floor — a hand-edited negative/zero value is a bad file and must

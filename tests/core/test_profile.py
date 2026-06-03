@@ -380,6 +380,29 @@ def test_inverted_carb_range_rejected(tmp_path, carb_patch):
         load_profile(path)
 
 
+# PyYAML parses `.inf`/`.nan` into float('inf')/float('nan'); a non-finite
+# macro/hydration/weight constant is a bad file and must fail. (review round-2 #2)
+@pytest.mark.parametrize(
+    ("find", "replace"),
+    [
+        ("activity_factor: 1.65", "activity_factor: .inf"),
+        ("protein_g_per_kg: 1.8", "protein_g_per_kg: .inf"),
+        ("hydration_l_high: 3.5", "hydration_l_high: .inf"),
+        ("fiber_g_low: 25", "fiber_g_low: .nan"),
+        ("hard_low: 4", "hard_low: .inf"),
+        ("goal_weight_kg: 75", "goal_weight_kg: .inf"),
+    ],
+)
+def test_non_finite_float_rejected(tmp_path, find, replace):
+    text = yaml.safe_dump(valid_profile_dict(), sort_keys=False)
+    assert find in text  # guard: the dumped form matches what we mutate
+    text = text.replace(find, replace, 1)
+    path = tmp_path / "profile.yaml"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(path)
+
+
 # --- TASK-003: shipped example file + constant accessors ---
 
 
