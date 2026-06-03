@@ -18,7 +18,11 @@ from app.core.settings import get_settings
 from app.database.base import Base
 from app.database.engine import set_sqlite_pragmas
 
-# Autogenerate diffs against the single declarative base (E2·P2/P3 attach tables).
+# Importing the models package registers every table on Base.metadata, so
+# autogenerate diffs against the full schema (E2·P2/P3 attach the tables).
+import app.database.models  # noqa: E402,F401  (import for side effect: model registration)
+
+# Autogenerate diffs against the single declarative base.
 target_metadata = Base.metadata
 
 
