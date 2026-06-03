@@ -12,6 +12,7 @@ provider SDK imports in this module (PydanticAI is kept stack but wired in E9).
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import ClassVar
 
 from pydantic import BaseModel
@@ -106,3 +107,42 @@ class BaseRouter(Node):
             if next_node is not None:
                 return next_node
         return self.fallback
+
+
+@dataclass
+class AgentConfig:
+    """Minimal, stack-neutral declaration of an LLM call's intent.
+
+    Only the fields needed to *declare* intent now — no provider enum, no SDK types.
+    E9 (LLM.md §0) extends this and constructs the PydanticAI `Agent`/model from it;
+    nothing here imports the PydanticAI or provider SDKs.
+    """
+
+    model_id: str
+    output_type: type = str
+    instructions: str | None = None
+
+
+class AgentNode(Node, ABC):
+    """Abstract LLM-call placeholder — the seam an E9 PydanticAI `Agent` fills.
+
+    Keeps the `OutputType` / `DepsType` structured-output + deps seam and an abstract
+    `get_agent_config()`, but constructs **no** `Agent` and imports **no** provider SDK
+    (real wiring is E9 — LLM.md §0). Per derive-don't-emit (ARCHITECTURE §5) the eventual
+    model emits only picks; downstream `Node`s fill every derived field. PydanticAI is
+    kept stack but is intentionally not imported in this phase's `nodes.py`.
+    """
+
+    class DepsType(BaseModel):
+        """Run-context deps placeholder; subclasses override."""
+
+    class OutputType(BaseModel):
+        """Structured-output placeholder; subclasses override."""
+
+    @abstractmethod
+    def get_agent_config(self) -> AgentConfig:
+        """Return the agent's configuration (E9 builds the PydanticAI Agent from it)."""
+
+    @abstractmethod
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        """Run the LLM call and store its OutputType; abstract so AgentNode can't be instantiated."""
