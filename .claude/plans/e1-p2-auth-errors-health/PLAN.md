@@ -146,5 +146,5 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 
 - [x] TASK-001: Error envelope models and exception handlers
 - [x] TASK-002: Bearer-token auth dependency
-- [ ] TASK-003: GET /health endpoint (unauthenticated)
+- [x] TASK-003: GET /health endpoint (unauthenticated)
 - [ ] TASK-004: Final Validation
