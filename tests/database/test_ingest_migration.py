@@ -77,10 +77,16 @@ def _table_names(conn):
     }
 
 
+# Pin to revision "0002" (the ingest revision), not "head": these tests are scoped
+# to E2·P2's schema, so later revisions (E2·P3 = 0003) must not perturb the
+# exact-table-set / round-trip assertions here.
+INGEST_REVISION = "0002"
+
+
 @pytest.fixture
 def migrated_db(tmp_path):
     db_path = tmp_path / "app.db"
-    command.upgrade(_make_cfg(db_path), "head")
+    command.upgrade(_make_cfg(db_path), INGEST_REVISION)
     with sqlite3.connect(db_path) as conn:
         yield conn
 
@@ -122,12 +128,12 @@ def test_records_indexes(migrated_db):
 def test_round_trip_with_ingest_tables(tmp_path):
     db_path = tmp_path / "rt.db"
     cfg = _make_cfg(db_path)
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, INGEST_REVISION)
     command.downgrade(cfg, "base")
     with sqlite3.connect(db_path) as conn:
         # After downgrade base, none of the ingest tables remain.
         assert not (_table_names(conn) & INGEST_TABLES)
-    command.upgrade(cfg, "head")  # round-trips back cleanly (FK drop order safe)
+    command.upgrade(cfg, INGEST_REVISION)  # round-trips back cleanly (FK drop order safe)
     with sqlite3.connect(db_path) as conn:
         assert "records" in _table_names(conn)
 
