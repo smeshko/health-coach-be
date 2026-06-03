@@ -170,31 +170,33 @@ class Workflow(ABC):
             task_context = TaskContext(event=event)
             task_context.event = self.workflow_schema.event_schema(**event)
 
-        # Preserve a parent's registry across nested (composed) runs; restore on return.
+        # Preserve a parent's registry across nested (composed) runs; restore on EVERY
+        # exit (incl. an exception from a node/router/cleanup) so a parent that catches
+        # or retries the child failure isn't left pointing at the child's registry.
         parent_nodes = task_context.metadata.get("nodes")
         task_context.metadata["nodes"] = self.nodes
+        try:
+            current_node_class: type[Node] | None = self.workflow_schema.start
+            while current_node_class is not None:
+                if task_context.should_stop:
+                    break
 
-        current_node_class: type[Node] | None = self.workflow_schema.start
-        while current_node_class is not None:
-            if task_context.should_stop:
-                break
+                current_node = self.nodes[current_node_class].node
+                node_instance: Node | None = None
+                try:
+                    if not issubclass(current_node, BaseRouter):
+                        node_instance = current_node(task_context=task_context)
+                        task_context = await node_instance.process(task_context)
+                finally:
+                    if node_instance is not None:
+                        await node_instance.cleanup()
 
-            current_node = self.nodes[current_node_class].node
-            node_instance: Node | None = None
-            try:
-                if not issubclass(current_node, BaseRouter):
-                    node_instance = current_node(task_context=task_context)
-                    task_context = await node_instance.process(task_context)
-            finally:
-                if node_instance is not None:
-                    await node_instance.cleanup()
-
-            current_node_class = await self._next_node_class(current_node_class, task_context)
-
-        if parent_nodes is not None:
-            task_context.metadata["nodes"] = parent_nodes
-        else:
-            task_context.metadata.pop("nodes", None)
+                current_node_class = await self._next_node_class(current_node_class, task_context)
+        finally:
+            if parent_nodes is not None:
+                task_context.metadata["nodes"] = parent_nodes
+            else:
+                task_context.metadata.pop("nodes", None)
         return task_context
 
     async def _next_node_class(

@@ -10,6 +10,7 @@ from app.core import (
     Node,
     NodeConfig,
     RouterNode,
+    TaskContext,
     Workflow,
     WorkflowSchema,
     WorkflowValidator,
@@ -216,6 +217,30 @@ def test_router_undeclared_route_raises():
 def test_router_undeclared_fallback_raises():
     with pytest.raises(ValueError, match="not a declared connection"):
         _BadFallbackWF().run(event={"direction": "left"})
+
+
+# --- Nested-context restoration on failure -----------------------------------
+
+
+class _Boom(Node):
+    async def process(self, task_context):
+        raise RuntimeError("boom")
+
+
+class _BoomWF(Workflow):
+    workflow_schema = WorkflowSchema(
+        event_schema=_Event, start=_Boom, nodes=[NodeConfig(node=_Boom)]
+    )
+
+
+def test_parent_registry_restored_when_a_node_raises():
+    # A child run that raises must restore the parent's metadata["nodes"], not leave it
+    # pointing at the child's registry (review round-1 #3).
+    sentinel = object()
+    parent = TaskContext(event=None, metadata={"nodes": sentinel})
+    with pytest.raises(RuntimeError, match="boom"):
+        _BoomWF().run(context=parent)
+    assert parent.metadata["nodes"] is sentinel
 
 
 # --- Validator accept / reject ----------------------------------------------
