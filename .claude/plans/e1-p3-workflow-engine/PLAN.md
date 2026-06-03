@@ -1,6 +1,6 @@
 # Plan: E1·P3 — Workflow engine primitives
 
-Status: in-progress
+Status: done
 Branch: feature/e1-p3-workflow-engine
 Risk: medium
 Created: 2026-06-03
@@ -196,4 +196,4 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-002: Node and RouterNode base types
 - [x] TASK-003: AgentNode base type (LLM placeholder)
 - [x] TASK-004: WorkflowRunner executor with stop_workflow and tests
-- [ ] TASK-005: Final Validation
+- [x] TASK-005: Final Validation
