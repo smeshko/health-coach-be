@@ -135,6 +135,55 @@ h3::before{content:"";width:8px;height:8px;background:var(--green);border-radius
 .foot-nav button{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:12px;color:var(--ink-dim);border:1px solid var(--line-bright);border-radius:8px;padding:9px 15px;transition:.14s}
 .foot-nav button:hover{border-color:var(--green);color:var(--ink)}
 .foot-nav button:disabled{opacity:.3;cursor:default}
+/* ── Sidebar accordion (epic groups → plan viewers) ──── */
+.navgroup{display:flex;flex-direction:column}
+.ghead{display:flex;align-items:center;gap:2px}
+.ghead .glabel{flex:1}
+.gtoggle{all:unset;cursor:pointer;width:22px;height:30px;display:flex;align-items:center;justify-content:center;
+  color:var(--ink-faint);font-size:10px;transition:.15s;border-radius:6px}
+.gtoggle:hover{color:var(--ink);background:var(--panel-2)}
+.gtoggle.open{transform:rotate(90deg);color:var(--green)}
+.gtoggle.spacer{cursor:default;visibility:hidden}
+.gsub{display:none;flex-direction:column;gap:1px;margin:1px 0 4px 14px;
+  padding-left:8px;border-left:1px solid var(--line)}
+.gsub.open{display:flex}
+.subitem{all:unset;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:6px;
+  color:var(--ink-faint);font-size:12.5px;transition:.13s}
+.subitem:hover{background:var(--panel-2);color:var(--ink)}
+.subitem.active{background:var(--panel-3);color:var(--ink)}
+.subitem .pn{font-family:var(--f-mono);font-size:9.5px;font-weight:700;color:var(--bg);background:var(--steel);
+  border-radius:4px;padding:1px 5px;flex:0 0 auto}
+.subitem.active .pn{background:var(--green)}
+.subitem .tx{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.subitem .rc{font-family:var(--f-mono);font-size:9px;color:var(--ink-faint)}
+nav button.haskids .ph{background:rgba(58,214,160,.14);color:var(--green);border-color:rgba(58,214,160,.4)}
+
+/* ── Plan viewer (iframe) view ───────────────────────── */
+.planview{display:none;flex:1;min-height:0;flex-direction:column}
+body.viewing .scroll{display:none}
+body.viewing .planview{display:flex}
+.planbar{display:flex;align-items:center;gap:14px;padding:11px 18px;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));flex:0 0 auto}
+.planbar .bk{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:11.5px;color:var(--ink-dim);
+  border:1px solid var(--line-bright);border-radius:7px;padding:6px 12px;transition:.14s}
+.planbar .bk:hover{border-color:var(--green);color:var(--ink)}
+.planbar .pcode{font-family:var(--f-mono);font-size:10px;font-weight:700;color:var(--bg);background:var(--green);
+  border-radius:5px;padding:2px 8px}
+.planbar .ttl{font-family:var(--f-disp);font-weight:700;font-size:15px;color:var(--ink)}
+.planbar .meta{margin-left:auto;font-family:var(--f-mono);font-size:10.5px;color:var(--ink-faint)}
+.planbar .open-new{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:10.5px;color:var(--steel)}
+.planbar .open-new:hover{color:var(--green)}
+.planframe{flex:1;width:100%;border:0;background:var(--bg)}
+
+/* per-phase "open plan" button on the epic page */
+.phase .ph-head .ph-open{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:10.5px;font-weight:700;
+  color:var(--green);background:rgba(58,214,160,.1);border:1px solid rgba(58,214,160,.35);border-radius:6px;
+  padding:4px 10px;transition:.14s;white-space:nowrap}
+.phase .ph-head .ph-open:hover{background:var(--green);color:var(--bg)}
+.phase .ph-head .ph-novalid{font-family:var(--f-mono);font-size:10px;color:var(--ink-faint)}
+.ecard .plans-tag{font-family:var(--f-mono);font-size:10px;color:var(--green);background:rgba(58,214,160,.1);
+  border:1px solid rgba(58,214,160,.3);border-radius:10px;padding:1px 8px;font-weight:700}
+
 @media(max-width:880px){.egrid,.epic-meta,.stats{grid-template-columns:1fr 1fr}.section{padding:30px 22px 80px}}
 </style>
 </head>
@@ -151,9 +200,22 @@ h3::before{content:"";width:8px;height:8px;background:var(--green);border-radius
     <div class="row"><span class="pill ready">ready for dev</span></div>
     <div class="row"><span class="pill prog">in progress</span></div>
     <div class="row"><span class="pill done">done</span></div>
+    <div class="row" style="margin-top:4px"><span class="gtoggle open" style="position:static;width:auto">▸</span><span>expand an epic for its validated plans</span></div>
   </div>
 </aside>
-<main><div class="scroll" id="scroll"></div></main>
+<main>
+  <div class="scroll" id="scroll"></div>
+  <div class="planview" id="planview">
+    <div class="planbar">
+      <button class="bk" id="planback">← back to epic</button>
+      <span class="pcode" id="plancode"></span>
+      <span class="ttl" id="plantitle"></span>
+      <span class="meta" id="planmeta"></span>
+      <a class="open-new" id="planopen" href="#" target="_blank" rel="noopener">open in new tab ↗</a>
+    </div>
+    <iframe class="planframe" id="planframe" title="plan viewer"></iframe>
+  </div>
+</main>
 
 <script>
 const EPICS = [
@@ -387,6 +449,19 @@ const EPICS = [
   },
 ];
 
+// Validated plans (create-plan + validate-plan) → md-to-viewer HTML, per epic phase.
+// Index aligns to e.phases. Epics without entries have no plans yet.
+const PLANS = {
+  E1:[{slug:"e1-p1-project-scaffold",rounds:3,how:"codex"},{slug:"e1-p2-auth-errors-health",rounds:3,how:"codex"},{slug:"e1-p3-workflow-engine",rounds:3,how:"codex"}],
+  E2:[{slug:"e2-p1-db-engine-alembic",rounds:3,how:"codex"},{slug:"e2-p2-ingest-tables",rounds:3,how:"codex"},{slug:"e2-p3-derived-state-tables",rounds:3,how:"codex"}],
+  E3:[{slug:"e3-p1-profile-loader",rounds:3,how:"codex"},{slug:"e3-p2-constitution-renderer",rounds:3,how:"codex"}],
+  E4:[{slug:"e4-p1-build-db-etl",rounds:2,how:"manual"},{slug:"e4-p2-derive-constants",rounds:3,how:"manual"},{slug:"e4-p3-seed-reconcile",rounds:2,how:"manual"}],
+  E5:[{slug:"e5-p1-sync-models",rounds:2,how:"manual"},{slug:"e5-p2-upsert-services",rounds:2,how:"manual"},{slug:"e5-p3-checkin-strength-hook",rounds:2,how:"manual"}],
+};
+const PLAN_DIR = "plans/";
+const planFor = (code,pi) => (PLANS[code]||[])[pi] || null;
+const epicHasPlans = code => !!PLANS[code];
+
 const STATUS_LABEL = {ready:"ready for dev", prog:"in progress", done:"done"};
 const scroll = document.getElementById('scroll');
 const nav = document.getElementById('nav');
@@ -401,7 +476,7 @@ function overviewHTML(){
       <div class="foot">
         <span class="pill ${e.status}">${STATUS_LABEL[e.status]}</span>
         <span class="tag">${e.phases.length} phase${e.phases.length>1?'s':''}</span>
-        <span class="dep">⟵ ${e.deps.join(', ')}</span>
+        ${epicHasPlans(e.code)?`<span class="plans-tag">✓ ${PLANS[e.code].length} validated plans</span>`:`<span class="dep">⟵ ${e.deps.join(', ')}</span>`}
       </div>
     </button>`).join('');
   return `
@@ -411,7 +486,7 @@ function overviewHTML(){
       <div class="meta">
         <div class="kick">Scope of Work</div>
         <h2>Implementation Epics &amp; Phases</h2>
-        <p>A phased plan grounded in the architecture docs. Each <b>epic</b> is a standalone, pickup-ready slice; each <b>phase</b> is sized for a single small-to-medium PR. Click any epic to see its phases, requirements, and doc references.</p>
+        <p>A phased plan grounded in the architecture docs. Each <b>epic</b> is a standalone, pickup-ready slice; each <b>phase</b> is sized for a single small-to-medium PR. <b>Epics E1–E5 have validated implementation plans</b> (authored with create-plan, hardened with adversarial review) — <b>expand an epic in the sidebar</b>, or click a phase's <span class="plans-tag">▸ validated plan</span> button, to open its viewer here.</p>
       </div>
     </div>
     <div class="stats">
@@ -435,6 +510,9 @@ function epicHTML(e,i){
         <span class="pn">${e.code}·P${pi+1}</span>
         <span class="pt">${p.t}</span>
         <span class="pill ${e.status}">${STATUS_LABEL[e.status]}</span>
+        ${(()=>{const pl=planFor(e.code,pi);return pl
+          ?`<button class="ph-open" data-plan="${pl.slug}" data-epic="${i+1}">▸ validated plan · ${pl.rounds} rounds</button>`
+          :`<span class="ph-novalid">plan: not yet</span>`;})()}
       </div>
       <div class="pb">
         <p class="deliver">${p.deliver}</p>
@@ -491,18 +569,81 @@ scroll.innerHTML = overviewHTML() + EPICS.map(epicHTML).join('');
 nav.innerHTML =
   `<button data-go="0" class="active"><span class="n">00</span><span>Overview</span></button>
    <div class="navgap"></div>` +
-  EPICS.map((e,i)=>`<button data-go="${i+1}"><span class="n">${e.code}</span><span>${e.title}</span><span class="ph">${e.phases.length}</span></button>`).join('');
+  EPICS.map((e,i)=>{
+    const has = epicHasPlans(e.code);
+    const sub = has
+      ? `<div class="gsub" id="gsub-${i+1}">` + e.phases.map((p,pi)=>{
+          const pl = planFor(e.code,pi);
+          return pl
+            ? `<button class="subitem" data-plan="${pl.slug}" data-epic="${i+1}"><span class="pn">P${pi+1}</span><span class="tx">${p.t}</span><span class="rc">${pl.rounds}r</span></button>`
+            : '';
+        }).join('') + `</div>`
+      : '';
+    return `<div class="navgroup">
+      <div class="ghead">
+        <button class="gtoggle ${has?'':'spacer'}" data-toggle="${i+1}">▸</button>
+        <button class="glabel ${has?'haskids':''}" data-go="${i+1}"><span class="n">${e.code}</span><span>${e.title}</span><span class="ph">${e.phases.length}</span></button>
+      </div>${sub}
+    </div>`;
+  }).join('');
 
+const planframe = document.getElementById('planframe');
+
+function setActiveNav(n){
+  document.querySelectorAll('#nav button[data-go]').forEach(b=>b.classList.toggle('active', +b.dataset.go===n));
+  document.querySelectorAll('.subitem').forEach(s=>s.classList.remove('active'));
+}
+function expandGroup(n){
+  const g=document.getElementById('gsub-'+n), t=document.querySelector('.gtoggle[data-toggle="'+n+'"]');
+  if(g){g.classList.add('open'); if(t)t.classList.add('open');}
+}
 function go(n){
+  document.body.classList.remove('viewing');
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
-  document.getElementById('sec-'+n).classList.add('active');
-  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active', +b.dataset.go===n));
+  const sec=document.getElementById('sec-'+n); if(sec) sec.classList.add('active');
+  setActiveNav(n);
+  if(n>0) expandGroup(n);   // reveal the epic's plans in the sidebar
   scroll.scrollTop=0;
 }
+function toggleGroup(n){
+  const g=document.getElementById('gsub-'+n), t=document.querySelector('.gtoggle[data-toggle="'+n+'"]');
+  if(!g) return;
+  const open=g.classList.toggle('open'); if(t) t.classList.toggle('open',open);
+}
+function openPlan(slug, epicN){
+  planframe.src = PLAN_DIR+slug+'.html';
+  document.getElementById('planopen').href = PLAN_DIR+slug+'.html';
+  let meta=null, code='', title=slug;
+  for(const c in PLANS){
+    const idx=PLANS[c].findIndex(x=>x.slug===slug);
+    if(idx>=0){ meta=PLANS[c][idx]; code=c+'·P'+(idx+1);
+      const ep=EPICS.find(e=>e.code===c); if(ep) title=ep.phases[idx].t; break; }
+  }
+  document.getElementById('plancode').textContent=code;
+  document.getElementById('plantitle').textContent=title;
+  document.getElementById('planmeta').textContent=meta?('validated · '+meta.rounds+' rounds · '+meta.how):'';
+  document.getElementById('planback').dataset.go=epicN||0;
+  document.body.classList.add('viewing');
+  if(epicN) expandGroup(epicN);
+  document.querySelectorAll('.subitem').forEach(s=>s.classList.toggle('active', s.dataset.plan===slug));
+  document.querySelector('main').scrollTop=0;
+}
 document.addEventListener('click',ev=>{
+  const tog=ev.target.closest('[data-toggle]');
+  if(tog){ toggleGroup(+tog.dataset.toggle); return; }
+  const plan=ev.target.closest('[data-plan]');
+  if(plan){ openPlan(plan.dataset.plan, +(plan.dataset.epic||0)); return; }
   const b=ev.target.closest('[data-go]'); if(!b) return;
   go(+b.dataset.go);
 });
+
+// deep-link: #plan=<slug> opens a viewer; #e<N> opens an epic
+(function initHash(){
+  const h=location.hash.replace('#','');
+  if(h.startsWith('plan=')){ const slug=h.slice(5);
+    for(const c in PLANS){ const idx=PLANS[c].findIndex(x=>x.slug===slug);
+      if(idx>=0){ openPlan(slug, EPICS.findIndex(e=>e.code===c)+1); return; } } }
+})();
 </script>
 </body>
 </html>

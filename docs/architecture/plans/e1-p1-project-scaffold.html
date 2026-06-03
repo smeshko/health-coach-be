@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coach App · E1·P1 — Project scaffold &amp; config</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ── Theme tokens — override this block to re-skin the whole doc ── */
+:root{
+  --bg:#0a0e13; --panel:#0f151d; --panel-2:#131c26; --panel-3:#172230;
+  --line:#1e2a37; --line-bright:#2c3d4f;
+  --ink:#dce5ef; --ink-dim:#8a98a9; --ink-faint:#566372;
+  --green:#3ad6a0; --amber:#f3b54a; --red:#ef6d6d;
+  --blue:#5fa8e0; --violet:#b08cf0; --steel:#85aacb;
+  --grid:rgba(120,160,200,.045);
+  --f-disp:'Archivo',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,sans-serif;
+  --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --sidebar:288px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg);
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:30px 30px;
+  color:var(--ink); font-family:var(--f-body); font-size:15px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; display:flex; min-height:100%;
+}
+a{color:var(--green);text-decoration:none}
+code,.mono{font-family:var(--f-mono)}
+em{color:var(--ink-dim);font-style:normal}
+
+/* ── Sidebar ─────────────────────────────────────────── */
+aside{
+  width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  display:flex; flex-direction:column; padding:22px 18px; gap:18px; z-index:5;
+}
+.brand{display:flex;flex-direction:column;gap:3px}
+.brand .kick{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.32em;text-transform:uppercase;color:var(--green)}
+.brand h1{font-family:var(--f-disp);font-weight:900;font-size:20px;letter-spacing:-.01em;margin:0;line-height:1.05}
+.brand .sub{font-size:11.5px;color:var(--ink-faint);font-family:var(--f-mono)}
+nav{display:flex;flex-direction:column;gap:2px;overflow:auto;flex:1;margin:0 -6px;padding:0 6px}
+nav button{
+  all:unset; cursor:pointer; display:flex; align-items:center; gap:11px; padding:9px 10px; border-radius:7px;
+  color:var(--ink-dim); font-size:13.5px; transition:.14s;
+}
+nav button .n{font-family:var(--f-mono);font-size:11px;color:var(--ink-faint);min-width:18px}
+nav button:hover{background:var(--panel-2);color:var(--ink)}
+nav button.active{background:var(--panel-3);color:var(--ink)}
+nav button.active .n{color:var(--green)}
+nav button .cc{margin-left:auto;font-family:var(--f-mono);font-size:10px;background:var(--amber);color:#1a1206;border-radius:10px;padding:1px 6px;font-weight:700;display:none}
+nav button .cc.show{display:inline-block}
+
+.tools{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:9px}
+.tbtn{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:11.5px;letter-spacing:.02em;
+  border:1px solid var(--line-bright);border-radius:7px;padding:8px 10px;color:var(--ink-dim);transition:.14s;display:flex;align-items:center;gap:8px}
+.tbtn:hover{border-color:var(--green);color:var(--ink)}
+.tbtn.on{background:var(--green);color:#04130d;border-color:var(--green);font-weight:700}
+.tbtn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.6}
+.tools .row{display:flex;gap:8px}
+.tools .row .tbtn{flex:1;justify-content:center}
+.tools .hint{font-size:10.5px;color:var(--ink-faint);line-height:1.45;font-family:var(--f-mono)}
+.tools .hint b{color:var(--ink-dim);font-weight:500}
+
+/* ── Main ────────────────────────────────────────────── */
+main{flex:1;min-width:0;display:flex;flex-direction:column}
+.scroll{flex:1;overflow:auto;scroll-behavior:smooth}
+.section{display:none;max-width:980px;margin:0 auto;padding:46px 54px 90px}
+.section.active{display:block;animation:fade .35s ease}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.shead{display:flex;align-items:flex-start;gap:20px;margin-bottom:34px;border-bottom:1px solid var(--line);padding-bottom:22px}
+.shead .idx{font-family:var(--f-disp);font-weight:900;font-size:58px;line-height:.8;color:var(--panel-3);-webkit-text-stroke:1px var(--line-bright);letter-spacing:-.03em}
+.shead .meta{padding-top:4px}
+.shead .kick{font-family:var(--f-mono);font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--green);margin-bottom:7px}
+.shead h2{font-family:var(--f-disp);font-weight:800;font-size:30px;margin:0 0 6px;letter-spacing:-.02em}
+.shead p{margin:0;color:var(--ink-dim);font-size:14.5px;max-width:62ch}
+
+h3{font-family:var(--f-disp);font-weight:700;font-size:15px;letter-spacing:.01em;margin:30px 0 13px;color:var(--ink);
+  display:flex;align-items:center;gap:10px}
+h3::before{content:"";width:9px;height:9px;background:var(--green);border-radius:2px;transform:rotate(45deg);flex:0 0 auto}
+.section > .commentable:first-of-type h3:first-child{margin-top:0}
+p.lede{color:var(--ink-dim);font-size:14px;margin:0 0 8px}
+
+/* commentable wrap */
+.commentable{position:relative;margin:0 0 8px;border-radius:9px;padding:4px;transition:.15s}
+body.comments-on .commentable{outline:1px dashed var(--line-bright);outline-offset:2px}
+body.comments-on .commentable:hover{outline-color:var(--amber)}
+.cmt-add{position:absolute;top:6px;right:6px;z-index:3;all:unset;cursor:pointer;display:none;
+  font-family:var(--f-mono);font-size:10.5px;color:#1a1206;background:var(--amber);padding:3px 9px;border-radius:20px;font-weight:700}
+body.comments-on .commentable:hover > .cmt-add{display:inline-block}
+.cmt-badge{position:absolute;top:8px;right:8px;z-index:2;font-family:var(--f-mono);font-size:10px;font-weight:700;
+  background:var(--amber);color:#1a1206;border-radius:20px;padding:2px 7px;display:none}
+.commentable.has-notes > .cmt-badge{display:inline-block}
+body.comments-on .commentable.has-notes:hover > .cmt-badge{display:none}
+
+.cmt-zone{margin:8px 4px 2px;display:flex;flex-direction:column;gap:7px}
+.cmt-note{background:rgba(243,181,74,.08);border:1px solid rgba(243,181,74,.32);border-left:3px solid var(--amber);
+  border-radius:6px;padding:8px 11px;font-size:13px;color:var(--ink);display:flex;gap:10px;align-items:flex-start}
+.cmt-note .tx{flex:1;white-space:pre-wrap;word-break:break-word}
+.cmt-note .tm{font-family:var(--f-mono);font-size:9.5px;color:var(--ink-faint);white-space:nowrap}
+.cmt-note .del{all:unset;cursor:pointer;color:var(--ink-faint);font-size:13px;line-height:1;display:none}
+body.comments-on .cmt-note .del{display:inline}
+.cmt-note .del:hover{color:var(--red)}
+.cmt-edit{display:flex;flex-direction:column;gap:7px;background:var(--panel-2);border:1px solid var(--line-bright);border-radius:7px;padding:9px}
+.cmt-edit textarea{width:100%;min-height:64px;resize:vertical;background:var(--bg);border:1px solid var(--line-bright);
+  border-radius:5px;color:var(--ink);font-family:var(--f-body);font-size:13px;padding:8px;outline:none}
+.cmt-edit textarea:focus{border-color:var(--amber)}
+.cmt-edit .ebtns{display:flex;gap:8px;justify-content:flex-end}
+.cmt-edit .ebtns button{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:11px;padding:5px 12px;border-radius:5px}
+.cmt-edit .save{background:var(--amber);color:#1a1206;font-weight:700}
+.cmt-edit .cancel{color:var(--ink-dim);border:1px solid var(--line-bright)}
+
+/* ── content primitives ──────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:500}
+td:first-child{color:var(--ink)}
+tr:hover td{background:var(--panel)}
+td code,td .mono{color:var(--green);font-size:12px}
+.tag{font-family:var(--f-mono);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:.04em;white-space:nowrap}
+.tag.keep{background:rgba(58,214,160,.14);color:var(--green)}
+.tag.swap{background:rgba(243,181,74,.15);color:var(--amber)}
+.tag.drop{background:rgba(239,109,109,.15);color:var(--red)}
+.tag.opt{background:rgba(95,168,224,.15);color:var(--blue)}
+.tag.code{background:rgba(133,170,203,.16);color:var(--steel)}
+.tag.llm{background:rgba(176,140,240,.18);color:var(--violet)}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px;margin:6px 0}
+.card2{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 15px}
+.card2 .lab{font-family:var(--f-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px}
+.card2 .big{font-family:var(--f-disp);font-weight:800;font-size:22px;letter-spacing:-.02em}
+.card2 .big.green{color:var(--green)} .card2 .big.violet{color:var(--violet)} .card2 .big.red{color:var(--red)} .card2 small{color:var(--ink-dim);font-size:12px}
+
+ul.clean{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:7px}
+ul.clean li{padding-left:18px;position:relative;font-size:13.5px;color:var(--ink-dim)}
+ul.clean li::before{content:"▸";position:absolute;left:0;color:var(--green)}
+ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
+.note{font-size:12.5px;color:var(--ink-dim);border-left:2px solid var(--line-bright);padding:4px 0 4px 13px;margin:10px 0}
+.note b{color:var(--ink)}
+.note.warn{border-left-color:var(--amber)} .note.warn b{color:var(--amber)}
+
+/* checklist (acceptance / validation) */
+ul.check{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:8px}
+ul.check li{padding-left:26px;position:relative;font-size:13.5px;color:var(--ink-dim)}
+ul.check li::before{content:"☐";position:absolute;left:0;top:-1px;color:var(--green);font-size:14px;font-family:var(--f-mono)}
+ul.check li b,ul.check li strong{color:var(--ink);font-weight:600}
+ul.check li code{color:var(--green)}
+
+/* ── diagrams ────────────────────────────────────────── */
+.diagram{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:20px;margin:6px 0}
+.sys{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap}
+.sys-col{display:flex;flex-direction:column;gap:10px;justify-content:center;flex:1;min-width:150px}
+.sys-col.wide{flex:1.4}
+.box{border:1px solid var(--line-bright);border-radius:8px;padding:11px 13px;background:var(--panel-2);font-size:12.5px}
+.box .t{font-family:var(--f-mono);font-weight:700;color:var(--ink);font-size:12.5px}
+.box small{display:block;color:var(--ink-faint);font-size:10.5px;margin-top:3px;font-family:var(--f-mono)}
+.box.io{border-color:rgba(58,214,160,.4)} .box.io .t{color:var(--green)}
+.box.store{border-color:var(--line-bright)} .box.store .t{color:var(--steel)}
+.box.engine{border-color:rgba(176,140,240,.4)} .box.engine .t{color:var(--violet)}
+.box.agent{border-color:rgba(176,140,240,.55);background:rgba(176,140,240,.07)} .box.agent .t{color:var(--violet)}
+.box.head{background:transparent;border-style:dashed;color:var(--ink-faint)}
+.sys-arrows{display:flex;flex-direction:column;justify-content:center;gap:14px;min-width:96px}
+.awrap{display:flex;align-items:center;gap:6px;justify-content:center;color:var(--ink-faint)}
+.alabel{font-family:var(--f-mono);font-size:9.5px;color:var(--green)}
+.aglyph{font-size:17px;color:var(--line-bright)}
+.sys-foot{margin-top:14px;font-family:var(--f-mono);font-size:10.5px;color:var(--ink-faint);text-align:center;border-top:1px dashed var(--line);padding-top:11px}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.col{border:1px solid var(--line);border-radius:10px;padding:15px;background:var(--panel)}
+.col .ch{font-family:var(--f-mono);font-size:11px;letter-spacing:.04em;margin-bottom:11px;display:flex;align-items:center;gap:8px;text-transform:uppercase}
+.col.det .ch{color:var(--steel)} .col.llm .ch{color:var(--violet)}
+.col .ch .pill{font-size:9px;padding:2px 6px;border-radius:4px;border:1px solid currentColor}
+.col ul.clean li::before{color:currentColor}
+.col.det li::before{content:"≡";color:var(--steel)} .col.llm li::before{content:"✦";color:var(--violet)}
+.col ul.clean li{color:var(--ink-dim)}
+.gate{margin-top:13px;border:1px solid var(--amber);background:rgba(243,181,74,.07);border-radius:10px;padding:14px 16px;
+  display:flex;gap:14px;align-items:center}
+.gate .gt{font-family:var(--f-mono);font-weight:700;color:var(--amber);font-size:13px;white-space:nowrap}
+.gate .gd{font-size:12.5px;color:var(--ink-dim)}
+
+/* workflow flow */
+.flow{display:flex;flex-direction:column;align-items:stretch;gap:0;max-width:600px}
+.node{border:1px solid var(--line-bright);border-left-width:3px;border-radius:8px;padding:11px 14px;background:var(--panel-2);
+  display:flex;align-items:baseline;gap:12px}
+.node .nm{font-family:var(--f-mono);font-weight:700;font-size:13px;color:var(--ink)}
+.node .nd{font-size:12px;color:var(--ink-dim);margin-left:auto;text-align:right}
+.node .ty{font-family:var(--f-mono);font-size:9.5px;padding:2px 6px;border-radius:4px;font-weight:700}
+.node.data{border-left-color:var(--steel)} .node.data .ty{background:rgba(133,170,203,.16);color:var(--steel)}
+.node.router{border-left-color:var(--amber)} .node.router .ty{background:rgba(243,181,74,.16);color:var(--amber)}
+.node.agent{border-left-color:var(--violet);background:rgba(176,140,240,.06)} .node.agent .ty{background:rgba(176,140,240,.18);color:var(--violet)}
+.node.opt{opacity:.72;border-style:dashed}
+.arrow{align-self:center;color:var(--line-bright);font-size:15px;line-height:1;padding:3px 0}
+.branch{align-self:flex-start;margin:2px 0 2px 26px;font-family:var(--f-mono);font-size:11px;color:var(--amber);display:flex;align-items:center;gap:8px}
+.branch.retry{color:var(--violet)} .branch.fail{color:var(--red)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-family:var(--f-mono);font-size:11px;color:var(--ink-dim)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+.pre{font-family:var(--f-mono);font-size:12px;line-height:1.65;color:var(--ink-dim);white-space:pre;overflow:auto;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:6px 0}
+.pre .g{color:var(--green)} .pre .v{color:var(--violet)} .pre .a{color:var(--amber)} .pre .d{color:var(--ink-faint)} .pre .s{color:var(--steel)}
+
+/* ── footer pager ────────────────────────────────────── */
+.pager{border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;
+  padding:11px 22px;font-family:var(--f-mono);font-size:12px;color:var(--ink-dim)}
+.pager button{all:unset;cursor:pointer;padding:6px 13px;border:1px solid var(--line-bright);border-radius:6px;transition:.14s;color:var(--ink-dim)}
+.pager button:hover{border-color:var(--green);color:var(--ink)}
+.pager button[disabled]{opacity:.3;cursor:default}
+.pager .ctr{display:flex;gap:6px;align-items:center}
+.pager .pos b{color:var(--green)}
+
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--green);color:#04130d;
+  font-family:var(--f-mono);font-size:12px;font-weight:700;padding:10px 18px;border-radius:8px;opacity:0;transition:.25s;z-index:50;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+@media(max-width:860px){
+  :root{--sidebar:100%}
+  body{flex-direction:column}
+  aside{position:static;height:auto;width:100%;flex-basis:auto}
+  nav{flex-direction:row;flex-wrap:wrap;overflow:visible}
+  .section{padding:30px 22px 80px}
+  .split,.sys{grid-template-columns:1fr}
+  .shead .idx{font-size:42px}
+}
+</style>
+</head>
+<!--
+  Per-doc config lives on <body>. The comment script reads these — no JS edits needed:
+    data-store        unique localStorage key. MUST be unique per doc or comments collide.
+    data-doc          filename prefix for exports → "<doc>-comments.json" / ".md"
+    data-export-title H1 used at the top of the exported Markdown
+-->
+<body data-store="coachapp-plan-e1-p1-project-scaffold-v1" data-doc="e1-p1-project-scaffold" data-export-title="E1·P1 — Project scaffold &amp; config — plan review comments">
+<aside>
+  <div class="brand">
+    <span class="kick">Coach App · Plan</span>
+    <h1>E1·P1<br>Project scaffold</h1>
+    <span class="sub">E1 · Foundation &amp; API Skeleton · 4 tasks</span>
+  </div>
+  <nav id="nav"></nav>
+  <div class="tools">
+    <button class="tbtn" id="cmtToggle"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
+    <div class="row">
+      <button class="tbtn" id="expJson" title="Download e1-p1-project-scaffold-comments.json">⤓ JSON</button>
+      <button class="tbtn" id="expMd" title="Download e1-p1-project-scaffold-comments.md">⤓ MD</button>
+      <button class="tbtn" id="copyMd" title="Copy comments as Markdown">⧉ Copy</button>
+    </div>
+    <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
+    <div class="hint"><b>To get feedback to Claude:</b> comment → Export → save the file next to the source <code>.md</code> → tell Claude to read it.</div>
+  </div>
+</aside>
+<main><div class="scroll" id="scroll">
+
+<!-- ════════════ SECTIONS:START ════════════ -->
+<section class="section" data-name="Overview" id="overview">
+  <div class="shead">
+    <div class="idx">00</div>
+    <div class="meta">
+      <div class="kick">orientation · E1·P1</div>
+      <h2>Project scaffold &amp; config</h2>
+      <p>Stand up the runnable <code>uv</code>/FastAPI chassis — package layout, typed env settings, and the camelCase Pydantic base — so every later epic has something to build on.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-goal" data-label="Goal">
+    <h3>Goal</h3>
+    <div class="note"><b>Deliver the chassis:</b> a <code>uv</code>-managed, Python&nbsp;3.13 FastAPI skeleton with a package layout, typed env <code>Settings</code>, and a shared camelCase Pydantic base — nothing more. This phase produces the structure every later epic imports.</div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-context" data-label="Epic / dependency context">
+    <h3>Epic context</h3>
+    <ul class="clean">
+      <li><b>Epic E1 — Foundation &amp; API Skeleton</b>, phase <b>P1</b>. Source of truth: <code>epics/E01-foundation.md</code>.</li>
+      <li><b>Grounded in</b> <code>ARCHITECTURE.md §1</code> (stack note) and <code>MODELS.md "Conventions"</code> (casing, nulls vs absent).</li>
+      <li><b>Status:</b> <span class="tag swap">draft</span> · <b>Risk:</b> <span class="tag keep">small</span> · <b>4 implementation tasks</b> + 1 final-validation task.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="ov-scope" data-label="Scope vs Out-of-Scope">
+    <h3>Scope vs Out-of-Scope</h3>
+    <div class="split">
+      <div class="col det">
+        <div class="ch">In scope <span class="pill">this phase</span></div>
+        <ul class="clean">
+          <li><code>uv</code> project pinned to <b>Python 3.13</b> (<code>requires-python = "&gt;=3.13,&lt;3.14"</code>), kept-stack deps only.</li>
+          <li>Package layout: <code>app/</code> with <code>api/</code>, <code>core/</code>, <code>database/</code>, <code>services/</code> + <code>tests/</code>.</li>
+          <li>FastAPI <b>app factory</b> <code>create_app()</code> + a <code>uvicorn</code> entrypoint.</li>
+          <li>Typed <b>settings</b> (<code>pydantic-settings</code>) read from env; fail fast on missing required vars.</li>
+          <li>A <b>camelCase Pydantic base</b> (<code>alias_generator=to_camel</code>, <code>populate_by_name=True</code>).</li>
+        </ul>
+      </div>
+      <div class="col llm">
+        <div class="ch">Out of scope <span class="pill">later phases</span></div>
+        <ul class="clean">
+          <li>Auth, error envelope, health endpoint → <b>E1·P2</b>.</li>
+          <li>Workflow engine primitives → <b>E1·P3</b>.</li>
+          <li>DB models / migrations → <b>E2</b>.</li>
+          <li>Real endpoints → <b>E5 / E10 / E11</b>.</li>
+          <li>Docker / Langfuse wiring → <b>E12</b>.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="gate"><span class="gt">STACK ALLOWLIST</span><span class="gd"><b>No</b> Postgres / Celery / Redis / pgvector / <code>vecs</code> / Supabase deps anywhere (ARCHITECTURE §1).</span></div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-research" data-label="Research summary">
+    <h3>Research summary</h3>
+    <p class="lede">Where the chassis comes from, and what it deliberately drops.</p>
+    <ul class="clean">
+      <li><b>Reuse Datalumina's GenAI Launchpad</b> (<code>../genai-launchpad-main</code>) — keep <b>only</b> its FastAPI app, <code>core/</code> workflow primitives, PydanticAI, Jinja2, and Alembic.</li>
+      <li><b>Drop</b> Postgres/pgvector, Celery, Redis, Supabase, streaming and RAG (ARCHITECTURE §1). Single synchronous process — no workers/scheduler.</li>
+      <li><b>Wire JSON is camelCase</b>, Python stays snake_case behind a Pydantic <code>alias_generator</code> (MODELS "Conventions").</li>
+      <li>The Launchpad layout under <code>../genai-launchpad-main/app/</code> is the reference for the package structure to mirror (minus the dropped pieces).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="ov-decisions" data-label="Decisions">
+    <h3>Decisions</h3>
+    <table>
+      <tr><th>decision</th><th>tag</th><th>rationale</th></tr>
+      <tr><td>Mirror the Launchpad package layout (<code>api/core/database/services</code>), minus dropped deps</td><td><span class="tag keep">keep</span></td><td>Parity with the boilerplate the <code>core/</code> primitives come from (E1·P3), while shedding Postgres/Celery/Redis.</td></tr>
+      <tr><td><code>pydantic-settings</code> for config, env-driven</td><td><span class="tag keep">keep</span></td><td>Matches the deployment model (one process, env config; ARCHITECTURE §1) and fails fast at startup.</td></tr>
+      <tr><td>One shared camelCase base model now</td><td><span class="tag keep">keep</span></td><td>Every later wire model (E5/E10/E11) inherits it, so casing is defined once (MODELS "Conventions").</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="ov-risks" data-label="Risks">
+    <h3>Risks &amp; mitigations</h3>
+    <table>
+      <tr><th>risk</th><th>tag</th><th>mitigation</th></tr>
+      <tr><td>Carrying over dropped deps from the Launchpad</td><td><span class="tag drop">risk</span></td><td>The manifest is an explicit allowlist; TASK-001 acceptance asserts no Postgres/Celery/Redis/pgvector imports.</td></tr>
+      <tr><td>Python version drift</td><td><span class="tag swap">risk</span></td><td>Pin 3.13 in <code>pyproject.toml</code> / <code>.python-version</code>.</td></tr>
+    </table>
+  </div>
+</section>
+
+<section class="section" data-name="Acceptance" id="acceptance">
+  <div class="shead">
+    <div class="idx">01</div>
+    <div class="meta">
+      <div class="kick">the contract</div>
+      <h2>Acceptance criteria</h2>
+      <p>The phase's contract — every box must be green before E1·P1 is done. Final validation (page 06) maps concrete checks back to each of these.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="acc-list" data-label="Acceptance criteria">
+    <ul class="check">
+      <li><code>uv sync</code> installs the project on Python <b>3.13</b> (<code>requires-python</code> bounded <code>&gt;=3.13,&lt;3.14</code>); the locked dependency set contains <b>none</b> of Postgres/Celery/Redis/pgvector/<code>vecs</code>.</li>
+      <li><code>uvicorn</code> starts the app via the factory entrypoint without error when env is complete.</li>
+      <li>Settings load from env and <b>fail fast at app startup</b> (<code>create_app()</code> raises) when a required var is missing — proven by a <b>negative app-factory smoke</b>, not only an isolated settings test.</li>
+      <li>A sample model inheriting the base emits camelCase from raw <code>model_dump_json()</code> <b>and</b> over the wire (FastAPI route), and accepts both snake_case and camelCase input.</li>
+      <li>The package layout (<code>api/</code>, <code>core/</code>, <code>database/</code>, <code>services/</code>, <code>tests/</code>) exists and is importable.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" data-name="T1 · uv + layout" id="task-001">
+  <div class="shead">
+    <div class="idx">02</div>
+    <div class="meta">
+      <div class="kick">task-001 · depends: none</div>
+      <h2>Init uv project, pin 3.13, deps &amp; layout</h2>
+      <p>Create the <code>uv</code> project pinned to Python 3.13 with the kept-stack dependencies and the package layout the later epics import.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t1-goal" data-label="T1 goal / commit">
+    <div class="note"><b>Goal:</b> the <code>uv</code> project with kept-stack deps and the importable package skeleton. <b>Commit:</b> <code>chore(project): init uv project, deps, and package layout</code></div>
+  </div>
+
+  <div class="commentable" data-anchor="t1-files" data-label="T1 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>note</th></tr>
+      <tr><td><code>pyproject.toml</code></td><td><span class="tag swap">create</span></td><td>Metadata, <code>requires-python = "&gt;=3.13,&lt;3.14"</code> (bounded — not a bare floor), deps allowlist + dev deps (incl. <code>httpx</code> for <code>TestClient</code>).</td></tr>
+      <tr><td><code>.python-version</code></td><td><span class="tag swap">create</span></td><td><code>3.13</code></td></tr>
+      <tr><td><code>app/__init__.py</code>, <code>app/api/__init__.py</code>, <code>app/core/__init__.py</code>, <code>app/database/__init__.py</code>, <code>app/services/__init__.py</code></td><td><span class="tag swap">create</span></td><td>Package skeleton.</td></tr>
+      <tr><td><code>tests/__init__.py</code>, <code>tests/test_layout.py</code></td><td><span class="tag swap">create</span></td><td>Import-boundary smoke test.</td></tr>
+      <tr><td><code>README.md</code></td><td><span class="tag swap">create</span></td><td>Run instructions (<code>uv sync</code>, <code>uv run uvicorn …</code>).</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t1-accept" data-label="T1 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="check">
+      <li><code>uv sync</code> succeeds on Python 3.13; <code>requires-python</code> is bounded <code>&gt;=3.13,&lt;3.14</code> (not a bare <code>&gt;=3.13</code>).</li>
+      <li>Runtime deps are exactly the kept stack (<code>fastapi</code>, <code>uvicorn</code>, <code>pydantic</code>, <code>pydantic-settings</code>, <code>sqlalchemy</code>, <code>alembic</code>, <code>pydantic-ai</code>, <code>jinja2</code>); dev deps add <code>pytest</code>, <code>ruff</code>, <code>httpx</code>. <b>No</b> psycopg/asyncpg/celery/redis/pgvector/vecs/supabase anywhere in the lock.</li>
+      <li><code>python -c "import app.api, app.core, app.database, app.services"</code> succeeds.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t1-flow" data-label="T1 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>tests/test_layout.py</code>: assert the four subpackages import &amp; forbidden deps are not importable / not in the lock</span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Author <code>pyproject.toml</code> (allowlist), <code>.python-version</code>, <code>__init__.py</code> files, README; run <code>uv sync</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Run <code>ruff</code> and tidy; confirm the test passes</span></div>
+    </div>
+    <div class="note"><b>Notes:</b> stack allowlist mandated by ARCHITECTURE §1 (drop Postgres/Celery/Redis/pgvector/vecs/Supabase). Mirror <code>../genai-launchpad-main/app/</code> layout for parity with the <code>core/</code> primitives adopted in E1·P3.</div>
+  </div>
+</section>
+
+<section class="section" data-name="T2 · app factory" id="task-002">
+  <div class="shead">
+    <div class="idx">03</div>
+    <div class="meta">
+      <div class="kick">task-002 · depends: task-001</div>
+      <h2>FastAPI app factory &amp; uvicorn entrypoint</h2>
+      <p>A <code>create_app()</code> factory returning a configured <code>FastAPI</code> that loads and validates settings at startup, plus a <code>uvicorn</code>-runnable entry point.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t2-goal" data-label="T2 goal / commit">
+    <div class="note"><b>Goal:</b> a <code>create_app()</code> that validates settings at construction time, plus <code>uvicorn app.main:app</code>. <b>Commit:</b> <code>feat(api): add FastAPI app factory and uvicorn entrypoint</code></div>
+  </div>
+
+  <div class="commentable" data-anchor="t2-files" data-label="T2 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>note</th></tr>
+      <tr><td><code>app/api/app.py</code></td><td><span class="tag swap">create</span></td><td><code>create_app() -&gt; FastAPI</code>; calls <code>get_settings()</code> <b>at construction time</b> (before returning) so missing required env makes <code>create_app()</code> raise — <b>not</b> a lifespan-only hook a non-context-managed <code>TestClient</code> could bypass.</td></tr>
+      <tr><td><code>app/main.py</code></td><td><span class="tag swap">create</span></td><td>Exposes <code>app = create_app()</code> for <code>uvicorn app.main:app</code>.</td></tr>
+      <tr><td><code>tests/test_app_factory.py</code></td><td><span class="tag swap">create</span></td><td>Factory returns a <code>FastAPI</code>; <code>TestClient</code> builds; OpenAPI exposed; <b>negative smoke</b>: <code>create_app()</code> with a required env var unset raises.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t2-accept" data-label="T2 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="check">
+      <li><code>create_app()</code> returns a <code>FastAPI</code> instance and calls <code>get_settings()</code> <b>at construction time</b>.</li>
+      <li><code>TestClient(create_app())</code> builds and the app exposes its OpenAPI schema (<code>/openapi.json</code>).</li>
+      <li>With a required env var unset, <b><code>create_app()</code> itself raises</b> a clear <code>ValidationError</code>-derived error (asserted directly — not via lifespan) — so <code>uv run uvicorn app.main:app</code> also fails fast.</li>
+      <li><code>uv run uvicorn app.main:app</code> boots locally when env is complete (manual smoke).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t2-flow" data-label="T2 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_app_factory.py</code>: returns <code>FastAPI</code>; <code>TestClient</code> builds; OpenAPI exposed; unset required env → <b><code>create_app()</code> raises directly</b> (assert on the call, not lifespan entry)</span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>create_app()</code> (load <code>get_settings()</code> at construction) and <code>app/main.py</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Keep the factory free of unrelated side effects (only config validation at boot); tidy with <code>ruff</code></span></div>
+    </div>
+    <div class="note"><b>Notes:</b> single synchronous process — no workers/scheduler (ARCHITECTURE §1). Routers/handlers are added in E1·P2 (health/errors) and later endpoint epics; keep the factory open for <code>include_router</code>.</div>
+  </div>
+</section>
+
+<section class="section" data-name="T3 · settings" id="task-003">
+  <div class="shead">
+    <div class="idx">04</div>
+    <div class="meta">
+      <div class="kick">task-003 · depends: task-001</div>
+      <h2>Typed settings module from environment</h2>
+      <p>A <code>pydantic-settings</code> config object read from the environment, validated at startup, used everywhere config is needed.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t3-goal" data-label="T3 goal / commit">
+    <div class="note"><b>Goal:</b> a single, cached, env-driven <code>Settings</code> that fails fast on missing required vars. <b>Commit:</b> <code>feat(core): add typed settings loaded from environment</code></div>
+  </div>
+
+  <div class="commentable" data-anchor="t3-files" data-label="T3 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>note</th></tr>
+      <tr><td><code>app/core/settings.py</code></td><td><span class="tag swap">create</span></td><td><code>Settings(BaseSettings)</code> + a cached <code>get_settings()</code> accessor.</td></tr>
+      <tr><td><code>tests/test_settings.py</code></td><td><span class="tag swap">create</span></td><td>Required-var validation + override behaviour.</td></tr>
+      <tr><td><code>.env.example</code></td><td><span class="tag swap">create</span></td><td>Documented variables.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t3-fields" data-label="T3 settings fields">
+    <h3>Settings fields</h3>
+    <table>
+      <tr><th>field</th><th>tag</th><th>note</th></tr>
+      <tr><td><code>api_token</code></td><td><span class="tag drop">required</span></td><td>Consumed by E1·P2 auth.</td></tr>
+      <tr><td><code>app_db_path</code></td><td><span class="tag drop">required</span></td><td>SQLite path.</td></tr>
+      <tr><td><code>model_id</code></td><td><span class="tag keep">default</span></td><td>Defaults to <code>claude-opus-4-8</code>; consumed by E9.</td></tr>
+      <tr><td><code>constitution_version</code></td><td><span class="tag keep">field</span></td><td>Constitution version string.</td></tr>
+      <tr><td><code>langfuse_public_key</code>, <code>langfuse_secret_key</code>, <code>langfuse_host</code></td><td><span class="tag opt">optional</span></td><td>Langfuse wiring; consumed by E12.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t3-accept" data-label="T3 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="check">
+      <li><code>Settings</code> exposes <code>api_token</code> (required), <code>app_db_path</code> (required), <code>model_id</code> (default <code>claude-opus-4-8</code>), <code>constitution_version</code>, optional <code>langfuse_public_key</code>/<code>langfuse_secret_key</code>/<code>langfuse_host</code>.</li>
+      <li>Missing a required var raises a clear <code>ValidationError</code> at load.</li>
+      <li><code>get_settings()</code> is cached (same instance) and reads env via <code>.env</code> + process env.</li>
+      <li><code>get_settings()</code> is the single config entry point invoked by <code>create_app()</code> at startup (TASK-002), so a missing required var fails the boot — not lazily at first use.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t3-flow" data-label="T3 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_settings.py</code>: monkeypatch env → loads; unset required → raises</span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>Settings</code> + <code>get_settings()</code> (<code>lru_cache</code>); add <code>.env.example</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Group fields by concern; ensure no secret defaults are baked in</span></div>
+    </div>
+    <div class="note"><b>Notes:</b> env-driven config matches the deployment model (one container, env config; ARCHITECTURE §1). <code>api_token</code> is consumed by E1·P2 auth; <code>model_id</code>/<code>langfuse_*</code> by E9/E12.</div>
+  </div>
+</section>
+
+<section class="section" data-name="T4 · camel base" id="task-004">
+  <div class="shead">
+    <div class="idx">05</div>
+    <div class="meta">
+      <div class="kick">task-004 · depends: task-001</div>
+      <h2>camelCase Pydantic base model</h2>
+      <p>A shared Pydantic base that serializes camelCase on the wire while keeping snake_case in Python, inherited by every request/response model.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t4-goal" data-label="T4 goal / commit">
+    <div class="note"><b>Goal:</b> one <code>CamelModel</code> base that every E5/E10/E11 wire model inherits — casing defined once. <b>Commit:</b> <code>feat(api): add camelCase Pydantic base model</code></div>
+  </div>
+
+  <div class="commentable" data-anchor="t4-files" data-label="T4 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>note</th></tr>
+      <tr><td><code>app/api/schemas/base.py</code></td><td><span class="tag swap">create</span></td><td><code>CamelModel(BaseModel)</code> with <code>alias_generator=to_camel</code>, <code>populate_by_name=True</code>, <code>from_attributes=True</code>, <b>and <code>serialize_by_alias=True</code></b> (so raw <code>model_dump_json()</code> emits camelCase, not just FastAPI response handling).</td></tr>
+      <tr><td><code>tests/test_camel_base.py</code></td><td><span class="tag swap">create</span></td><td>Round-trip casing test + a FastAPI route returning a <code>CamelModel</code> asserting the <b>actual wire JSON</b> is camelCase.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t4-accept" data-label="T4 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="check">
+      <li>A model with <code>snake_case</code> fields inheriting <code>CamelModel</code> emits camelCase keys from <b>raw</b> <code>model_dump_json()</code> (no <code>by_alias=True</code> needed at the call site) — aliasing is configured on the model, not left to the caller.</li>
+      <li>A FastAPI route returning the model produces camelCase JSON on the wire (asserted via <code>TestClient</code>).</li>
+      <li>It accepts <b>both</b> camelCase (alias) and snake_case (field name) on input.</li>
+      <li><b>Null-vs-absent</b> (MODELS "Nulls vs absent"): an optional field declared <code>T | None = None</code> accepts <b>both</b> omission <b>and</b> explicit <code>null</code> (tested) — the convention <code>T | None = None</code> is documented in the module docstring so later wire models don't reject omission.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t4-flow" data-label="T4 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node router"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_camel_base.py</code>: sample model with required + optional (<code>T | None = None</code>); assert raw <code>model_dump_json()</code> is camelCase, both-casing in, a <code>TestClient</code> route returns camelCase wire JSON, optional accepts both omission &amp; explicit <code>null</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">Implement <code>CamelModel</code> using <code>pydantic.alias_generators.to_camel</code> with <code>serialize_by_alias=True</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node data"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">Document the convention in a short module docstring</span></div>
+    </div>
+    <div class="note"><b>Notes:</b> wire is camelCase, Python snake_case behind an <code>alias_generator</code> (MODELS "Conventions → Casing"). All E5/E10/E11 wire models inherit this — define it once.</div>
+  </div>
+</section>
+
+<section class="section" data-name="Final validation" id="final-validation">
+  <div class="shead">
+    <div class="idx">06</div>
+    <div class="meta">
+      <div class="kick">task-005 · depends: all prior</div>
+      <h2>Final validation</h2>
+      <p>Confirm the plan is fully implemented and production-ready — concrete, non-circular checks mapped to every acceptance criterion.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="val-checks" data-label="Final validation checklist">
+    <h3>Validation checks</h3>
+    <ul class="check">
+      <li>All task checkboxes in <code>PLAN.md</code> are ticked.</li>
+      <li><code>uv run ruff check .</code> passes with no issues.</li>
+      <li><code>uv run pytest</code> passes.</li>
+      <li><code>uv sync</code> resolves cleanly and <code>uv run python --version</code> prints <b>3.13.x</b>; <code>requires-python</code> is <code>&gt;=3.13,&lt;3.14</code>; the lock contains <b>none</b> of Postgres/Celery/Redis/pgvector/vecs/Supabase.</li>
+      <li><b>Settings — fail fast:</b> <code>test_settings.py</code> proves a missing required var raises; <b>and</b> the negative app-factory smoke (<code>test_app_factory.py</code>) proves <code>create_app()</code> fails at boot when a required var is unset.</li>
+      <li><b>Settings — load:</b> env present → <code>get_settings()</code> returns a valid cached <code>Settings</code>.</li>
+      <li><b>camelCase in:</b> a <code>CamelModel</code> accepts both snake_case and camelCase input.</li>
+      <li><b>camelCase out:</b> raw <code>model_dump_json()</code> is camelCase <b>and</b> a <code>TestClient</code> route returns camelCase wire JSON.</li>
+      <li><b>Null-vs-absent:</b> an optional <code>T | None = None</code> field accepts both omission and explicit <code>null</code>.</li>
+      <li><b>Importability:</b> <code>python -c "import app.api, app.core, app.database, app.services"</code> succeeds.</li>
+      <li><code>uv run uvicorn app.main:app</code> boots (manual smoke), <code>create_app()</code> returns a <code>FastAPI</code>, OpenAPI at <code>/openapi.json</code>.</li>
+      <li><code>PLAN.md</code> acceptance criteria all met.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" data-name="Adversarial review" id="adversarial-review">
+  <div class="shead">
+    <div class="idx">07</div>
+    <div class="meta">
+      <div class="kick">validation · hardening</div>
+      <h2>Adversarial validation</h2>
+      <p>Three rounds of adversarial review on the draft plan — all findings applied, none deferred or rejected. Round 3 returned <b>approve</b> with no material findings.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="val-stats" data-label="Validation headline stats">
+    <div class="cards">
+      <div class="card2"><div class="lab">rounds</div><div class="big green">3</div></div>
+      <div class="card2"><div class="lab">findings</div><div class="big">7</div></div>
+      <div class="card2"><div class="lab">applied</div><div class="big green">7</div></div>
+      <div class="card2"><div class="lab">deferred / rejected</div><div class="big violet">0</div></div>
+    </div>
+    <div class="note"><b>Plan status at validation:</b> draft · <b>Run on:</b> 2026-06-02.</div>
+  </div>
+
+  <div class="commentable" data-anchor="val-rounds" data-label="Rounds table">
+    <h3>Rounds</h3>
+    <table>
+      <tr><th>round</th><th>findings</th><th>applied</th><th>deferred</th><th>rejected</th></tr>
+      <tr><td>1</td><td>5</td><td><span class="tag keep">5</span></td><td>0</td><td>0</td></tr>
+      <tr><td>2</td><td>2</td><td><span class="tag keep">2</span></td><td>0</td><td>0</td></tr>
+      <tr><td>3</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+    </table>
+    <div class="note"><b>Round 3</b> returned <b>approve</b> with no material findings.</div>
+  </div>
+
+  <div class="commentable" data-anchor="val-applied-r1" data-label="Applied — Round 1">
+    <h3>Applied — Round 1</h3>
+    <ul class="clean">
+      <li><b>TASK-001, TASK-002</b> — add <code>httpx</code> as a dev dependency so FastAPI <code>TestClient</code> works (round-1 #1).</li>
+      <li><b>PLAN.md:Acceptance, TASK-002/003/005</b> — settings validated at app <b>startup</b> (<code>create_app()</code>), with a negative boot smoke (round-1 #2).</li>
+      <li><b>PLAN.md:Scope, TASK-001, TASK-005</b> — bound <code>requires-python</code> to <code>&gt;=3.13,&lt;3.14</code> (not a bare floor) + record <code>python --version</code> in final validation (round-1 #3).</li>
+      <li><b>TASK-004, TASK-005</b> — make camelCase JSON explicit (<code>serialize_by_alias=True</code>) and assert real wire JSON via a FastAPI route (round-1 #4).</li>
+      <li><b>TASK-005</b> — enumerate concrete, non-circular final-validation checks for every acceptance criterion (round-1 #5).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="val-applied-r2" data-label="Applied — Round 2">
+    <h3>Applied — Round 2</h3>
+    <ul class="clean">
+      <li><b>TASK-002</b> — remove the lifespan-only path; require construction-time <code>get_settings()</code> in <code>create_app()</code> and assert <code>create_app()</code> itself raises (round-2 #1).</li>
+      <li><b>TASK-004, TASK-005</b> — test an optional <code>T | None = None</code> field accepting both omission and explicit <code>null</code>; document the convention (round-2 #2).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="val-deferred" data-label="Deferred / Rejected">
+    <h3>Deferred / Rejected</h3>
+    <div class="note"><b>Deferred:</b> none. <b>Rejected:</b> none — every finding across all three rounds was applied.</div>
+  </div>
+</section>
+<!-- ════════════ SECTIONS:END ════════════ -->
+
+</div>
+<div class="pager">
+  <button id="prev">‹ prev</button>
+  <div class="ctr"><span class="pos">section <b id="posNow">1</b> / <span id="posTot">1</span></span></div>
+  <button id="next">next ›</button>
+</div></main>
+<div class="toast" id="toast"></div>
+<script>
+/* ── Reusable viewer + comment harness. Config comes from <body> data-* —
+      do not hard-code doc identity here. Works verbatim for any doc. ── */
+(function(){
+  "use strict";
+  var body=document.body;
+  var STORE=body.dataset.store||"doc-comments-v1";
+  var LASTSEC=STORE+"-lastsec";
+  var DOC=body.dataset.doc||"doc";
+  var EXPORT_TITLE=body.dataset.exportTitle||"Review comments";
+  var sections=[].slice.call(document.querySelectorAll(".section"));
+  var nav=document.getElementById("nav");
+  var scroll=document.getElementById("scroll");
+  var cur=0;
+
+  // ---- storage ----
+  function load(){try{return JSON.parse(localStorage.getItem(STORE))||{};}catch(e){return {};}}
+  function persist(d){localStorage.setItem(STORE,JSON.stringify(d));}
+  var data=load();
+  function uid(){return "n"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+  function secOf(el){var s=el.closest(".section");return s?s.getAttribute("data-name"):"";}
+
+  // ---- build nav ----
+  sections.forEach(function(s,i){
+    var b=document.createElement("button");
+    b.innerHTML='<span class="n">'+String(i).padStart(2,"0")+'</span><span class="t">'+s.getAttribute("data-name")+'</span><span class="cc" data-sec="'+s.getAttribute("data-name")+'"></span>';
+    b.addEventListener("click",function(){go(i);});
+    nav.appendChild(b);
+  });
+  var navBtns=[].slice.call(nav.children);
+  document.getElementById("posTot").textContent=sections.length;
+
+  function go(i){
+    i=Math.max(0,Math.min(sections.length-1,i));
+    sections[cur].classList.remove("active");
+    navBtns[cur].classList.remove("active");
+    cur=i;
+    sections[cur].classList.add("active");
+    navBtns[cur].classList.add("active");
+    document.getElementById("posNow").textContent=i+1;
+    document.getElementById("prev").disabled=(i===0);
+    document.getElementById("next").disabled=(i===sections.length-1);
+    scroll.scrollTop=0;
+    if(location.hash!=="#"+sections[i].id) history.replaceState(null,"","#"+sections[i].id);
+    localStorage.setItem(LASTSEC,String(i));
+  }
+  document.getElementById("prev").addEventListener("click",function(){go(cur-1);});
+  document.getElementById("next").addEventListener("click",function(){go(cur+1);});
+  document.addEventListener("keydown",function(e){
+    if(e.target.tagName==="TEXTAREA")return;
+    if(e.key==="ArrowRight"||e.key==="]")go(cur+1);
+    if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+  });
+
+  // ---- comments ----
+  var commentables=[].slice.call(document.querySelectorAll(".commentable"));
+  function totalCount(){var n=0;for(var k in data){if(data[k]&&data[k].notes)n+=data[k].notes.length;}return n;}
+  function countFor(sec){var n=0;for(var k in data){if(data[k]&&data[k].section===sec&&data[k].notes)n+=data[k].notes.length;}return n;}
+
+  function renderBadges(){
+    document.getElementById("totCt").textContent=totalCount();
+    navBtns.forEach(function(b){
+      var cc=b.querySelector(".cc"); var sec=cc.getAttribute("data-sec"); var c=countFor(sec);
+      cc.textContent=c; cc.classList.toggle("show",c>0);
+    });
+  }
+
+  function renderZone(block){
+    var anchor=block.getAttribute("data-anchor");
+    var rec=data[anchor];
+    var old=block.querySelector(".cmt-zone"); if(old)old.remove();
+    var hasNotes=rec&&rec.notes&&rec.notes.length;
+    block.classList.toggle("has-notes",!!hasNotes);
+    var bdg=block.querySelector(".cmt-badge"); if(bdg)bdg.textContent=hasNotes?rec.notes.length:"";
+    if(!hasNotes)return;
+    var zone=document.createElement("div"); zone.className="cmt-zone";
+    rec.notes.forEach(function(note){
+      var d=document.createElement("div"); d.className="cmt-note";
+      var t=new Date(note.ts);
+      var tm=t.toLocaleDateString(undefined,{month:"short",day:"numeric"})+" "+t.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+      d.innerHTML='<span class="tx"></span><span class="tm">'+tm+'</span><button class="del" title="delete">✕</button>';
+      d.querySelector(".tx").textContent=note.text;
+      d.querySelector(".del").addEventListener("click",function(){
+        rec.notes=rec.notes.filter(function(x){return x.id!==note.id;});
+        if(!rec.notes.length)delete data[anchor];
+        persist(data); renderZone(block); renderBadges();
+      });
+      zone.appendChild(d);
+    });
+    block.appendChild(zone);
+  }
+
+  function openEditor(block){
+    if(block.querySelector(".cmt-edit"))return;
+    var anchor=block.getAttribute("data-anchor");
+    var ed=document.createElement("div"); ed.className="cmt-edit";
+    ed.innerHTML='<textarea placeholder="Comment on: '+(block.getAttribute("data-label")||anchor)+'"></textarea>'+
+      '<div class="ebtns"><button class="cancel">cancel</button><button class="save">save note</button></div>';
+    block.appendChild(ed);
+    var ta=ed.querySelector("textarea"); ta.focus();
+    function close(){ed.remove();}
+    ed.querySelector(".cancel").addEventListener("click",close);
+    ta.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="Enter")save();if(e.key==="Escape")close();});
+    ed.querySelector(".save").addEventListener("click",save);
+    function save(){
+      var v=ta.value.trim(); if(!v){close();return;}
+      if(!data[anchor])data[anchor]={section:secOf(block),label:block.getAttribute("data-label")||anchor,notes:[]};
+      data[anchor].notes.push({id:uid(),text:v,ts:new Date().toISOString()});
+      persist(data); close(); renderZone(block); renderBadges();
+    }
+  }
+
+  commentables.forEach(function(block){
+    var add=document.createElement("button"); add.className="cmt-add"; add.textContent="＋ note";
+    add.addEventListener("click",function(e){e.stopPropagation();openEditor(block);});
+    block.insertBefore(add,block.firstChild);
+    var badge=document.createElement("span"); badge.className="cmt-badge";
+    block.insertBefore(badge,block.firstChild);
+    renderZone(block);
+  });
+  function refreshBadgeNums(){commentables.forEach(function(b){var r=data[b.getAttribute("data-anchor")];b.querySelector(".cmt-badge").textContent=r&&r.notes?r.notes.length:"";});}
+  refreshBadgeNums();
+
+  // ---- comment mode toggle ----
+  var on=false, tgl=document.getElementById("cmtToggle");
+  tgl.addEventListener("click",function(){
+    on=!on; document.body.classList.toggle("comments-on",on);
+    tgl.classList.toggle("on",on); document.getElementById("cmStat").textContent=on?"on":"off";
+  });
+
+  // ---- export ----
+  function toast(m){var t=document.getElementById("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show");},1900);}
+  function download(name,text,type){
+    var blob=new Blob([text],{type:type});var u=URL.createObjectURL(blob);
+    var a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();
+    a.remove();setTimeout(function(){URL.revokeObjectURL(u);},1000);
+  }
+  function payload(){
+    var out={exportedAt:new Date().toISOString(),total:totalCount(),comments:[]};
+    var order={}; commentables.forEach(function(b,i){order[b.getAttribute("data-anchor")]=i;});
+    Object.keys(data).sort(function(a,b){return (order[a]||0)-(order[b]||0);}).forEach(function(k){
+      var r=data[k]; if(!r||!r.notes||!r.notes.length)return;
+      out.comments.push({anchor:k,section:r.section,block:r.label,notes:r.notes.map(function(n){return {text:n.text,ts:n.ts};})});
+    });
+    return out;
+  }
+  function toMarkdown(){
+    var p=payload();
+    var s="# "+EXPORT_TITLE+"\n\n_Exported "+p.exportedAt+" · "+p.total+" comment(s)_\n";
+    var curSec=null;
+    p.comments.forEach(function(c){
+      if(c.section!==curSec){curSec=c.section;s+="\n## "+curSec+"\n";}
+      s+="\n**"+c.block+"**  \n`#"+c.anchor+"`\n";
+      c.notes.forEach(function(n){s+="\n- "+n.text.replace(/\n/g,"\n  ")+"  \n  _"+n.ts+"_\n";});
+    });
+    if(!p.comments.length)s+="\n_No comments yet._\n";
+    return s;
+  }
+  document.getElementById("expJson").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to export");
+    download(DOC+"-comments.json",JSON.stringify(payload(),null,2),"application/json");toast("Saved "+DOC+"-comments.json");
+  });
+  document.getElementById("expMd").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to export");
+    download(DOC+"-comments.md",toMarkdown(),"text/markdown");toast("Saved "+DOC+"-comments.md");
+  });
+  document.getElementById("copyMd").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to copy");
+    navigator.clipboard.writeText(toMarkdown()).then(function(){toast("Copied as Markdown");},function(){toast("Copy failed");});
+  });
+  document.getElementById("clearAll").addEventListener("click",function(){
+    if(!totalCount())return;
+    if(!confirm("Delete all "+totalCount()+" comment(s)? This cannot be undone."))return;
+    data={};persist(data);commentables.forEach(renderZone);refreshBadgeNums();renderBadges();toast("All comments cleared");
+  });
+
+  renderBadges();
+
+  // ---- initial section ----
+  var start=0;
+  if(location.hash){var idx=sections.findIndex(function(s){return "#"+s.id===location.hash;});if(idx>=0)start=idx;}
+  else{var ls=parseInt(localStorage.getItem(LASTSEC),10);if(!isNaN(ls)&&ls<sections.length)start=ls;}
+  sections[0].classList.add("active");navBtns[0].classList.add("active");go(start);
+})();
+</script>
+</body>
+</html>

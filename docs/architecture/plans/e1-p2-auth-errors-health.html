@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Coach App · E1·P2 — Auth, error envelope & health -->
+<title>Coach App · E1·P2 — Auth, error envelope &amp; health</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ── Theme tokens — override this block to re-skin the whole doc ── */
+:root{
+  --bg:#0a0e13; --panel:#0f151d; --panel-2:#131c26; --panel-3:#172230;
+  --line:#1e2a37; --line-bright:#2c3d4f;
+  --ink:#dce5ef; --ink-dim:#8a98a9; --ink-faint:#566372;
+  --green:#3ad6a0; --amber:#f3b54a; --red:#ef6d6d;
+  --blue:#5fa8e0; --violet:#b08cf0; --steel:#85aacb;
+  --grid:rgba(120,160,200,.045);
+  --f-disp:'Archivo',system-ui,sans-serif;
+  --f-body:'IBM Plex Sans',system-ui,sans-serif;
+  --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,monospace;
+  --sidebar:288px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg);
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:30px 30px;
+  color:var(--ink); font-family:var(--f-body); font-size:15px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; display:flex; min-height:100%;
+}
+a{color:var(--green);text-decoration:none}
+code,.mono{font-family:var(--f-mono)}
+em{color:var(--ink-dim);font-style:normal}
+
+/* ── Sidebar ─────────────────────────────────────────── */
+aside{
+  width:var(--sidebar); flex:0 0 var(--sidebar); position:sticky; top:0; height:100vh;
+  border-right:1px solid var(--line); background:linear-gradient(180deg,var(--panel),#0b0f15);
+  display:flex; flex-direction:column; padding:22px 18px; gap:18px; z-index:5;
+}
+.brand{display:flex;flex-direction:column;gap:3px}
+.brand .kick{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.32em;text-transform:uppercase;color:var(--green)}
+.brand h1{font-family:var(--f-disp);font-weight:900;font-size:20px;letter-spacing:-.01em;margin:0;line-height:1.05}
+.brand .sub{font-size:11.5px;color:var(--ink-faint);font-family:var(--f-mono)}
+nav{display:flex;flex-direction:column;gap:2px;overflow:auto;flex:1;margin:0 -6px;padding:0 6px}
+nav button{
+  all:unset; cursor:pointer; display:flex; align-items:center; gap:11px; padding:9px 10px; border-radius:7px;
+  color:var(--ink-dim); font-size:13.5px; transition:.14s;
+}
+nav button .n{font-family:var(--f-mono);font-size:11px;color:var(--ink-faint);min-width:18px}
+nav button:hover{background:var(--panel-2);color:var(--ink)}
+nav button.active{background:var(--panel-3);color:var(--ink)}
+nav button.active .n{color:var(--green)}
+nav button .cc{margin-left:auto;font-family:var(--f-mono);font-size:10px;background:var(--amber);color:#1a1206;border-radius:10px;padding:1px 6px;font-weight:700;display:none}
+nav button .cc.show{display:inline-block}
+
+.tools{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:9px}
+.tbtn{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:11.5px;letter-spacing:.02em;
+  border:1px solid var(--line-bright);border-radius:7px;padding:8px 10px;color:var(--ink-dim);transition:.14s;display:flex;align-items:center;gap:8px}
+.tbtn:hover{border-color:var(--green);color:var(--ink)}
+.tbtn.on{background:var(--green);color:#04130d;border-color:var(--green);font-weight:700}
+.tbtn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.6}
+.tools .row{display:flex;gap:8px}
+.tools .row .tbtn{flex:1;justify-content:center}
+.tools .hint{font-size:10.5px;color:var(--ink-faint);line-height:1.45;font-family:var(--f-mono)}
+.tools .hint b{color:var(--ink-dim);font-weight:500}
+
+/* ── Main ────────────────────────────────────────────── */
+main{flex:1;min-width:0;display:flex;flex-direction:column}
+.scroll{flex:1;overflow:auto;scroll-behavior:smooth}
+.section{display:none;max-width:980px;margin:0 auto;padding:46px 54px 90px}
+.section.active{display:block;animation:fade .35s ease}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+.shead{display:flex;align-items:flex-start;gap:20px;margin-bottom:34px;border-bottom:1px solid var(--line);padding-bottom:22px}
+.shead .idx{font-family:var(--f-disp);font-weight:900;font-size:58px;line-height:.8;color:var(--panel-3);-webkit-text-stroke:1px var(--line-bright);letter-spacing:-.03em}
+.shead .meta{padding-top:4px}
+.shead .kick{font-family:var(--f-mono);font-size:11px;letter-spacing:.28em;text-transform:uppercase;color:var(--green);margin-bottom:7px}
+.shead h2{font-family:var(--f-disp);font-weight:800;font-size:30px;margin:0 0 6px;letter-spacing:-.02em}
+.shead p{margin:0;color:var(--ink-dim);font-size:14.5px;max-width:62ch}
+
+h3{font-family:var(--f-disp);font-weight:700;font-size:15px;letter-spacing:.01em;margin:30px 0 13px;color:var(--ink);
+  display:flex;align-items:center;gap:10px}
+h3::before{content:"";width:9px;height:9px;background:var(--green);border-radius:2px;transform:rotate(45deg);flex:0 0 auto}
+.section > .commentable:first-of-type h3:first-child{margin-top:0}
+p.lede{color:var(--ink-dim);font-size:14px;margin:0 0 8px}
+
+/* commentable wrap */
+.commentable{position:relative;margin:0 0 8px;border-radius:9px;padding:4px;transition:.15s}
+body.comments-on .commentable{outline:1px dashed var(--line-bright);outline-offset:2px}
+body.comments-on .commentable:hover{outline-color:var(--amber)}
+.cmt-add{position:absolute;top:6px;right:6px;z-index:3;all:unset;cursor:pointer;display:none;
+  font-family:var(--f-mono);font-size:10.5px;color:#1a1206;background:var(--amber);padding:3px 9px;border-radius:20px;font-weight:700}
+body.comments-on .commentable:hover > .cmt-add{display:inline-block}
+.cmt-badge{position:absolute;top:8px;right:8px;z-index:2;font-family:var(--f-mono);font-size:10px;font-weight:700;
+  background:var(--amber);color:#1a1206;border-radius:20px;padding:2px 7px;display:none}
+.commentable.has-notes > .cmt-badge{display:inline-block}
+body.comments-on .commentable.has-notes:hover > .cmt-badge{display:none}
+
+.cmt-zone{margin:8px 4px 2px;display:flex;flex-direction:column;gap:7px}
+.cmt-note{background:rgba(243,181,74,.08);border:1px solid rgba(243,181,74,.32);border-left:3px solid var(--amber);
+  border-radius:6px;padding:8px 11px;font-size:13px;color:var(--ink);display:flex;gap:10px;align-items:flex-start}
+.cmt-note .tx{flex:1;white-space:pre-wrap;word-break:break-word}
+.cmt-note .tm{font-family:var(--f-mono);font-size:9.5px;color:var(--ink-faint);white-space:nowrap}
+.cmt-note .del{all:unset;cursor:pointer;color:var(--ink-faint);font-size:13px;line-height:1;display:none}
+body.comments-on .cmt-note .del{display:inline}
+.cmt-note .del:hover{color:var(--red)}
+.cmt-edit{display:flex;flex-direction:column;gap:7px;background:var(--panel-2);border:1px solid var(--line-bright);border-radius:7px;padding:9px}
+.cmt-edit textarea{width:100%;min-height:64px;resize:vertical;background:var(--bg);border:1px solid var(--line-bright);
+  border-radius:5px;color:var(--ink);font-family:var(--f-body);font-size:13px;padding:8px;outline:none}
+.cmt-edit textarea:focus{border-color:var(--amber)}
+.cmt-edit .ebtns{display:flex;gap:8px;justify-content:flex-end}
+.cmt-edit .ebtns button{all:unset;cursor:pointer;font-family:var(--f-mono);font-size:11px;padding:5px 12px;border-radius:5px}
+.cmt-edit .save{background:var(--amber);color:#1a1206;font-weight:700}
+.cmt-edit .cancel{color:var(--ink-dim);border:1px solid var(--line-bright)}
+
+/* ── content primitives ──────────────────────────────── */
+table{width:100%;border-collapse:collapse;font-size:13px;margin:4px 0}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:500}
+td:first-child{color:var(--ink)}
+tr:hover td{background:var(--panel)}
+td code,td .mono{color:var(--green);font-size:12px}
+.tag{font-family:var(--f-mono);font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:.04em;white-space:nowrap}
+.tag.keep{background:rgba(58,214,160,.14);color:var(--green)}
+.tag.swap{background:rgba(243,181,74,.15);color:var(--amber)}
+.tag.drop{background:rgba(239,109,109,.15);color:var(--red)}
+.tag.opt{background:rgba(95,168,224,.15);color:var(--blue)}
+.tag.code{background:rgba(133,170,203,.16);color:var(--steel)}
+.tag.llm{background:rgba(176,140,240,.18);color:var(--violet)}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px;margin:6px 0}
+.card2{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:13px 15px}
+.card2 .lab{font-family:var(--f-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:6px}
+.card2 .big{font-family:var(--f-disp);font-weight:800;font-size:22px;letter-spacing:-.02em}
+.card2 .big.green{color:var(--green)} .card2 .big.violet{color:var(--violet)} .card2 .big.red{color:var(--red)} .card2 small{color:var(--ink-dim);font-size:12px}
+
+ul.clean{list-style:none;padding:0;margin:6px 0;display:flex;flex-direction:column;gap:7px}
+ul.clean li{padding-left:18px;position:relative;font-size:13.5px;color:var(--ink-dim)}
+ul.clean li::before{content:"▸";position:absolute;left:0;color:var(--green)}
+ul.clean li b,ul.clean li strong{color:var(--ink);font-weight:600}
+.note{font-size:12.5px;color:var(--ink-dim);border-left:2px solid var(--line-bright);padding:4px 0 4px 13px;margin:10px 0}
+.note b{color:var(--ink)}
+.note.warn{border-left-color:var(--amber)} .note.warn b{color:var(--amber)}
+
+/* ── diagrams ────────────────────────────────────────── */
+.diagram{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:20px;margin:6px 0}
+.sys{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap}
+.sys-col{display:flex;flex-direction:column;gap:10px;justify-content:center;flex:1;min-width:150px}
+.sys-col.wide{flex:1.4}
+.box{border:1px solid var(--line-bright);border-radius:8px;padding:11px 13px;background:var(--panel-2);font-size:12.5px}
+.box .t{font-family:var(--f-mono);font-weight:700;color:var(--ink);font-size:12.5px}
+.box small{display:block;color:var(--ink-faint);font-size:10.5px;margin-top:3px;font-family:var(--f-mono)}
+.box.io{border-color:rgba(58,214,160,.4)} .box.io .t{color:var(--green)}
+.box.store{border-color:var(--line-bright)} .box.store .t{color:var(--steel)}
+.box.engine{border-color:rgba(176,140,240,.4)} .box.engine .t{color:var(--violet)}
+.box.agent{border-color:rgba(176,140,240,.55);background:rgba(176,140,240,.07)} .box.agent .t{color:var(--violet)}
+.box.head{background:transparent;border-style:dashed;color:var(--ink-faint)}
+.sys-arrows{display:flex;flex-direction:column;justify-content:center;gap:14px;min-width:96px}
+.awrap{display:flex;align-items:center;gap:6px;justify-content:center;color:var(--ink-faint)}
+.alabel{font-family:var(--f-mono);font-size:9.5px;color:var(--green)}
+.aglyph{font-size:17px;color:var(--line-bright)}
+.sys-foot{margin-top:14px;font-family:var(--f-mono);font-size:10.5px;color:var(--ink-faint);text-align:center;border-top:1px dashed var(--line);padding-top:11px}
+
+.split{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+.col{border:1px solid var(--line);border-radius:10px;padding:15px;background:var(--panel)}
+.col .ch{font-family:var(--f-mono);font-size:11px;letter-spacing:.04em;margin-bottom:11px;display:flex;align-items:center;gap:8px;text-transform:uppercase}
+.col.det .ch{color:var(--steel)} .col.llm .ch{color:var(--violet)}
+.col .ch .pill{font-size:9px;padding:2px 6px;border-radius:4px;border:1px solid currentColor}
+.col ul.clean li::before{color:currentColor}
+.col.det li::before{content:"≡";color:var(--steel)} .col.llm li::before{content:"✦";color:var(--violet)}
+.col ul.clean li{color:var(--ink-dim)}
+.gate{margin-top:13px;border:1px solid var(--amber);background:rgba(243,181,74,.07);border-radius:10px;padding:14px 16px;
+  display:flex;gap:14px;align-items:center}
+.gate .gt{font-family:var(--f-mono);font-weight:700;color:var(--amber);font-size:13px;white-space:nowrap}
+.gate .gd{font-size:12.5px;color:var(--ink-dim)}
+
+/* workflow flow */
+.flow{display:flex;flex-direction:column;align-items:stretch;gap:0;max-width:600px}
+.node{border:1px solid var(--line-bright);border-left-width:3px;border-radius:8px;padding:11px 14px;background:var(--panel-2);
+  display:flex;align-items:baseline;gap:12px}
+.node .nm{font-family:var(--f-mono);font-weight:700;font-size:13px;color:var(--ink)}
+.node .nd{font-size:12px;color:var(--ink-dim);margin-left:auto;text-align:right}
+.node .ty{font-family:var(--f-mono);font-size:9.5px;padding:2px 6px;border-radius:4px;font-weight:700}
+.node.data{border-left-color:var(--steel)} .node.data .ty{background:rgba(133,170,203,.16);color:var(--steel)}
+.node.router{border-left-color:var(--amber)} .node.router .ty{background:rgba(243,181,74,.16);color:var(--amber)}
+.node.agent{border-left-color:var(--violet);background:rgba(176,140,240,.06)} .node.agent .ty{background:rgba(176,140,240,.18);color:var(--violet)}
+.node.opt{opacity:.72;border-style:dashed}
+.arrow{align-self:center;color:var(--line-bright);font-size:15px;line-height:1;padding:3px 0}
+.branch{align-self:flex-start;margin:2px 0 2px 26px;font-family:var(--f-mono);font-size:11px;color:var(--amber);display:flex;align-items:center;gap:8px}
+.branch.retry{color:var(--violet)} .branch.fail{color:var(--red)}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;font-family:var(--f-mono);font-size:11px;color:var(--ink-dim)}
+.legend span{display:flex;align-items:center;gap:6px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+.pre{font-family:var(--f-mono);font-size:12px;line-height:1.65;color:var(--ink-dim);white-space:pre;overflow:auto;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:6px 0}
+.pre .g{color:var(--green)} .pre .v{color:var(--violet)} .pre .a{color:var(--amber)} .pre .d{color:var(--ink-faint)} .pre .s{color:var(--steel)}
+
+/* ── footer pager ────────────────────────────────────── */
+.pager{border-top:1px solid var(--line);background:var(--panel);display:flex;align-items:center;justify-content:space-between;
+  padding:11px 22px;font-family:var(--f-mono);font-size:12px;color:var(--ink-dim)}
+.pager button{all:unset;cursor:pointer;padding:6px 13px;border:1px solid var(--line-bright);border-radius:6px;transition:.14s;color:var(--ink-dim)}
+.pager button:hover{border-color:var(--green);color:var(--ink)}
+.pager button[disabled]{opacity:.3;cursor:default}
+.pager .ctr{display:flex;gap:6px;align-items:center}
+.pager .pos b{color:var(--green)}
+
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--green);color:#04130d;
+  font-family:var(--f-mono);font-size:12px;font-weight:700;padding:10px 18px;border-radius:8px;opacity:0;transition:.25s;z-index:50;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+@media(max-width:860px){
+  :root{--sidebar:100%}
+  body{flex-direction:column}
+  aside{position:static;height:auto;width:100%;flex-basis:auto}
+  nav{flex-direction:row;flex-wrap:wrap;overflow:visible}
+  .section{padding:30px 22px 80px}
+  .split,.sys{grid-template-columns:1fr}
+  .shead .idx{font-size:42px}
+}
+</style>
+</head>
+<!--
+  Per-doc config lives on <body>. The comment script reads these — no JS edits needed:
+    data-store        unique localStorage key. MUST be unique per doc or comments collide.
+    data-doc          filename prefix for exports → "<doc>-comments.json" / ".md"
+    data-export-title H1 used at the top of the exported Markdown
+-->
+<body data-store="coachapp-plan-e1-p2-auth-errors-health-v1" data-doc="e1-p2-auth-errors-health" data-export-title="E1·P2 — Auth, error envelope &amp; health — plan review comments">
+<aside>
+  <div class="brand">
+    <span class="kick">Coach App · Plan</span>
+    <h1>E1·P2<br>Auth &amp; health</h1>
+    <span class="sub">E1 Foundation &amp; API Skeleton · 3 tasks</span>
+  </div>
+  <nav id="nav"></nav>
+  <div class="tools">
+    <button class="tbtn" id="cmtToggle"><span class="dot"></span><span>Comment mode: <b id="cmStat">off</b></span></button>
+    <div class="row">
+      <button class="tbtn" id="expJson" title="Download e1-p2-auth-errors-health-comments.json">⤓ JSON</button>
+      <button class="tbtn" id="expMd" title="Download e1-p2-auth-errors-health-comments.md">⤓ MD</button>
+      <button class="tbtn" id="copyMd" title="Copy comments as Markdown">⧉ Copy</button>
+    </div>
+    <button class="tbtn" id="clearAll" title="Delete all comments">✕ Clear all (<span id="totCt">0</span>)</button>
+    <div class="hint"><b>To get feedback to Claude:</b> comment → Export → save the file next to the source <code>.md</code> → tell Claude to read it.</div>
+  </div>
+</aside>
+<main><div class="scroll" id="scroll">
+
+<!-- ════════════ SECTIONS:START ════════════ -->
+<section class="section" data-name="Overview" id="overview">
+  <div class="shead">
+    <div class="idx">00</div>
+    <div class="meta">
+      <div class="kick">orientation</div>
+      <h2>Auth, error envelope &amp; health</h2>
+      <p>Make the FastAPI process authenticated and observable: one error envelope for every non-2xx, a reusable bearer-token auth dependency, and an unauthenticated <code>GET /health</code> liveness endpoint.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-context" data-label="Epic & dependency context">
+    <h3>Epic &amp; dependency context</h3>
+    <p class="lede">Epic <b>E1 — Foundation &amp; API Skeleton</b>, phase <b>P2</b>. Source of truth: <code>epics/E01-foundation.md</code> (§3 E1·P2, §4 acceptance), grounded in <code>ARCHITECTURE.md §1</code> and <code>MODELS.md</code> "Conventions" / "Errors".</p>
+    <table>
+      <tr><th>builds on (E1·P1)</th><th>provides</th></tr>
+      <tr><td><code>app/api/app.py</code> · <code>create_app()</code></td><td>the app factory this phase wires handlers + routers into</td></tr>
+      <tr><td><code>app/core/settings.py</code> · <code>get_settings()</code></td><td>cached settings incl. <code>api_token</code> for the auth dependency</td></tr>
+      <tr><td><code>app/api/schemas/base.py</code> · <code>CamelModel</code></td><td>camelCase base the <code>Error</code> / <code>Health</code> models inherit</td></tr>
+    </table>
+    <div class="note"><b>Status:</b> draft · <b>Risk:</b> small · <b>Created:</b> 2026-06-03.</div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-scope" data-label="Scope vs out-of-scope">
+    <h3>Scope vs out-of-scope</h3>
+    <div class="split">
+      <div class="col det">
+        <div class="ch">In scope <span class="pill">ships now</span></div>
+        <ul class="clean">
+          <li><b>Error envelope</b> (<code>app/api/errors.py</code>) — <code>CamelModel</code> <code>Error { code, message, detail }</code> wrapped as <code>{ "error": { … } }</code>, with handlers for <code>RequestValidationError</code>, <code>HTTPException</code>, and a catch-all <code>Exception</code>.</li>
+          <li><b>Auth dependency</b> (<code>app/api/auth.py</code>) — reads <code>Authorization: Bearer &lt;token&gt;</code>, constant-time compare vs <code>get_settings().api_token</code>; failure → <code>HTTPException(401)</code>.</li>
+          <li><b>GET /health</b> (<code>app/api/routes/health.py</code>) — unauthenticated liveness <code>{ status: "ok", serverTime }</code> with a DST-aware offset.</li>
+          <li><b>Protected probe</b> route — guarded by the auth dependency to demonstrate <code>401</code>-without / <code>200</code>-with the token.</li>
+          <li><b>Wiring</b> — register handlers + routers inside <code>create_app()</code>, keeping P1's fail-fast settings load intact.</li>
+          <li><b>MODELS update</b> — add <code>internal_error</code> to MODELS "Errors" in the same PR (no deferred drift).</li>
+        </ul>
+      </div>
+      <div class="col llm">
+        <div class="ch">Out of scope <span class="pill">later epics</span></div>
+        <ul class="clean">
+          <li>Real domain endpoints <code>/sync</code>, <code>/brief/daily</code>, <code>/brief/weekly</code> (E5/E10/E11) — only a throwaway probe ships here.</li>
+          <li>Codes <code>brief_generation_failed</code> / <code>upstream_timeout</code> are <b>defined</b> in the enum now, but the paths that raise them arrive in E9/E10/E11.</li>
+          <li>Workflow engine primitives (E1·P3); DB models / migrations (E2); LLM (E9); Docker / Langfuse (E12).</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note warn"><b>Not deferred:</b> the <code>internal_error</code> fallback is wired <b>and</b> documented in MODELS in this PR — unlike the two unraised codes above.</div>
+  </div>
+
+  <div class="commentable" data-anchor="ov-research" data-label="Research summary">
+    <h3>Research summary</h3>
+    <ul class="clean">
+      <li><b>Envelope is fixed by MODELS "Errors"</b> — a single wrapper <code>{ "error": { code, message, detail } }</code> over all non-2xx; <code>code</code> from a closed set; <code>detail</code> is <code>string | null</code> (nullable, optional).</li>
+      <li><b>No documented code for unmapped / unhandled 500</b> — so this phase adds one named fallback <code>internal_error</code> (a deliberate extension, added to MODELS this PR) rather than an open status-derived code.</li>
+      <li><b>Auth</b> is one long-lived bearer token in the <code>Authorization</code> header, never the body; single user, no tenancy (MODELS "Conventions → Auth"; epic §2 R3).</li>
+      <li><b>Timestamps</b> must be ISO-8601 carrying the <b>actual</b> device offset — Europe/Sofia is <code>+02:00</code> winter / <code>+03:00</code> summer; <code>serverTime</code> already appears that way in <code>SyncResponse</code>.</li>
+      <li><b>Process shape</b> — a single synchronous FastAPI app (ARCHITECTURE §1). P1 already ships <code>create_app()</code>, the <code>api_token</code> setting, and <code>CamelModel</code>.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="ov-decisions" data-label="Key decisions">
+    <h3>Key decisions</h3>
+    <table>
+      <tr><th>decision</th><th>tag</th><th>rationale</th></tr>
+      <tr><td>Envelope wrapper <code>{ "error": { … } }</code>, not a bare <code>Error</code></td><td><span class="tag keep">contract</span></td><td>MODELS "Errors" shows the wrapper explicitly; the shorthand <code>Error { … }</code> names the inner object, the wire shape is the wrapper.</td></tr>
+      <tr><td><code>Error</code> inherits <code>CamelModel</code></td><td><span class="tag keep">convention</span></td><td>Keeps wire camelCase and null-vs-absent <code>detail</code> uniform with every other model (epic §2 R5). A no-op for single-word keys, but future-proof.</td></tr>
+      <tr><td><code>code</code> is a closed <code>Enum</code>: 5 MODELS codes + named <code>internal_error</code></td><td><span class="tag swap">extension</span></td><td>An unknown code becomes a construction-time error, not a wire typo. One explicit fallback instead of an open generic; MODELS updated this same PR (resolves round-2 #1; round-1 #1).</td></tr>
+      <tr><td><code>HTTPException</code> → envelope via explicit <code>STATUS_TO_CODE</code> table</td><td><span class="tag code">mapping</span></td><td><code>401→unauthorized</code>, <code>404→not_found</code>, all others → <code>internal_error</code> — no status can produce a code outside the closed enum, no per-callsite envelope building.</td></tr>
+      <tr><td>Constant-time token comparison (<code>secrets.compare_digest</code>)</td><td><span class="tag keep">security</span></td><td>Avoids a timing side-channel on the one long-lived token; cheap and standard.</td></tr>
+      <tr><td><code>serverTime</code> via <code>datetime.now(ZoneInfo("Europe/Sofia"))</code> → <code>.isoformat()</code></td><td><span class="tag swap">time</span></td><td>Emits the real DST-aware offset; never hard-codes <code>+03:00</code> (MODELS "Conventions → Timestamps").</td></tr>
+      <tr><td>Generic <code>500</code> envelope hides internal detail</td><td><span class="tag drop">safety</span></td><td>Unhandled exceptions return a fixed message and <code>detail: null</code> — stack traces / internals never leak.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="ov-risks" data-label="Risks & mitigations">
+    <h3>Risks &amp; mitigations</h3>
+    <table>
+      <tr><th>risk</th><th>mitigation</th></tr>
+      <tr><td>Leaking internals in the <code>500</code> detail</td><td>Catch-all handler emits a fixed message with <code>detail: null</code>; a test raises from a route and asserts no internal text appears.</td></tr>
+      <tr><td>Timing side-channel on the token</td><td><code>secrets.compare_digest</code>; a test asserts wrong-token → <code>401</code>.</td></tr>
+      <tr><td>Hard-coding the timezone offset</td><td>Derive from <code>ZoneInfo("Europe/Sofia")</code>; a test asserts <code>serverTime</code> parses as an aware ISO-8601 datetime with a non-<code>None</code> offset (not a literal-string check).</td></tr>
+      <tr><td>FastAPI's default error shapes leaking through</td><td>Register handlers for <code>RequestValidationError</code>, <code>HTTPException</code>, <b>and</b> <code>Exception</code>; a test asserts 422/401/404/500 each conform to the envelope.</td></tr>
+      <tr><td><code>TestClient</code> raising server exceptions instead of returning 500</td><td>Construct the client with <code>raise_server_exceptions=False</code> in the unhandled-exception test so the registered 500 handler runs.</td></tr>
+      <tr><td><code>internal_error</code> drifting from MODELS "Errors"</td><td>A single named code in the same enum, asserted on the wire; MODELS updated this PR and final validation greps MODELS for the code.</td></tr>
+    </table>
+  </div>
+</section>
+
+<section class="section" data-name="Acceptance" id="acceptance">
+  <div class="shead">
+    <div class="idx">01</div>
+    <div class="meta">
+      <div class="kick">contract</div>
+      <h2>Acceptance criteria</h2>
+      <p>The phase's contract — every criterion below must hold before the phase is done. Tasks map 1:1 onto these in final validation.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="ac-criteria" data-label="Acceptance checklist">
+    <h3>Phase contract</h3>
+    <table>
+      <tr><th>#</th><th>criterion</th><th>area</th></tr>
+      <tr><td>1</td><td><code>GET /health</code> returns <code>200</code> <b>without</b> any <code>Authorization</code> header, body <code>{ status: "ok", serverTime: &lt;iso8601&gt; }</code>; with an injectable clock emits <code>+02:00</code> for a winter instant and <code>+03:00</code> for a summer instant (DST-aware, never fixed) — parsed datetime is timezone-aware.</td><td><span class="tag keep">health</span></td></tr>
+      <tr><td>2</td><td>The protected probe returns <code>401</code> with the <code>unauthorized</code> envelope when the token is <b>missing</b> and when it is <b>wrong</b>, and <code>200</code> when the correct <code>Bearer &lt;api_token&gt;</code> is sent.</td><td><span class="tag keep">auth</span></td></tr>
+      <tr><td>3</td><td>Every non-2xx response is the single envelope <code>{ "error": { code, message, detail } }</code> with a <code>code</code> from the closed set — verified for <code>401</code> (<code>unauthorized</code>), <code>404</code> (<code>not_found</code>), <code>422</code> (<code>validation_error</code>), <code>500</code> (<code>internal_error</code>, <code>detail: null</code>, no leak).</td><td><span class="tag keep">errors</span></td></tr>
+      <tr><td>4</td><td>The <code>Error</code> payload is camelCase on the wire (inherits <code>CamelModel</code>) and its optional <code>detail</code> accepts both omission and explicit <code>null</code>.</td><td><span class="tag keep">errors</span></td></tr>
+      <tr><td>5</td><td><code>docs/architecture/MODELS.md</code> "Errors" lists <code>internal_error</code> in the code set, so the documented contract matches the <code>ErrorCode</code> enum (verified by grep in final validation).</td><td><span class="tag swap">docs</span></td></tr>
+      <tr><td>6</td><td>The auth dependency is reusable (importable, attachable to any route via <code>Depends</code>) and compares the token constant-time against <code>get_settings().api_token</code>.</td><td><span class="tag keep">auth</span></td></tr>
+      <tr><td>7</td><td><code>uv run ruff check .</code> and <code>uv run pytest</code> pass.</td><td><span class="tag code">ci</span></td></tr>
+    </table>
+  </div>
+</section>
+
+<section class="section" data-name="T1 · Error envelope" id="task-1">
+  <div class="shead">
+    <div class="idx">02</div>
+    <div class="meta">
+      <div class="kick">task-001 · depends: none</div>
+      <h2>Error envelope models &amp; exception handlers</h2>
+      <p>Define the single <code>Error</code> envelope with stable machine codes and register FastAPI exception handlers so every non-2xx response uses it.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t1-goal" data-label="T1 goal">
+    <div class="note"><b>Goal:</b> the wire wrapper <code>{ "error": { code, message, detail } }</code> with a closed <code>ErrorCode</code> set, plus handlers covering validation, HTTP, and unhandled exceptions — wired into <code>create_app()</code>. Suggested commit: <code>feat(api): add error envelope and exception handlers</code>.</div>
+  </div>
+
+  <div class="commentable" data-anchor="t1-files" data-label="T1 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>what</th></tr>
+      <tr><td><code>app/api/errors.py</code></td><td><span class="tag keep">new</span></td><td><code>ErrorCode</code> (closed <code>str</code>/<code>Enum</code>: 5 MODELS codes + <code>internal_error</code>), <code>Error(CamelModel)</code> (<code>code</code>, <code>message: str</code>, <code>detail: str | None = None</code>), <code>ErrorResponse(CamelModel)</code> (<code>error: Error</code>), <code>error_response(...)→JSONResponse</code>, <code>STATUS_TO_CODE: dict[int, tuple[ErrorCode, str]]</code>, <code>register_exception_handlers(app)</code>.</td></tr>
+      <tr><td><code>app/api/app.py</code></td><td><span class="tag swap">edit</span></td><td>Call <code>register_exception_handlers(app)</code> inside <code>create_app()</code> after settings load.</td></tr>
+      <tr><td><code>docs/architecture/MODELS.md</code></td><td><span class="tag swap">edit</span></td><td>"Errors" section: add <code>internal_error</code> to the <code>error.code</code> stable-code list so the doc matches the enum on commit.</td></tr>
+      <tr><td><code>tests/test_errors.py</code></td><td><span class="tag keep">new</span></td><td>Envelope shape + code per status, no-detail paths, camelCase round-trip, invalid-code rejection.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t1-table" data-label="T1 STATUS_TO_CODE table">
+    <h3><code>STATUS_TO_CODE</code> — one source of truth</h3>
+    <p class="lede">Each handled status maps to <code>(code, default_public_message)</code>; any status not in the table falls back to <code>(internal_error, "An internal error occurred.")</code>. <code>message</code> is always a non-empty string, so a no-detail <code>HTTPException</code> never yields <code>message=None</code> (round-3 #1).</p>
+    <table>
+      <tr><th>status</th><th>code</th><th>default message</th><th>handler</th></tr>
+      <tr><td><code>422</code></td><td><span class="tag keep">validation_error</span></td><td>fixed public message; <code>detail</code> summarises the failures</td><td><code>RequestValidationError</code></td></tr>
+      <tr><td><code>401</code></td><td><span class="tag keep">unauthorized</span></td><td>"Authentication required."</td><td><code>HTTPException</code></td></tr>
+      <tr><td><code>404</code></td><td><span class="tag keep">not_found</span></td><td>"Resource not found."</td><td><code>HTTPException</code></td></tr>
+      <tr><td>any other</td><td><span class="tag drop">internal_error</span></td><td>"An internal error occurred."</td><td><code>HTTPException</code> (table default)</td></tr>
+      <tr><td><code>500</code></td><td><span class="tag drop">internal_error</span></td><td>fixed public message, <code>detail: null</code></td><td>catch-all <code>Exception</code></td></tr>
+    </table>
+    <div class="note warn"><b>Detail rule:</b> for <code>HTTPException</code>, <code>detail</code> is set from <code>exc.detail</code> <b>only when it is a non-empty string</b>; <code>exc.detail</code> is never used as the sole <code>message</code> source. The catch-all leaks no internals (<code>detail: None</code>).</div>
+  </div>
+
+  <div class="commentable" data-anchor="t1-acceptance" data-label="T1 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="clean">
+      <li><b>Wire shape</b> — <code>Error</code> serialises camelCase; <code>ErrorResponse</code> wraps it as <code>{ "error": { … } }</code> matching MODELS keys.</li>
+      <li><b>Nullable detail</b> — <code>detail</code> accepts both omission and explicit <code>null</code> on input.</li>
+      <li><b><code>404</code></b> — a route raising <code>HTTPException(404)</code> and an unknown path both return the <code>not_found</code> envelope (not FastAPI's default).</li>
+      <li><b><code>422</code></b> — a body/param validation failure returns <code>validation_error</code>.</li>
+      <li><b><code>500</code></b> — a bare <code>Exception</code> returns <code>internal_error</code>, a fixed message, <code>detail == null</code>, no leak (<code>raise_server_exceptions=False</code>).</li>
+      <li><b>Unmapped status</b> — an <code>HTTPException(400)</code> returns <code>internal_error</code> (table default), never a code outside <code>ErrorCode</code>.</li>
+      <li><b>No-detail paths</b> — a no-detail <code>401</code>/<code>404</code>/<code>400</code> still yields a non-empty <code>message</code> and <code>detail == null</code> (round-3 #1).</li>
+      <li><b>Closed enum</b> — constructing <code>Error</code> with a code outside the set raises a <code>ValidationError</code>.</li>
+      <li><b>Doc parity</b> — MODELS "Errors" lists <code>internal_error</code>, so every <code>ErrorCode</code> member is documented.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t1-flow" data-label="T1 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node data"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_errors.py</code>: throwaway routes raise <code>404</code>/<code>400</code>/bare <code>Exception</code> + a typed body; assert envelope shape &amp; code per status, no-detail <code>message</code> non-empty, unknown path → <code>not_found</code>, camelCase round-trip, invalid code → <code>ValidationError</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">implement <code>errors.py</code> (<code>ErrorCode</code>, <code>Error</code>, <code>ErrorResponse</code>, <code>error_response</code>, <code>STATUS_TO_CODE</code>, <code>register_exception_handlers</code>); wire into <code>create_app()</code>; add <code>internal_error</code> to MODELS "Errors"</span></div>
+      <div class="arrow">↓</div>
+      <div class="node router"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">keep the status→code map in one table; ensure handlers never echo raw exception text into the 500 envelope; <code>ruff</code></span></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" data-name="T2 · Auth dependency" id="task-2">
+  <div class="shead">
+    <div class="idx">03</div>
+    <div class="meta">
+      <div class="kick">task-002 · depends: task-001</div>
+      <h2>Bearer-token auth dependency</h2>
+      <p>A reusable FastAPI dependency that authenticates requests against the single long-lived bearer token, raising a <code>401</code> the error handlers render as the <code>unauthorized</code> envelope.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t2-goal" data-label="T2 goal">
+    <div class="note"><b>Goal:</b> one importable <code>require_auth</code> dependency, constant-time token check, that gates any route via <code>Depends(require_auth)</code> and builds no JSON itself. Suggested commit: <code>feat(api): add bearer-token auth dependency</code>.</div>
+  </div>
+
+  <div class="commentable" data-anchor="t2-files" data-label="T2 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>what</th></tr>
+      <tr><td><code>app/api/auth.py</code></td><td><span class="tag keep">new</span></td><td><code>require_auth(...)</code> — reads the <code>Authorization</code> header (via <code>HTTPBearer(auto_error=False)</code> or a direct read), requires the <code>Bearer &lt;token&gt;</code> scheme, compares <b>constant-time</b> (<code>secrets.compare_digest</code>) vs <code>get_settings().api_token</code>. Missing header / wrong scheme / wrong token → <code>HTTPException(401)</code>. On success returns the token / a sentinel.</td></tr>
+      <tr><td><code>tests/test_auth.py</code></td><td><span class="tag keep">new</span></td><td>Guarded route: no header / wrong token / non-Bearer → <code>401</code> envelope; correct token → <code>200</code>; reusability on a second route.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t2-acceptance" data-label="T2 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="clean">
+      <li><b>Gate fires</b> — a route under <code>Depends(require_auth)</code> returns <code>401</code> + <code>unauthorized</code> envelope when the header is <b>absent</b>, the scheme is not <code>Bearer</code>, or the token is wrong.</li>
+      <li><b>Pass-through</b> — the same route returns <code>200</code> when <code>Authorization: Bearer &lt;api_token&gt;</code> matches <code>get_settings().api_token</code>.</li>
+      <li><b>Constant-time</b> — comparison uses <code>secrets.compare_digest</code>; wrong-token still returns <code>401</code>.</li>
+      <li><b>Reusable</b> — attaching <code>require_auth</code> to a second route also gates it (not hard-wired to one endpoint).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t2-flow" data-label="T2 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node data"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_auth.py</code>: <code>create_app()</code> with a known <code>api_token</code>; throwaway <code>Depends(require_auth)</code> route. Assert no header → <code>401</code> + <code>unauthorized</code> envelope, <code>Bearer wrong</code> → <code>401</code>, non-Bearer → <code>401</code>, correct → <code>200</code>; body is TASK-001's envelope, not FastAPI's default</span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">implement <code>auth.py</code> (<code>require_auth</code>) using <code>get_settings().api_token</code> + <code>secrets.compare_digest</code>; raise <code>HTTPException(status_code=401)</code> for every failure path</span></div>
+      <div class="arrow">↓</div>
+      <div class="node router"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">read settings via cached <code>get_settings()</code> so it is overridable in tests; <code>ruff</code></span></div>
+    </div>
+    <div class="note warn"><b>No envelope in auth:</b> the dependency raises a bare <code>HTTPException(401)</code> (possibly with no <code>detail</code>) and lets TASK-001's handler map <code>401 → unauthorized</code> and supply the non-null public <code>message</code> (round-3 #1). Keep auth logic free of any envelope construction.</div>
+  </div>
+</section>
+
+<section class="section" data-name="T3 · Health & probe" id="task-3">
+  <div class="shead">
+    <div class="idx">04</div>
+    <div class="meta">
+      <div class="kick">task-003 · depends: task-002</div>
+      <h2>GET /health endpoint (unauthenticated)</h2>
+      <p>Add an unauthenticated <code>GET /health</code> returning process liveness + DST-aware <code>serverTime</code>, and a protected probe route guarded by <code>require_auth</code> that demonstrates the <code>401</code>-vs-<code>200</code> gate.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="t3-goal" data-label="T3 goal">
+    <div class="note"><b>Goal:</b> liveness <code>{ status: "ok", serverTime }</code> with a real DST-aware offset via an instant-preserving conversion, plus a throwaway protected probe. Suggested commit: <code>feat(api): add unauthenticated health endpoint and protected probe</code>.</div>
+  </div>
+
+  <div class="commentable" data-anchor="t3-files" data-label="T3 files">
+    <h3>Files</h3>
+    <table>
+      <tr><th>path</th><th>change</th><th>what</th></tr>
+      <tr><td><code>app/api/routes/health.py</code></td><td><span class="tag keep">new</span></td><td><code>HealthResponse(CamelModel)</code> (<code>status: str</code>, <code>server_time: datetime</code> → wire key <code>serverTime</code>); <code>now_sofia(clock=&lt;utc-now&gt;)</code> conversion helper; <code>router</code> with <code>GET /health</code> (no auth) returning <code>HealthResponse(status="ok", server_time=now_sofia())</code>; a <b>protected probe</b> <code>GET /probe</code> declared <code>dependencies=[Depends(require_auth)]</code>.</td></tr>
+      <tr><td><code>app/api/app.py</code></td><td><span class="tag swap">edit</span></td><td><code>include_router(health.router)</code> inside <code>create_app()</code>.</td></tr>
+      <tr><td><code>tests/test_health.py</code></td><td><span class="tag keep">new</span></td><td>Unauthenticated <code>200</code> + camelCase key + full DST wall-clock proof; probe <code>401</code>/<code>200</code> gate.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="t3-timestamp" data-label="T3 now_sofia conversion">
+    <h3><code>now_sofia</code> — instant-preserving, never a relabel</h3>
+    <p class="lede">The helper takes an <b>aware UTC instant</b> from an injected <code>clock</code> (default <code>datetime.now(timezone.utc)</code>) and converts via <code>.astimezone(ZoneInfo("Europe/Sofia"))</code> — the offset always comes from the tz database; there is <b>no</b> <code>timezone(timedelta(...))</code> fixed-offset construction anywhere.</p>
+    <div class="split">
+      <div class="col det">
+        <div class="ch">Inject <span class="pill">UTC source</span></div>
+        <ul class="clean">
+          <li>Tests override only the <b>UTC clock source</b>, not the conversion.</li>
+          <li><code>2026-01-15T12:00:00Z</code> → <code>2026-01-15T14:00:00+02:00</code> (winter).</li>
+          <li><code>2026-07-15T12:00:00Z</code> → <code>2026-07-15T15:00:00+03:00</code> (summer).</li>
+          <li>Assert the <b>full converted wall-clock</b>, not just the offset.</li>
+        </ul>
+      </div>
+      <div class="col llm">
+        <div class="ch">Reject <span class="pill">wrong impls</span></div>
+        <ul class="clean">
+          <li>A fixed <code>timezone(timedelta(...))</code> — same offset year-round.</li>
+          <li>A <code>.replace(tzinfo=ZoneInfo(...))</code> relabel — right offset, wrong wall-clock.</li>
+          <li>Monkeypatching <code>now_sofia</code> away — only proves serialization.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="gate"><span class="gt">SOURCE GUARD</span><span class="gd">grep requires <code>astimezone(ZoneInfo("Europe/Sofia"))</code> present and rejects <code>timezone(timedelta</code> / <code>.replace(tzinfo=</code> / <code>datetime.timezone(</code> for <code>serverTime</code> (resolves round-2 #2, round-3 #2).</span></div>
+  </div>
+
+  <div class="commentable" data-anchor="t3-acceptance" data-label="T3 acceptance">
+    <h3>Acceptance</h3>
+    <ul class="clean">
+      <li><b>Unauthenticated health</b> — <code>GET /health</code> with no header → <code>200</code>, <code>status == "ok"</code>, <code>serverTime</code> parses to a timezone-aware datetime; the full converted wall-clock matches per season (DST proof through the production conversion).</li>
+      <li><b>camelCase key</b> — <code>serverTime</code> is the wire key (model inherits <code>CamelModel</code>).</li>
+      <li><b>Probe gate</b> — the protected probe → <code>401</code> (<code>unauthorized</code>) without / with a wrong token, <code>200</code> with the correct <code>Bearer &lt;api_token&gt;</code> — the end-to-end auth demonstration.</li>
+      <li><b>Health is open</b> — <code>/health</code> is reachable without the auth dependency; no <code>401</code> is ever returned for it.</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="t3-flow" data-label="T3 RED/GREEN/REFACTOR">
+    <h3>RED → GREEN → REFACTOR</h3>
+    <div class="flow">
+      <div class="node data"><span class="nm">RED</span><span class="ty">TEST</span><span class="nd"><code>test_health.py</code>: <code>GET /health</code> (no header) → <code>200</code>, <code>status == "ok"</code>, JSON key <code>serverTime</code>; override only the UTC clock source — Jan → <code>14:00+02:00</code>, Jul → <code>15:00+03:00</code> (assert full datetime); probe: no/wrong token → <code>401</code> envelope, correct → <code>200</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node agent"><span class="nm">GREEN</span><span class="ty">IMPL</span><span class="nd">implement <code>routes/health.py</code> (<code>HealthResponse</code>, <code>/health</code>, protected <code>/probe</code>); wire the router into <code>create_app()</code></span></div>
+      <div class="arrow">↓</div>
+      <div class="node router"><span class="nm">REFACTOR</span><span class="ty">TIDY</span><span class="nd">keep the probe minimal &amp; clearly marked as a temporary auth demonstration (superseded by E5/E10/E11); <code>ruff</code></span></div>
+    </div>
+    <div class="note"><b>Mirrors <code>SyncResponse</code>:</b> <code>serverTime</code> uses the same ISO-8601 + real-offset convention already shipped in MODELS for <code>SyncResponse</code>.</div>
+  </div>
+</section>
+
+<section class="section" data-name="Final validation" id="final-validation">
+  <div class="shead">
+    <div class="idx">05</div>
+    <div class="meta">
+      <div class="kick">task-004 · depends: all</div>
+      <h2>Final validation</h2>
+      <p>Confirm the plan is fully implemented and production-ready, with a concrete, non-circular check for every PLAN.md acceptance criterion.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="val-gate" data-label="Gating checks">
+    <h3>Gating checks</h3>
+    <ul class="clean">
+      <li><b>Tasks ticked</b> — all task checkboxes in <code>PLAN.md</code> are ticked.</li>
+      <li><b>Lint</b> — <code>uv run ruff check .</code> passes with no issues.</li>
+      <li><b>Tests</b> — <code>uv run pytest</code> passes (<code>test_errors.py</code>, <code>test_auth.py</code>, <code>test_health.py</code> all green).</li>
+    </ul>
+  </div>
+
+  <div class="commentable" data-anchor="val-criteria" data-label="Per-criterion checks (1:1)">
+    <h3>Per PLAN.md acceptance criterion (1:1)</h3>
+    <table>
+      <tr><th>criterion</th><th>concrete check</th></tr>
+      <tr><td><code>/health</code> unauthenticated + DST-aware <code>serverTime</code></td><td><code>test_health.py</code>: no header → <code>200</code>, <code>status == "ok"</code>; override only the UTC clock source — Jan → <code>14:00+02:00</code>, Jul → <code>15:00+03:00</code> (full datetime). Source guards via grep for <code>astimezone(ZoneInfo("Europe/Sofia"))</code> present and no <code>timezone(timedelta</code> / <code>.replace(tzinfo=</code> / <code>datetime.timezone(</code>. Manual: <code>uvicorn</code> + <code>curl /health</code>.</td></tr>
+      <tr><td>Protected probe <code>401</code>/<code>200</code></td><td><code>test_health.py</code> / <code>test_auth.py</code>: probe → <code>401</code> no token, <code>401</code> wrong token, <code>200</code> with <code>Bearer &lt;api_token&gt;</code>. Manual: <code>curl -i /probe</code> (401) vs with <code>Authorization</code> header (200).</td></tr>
+      <tr><td>Single envelope per non-2xx, closed <code>code</code></td><td><code>test_errors.py</code>: envelope shape + <code>code</code> for <code>401→unauthorized</code>, <code>404→not_found</code>, <code>400→internal_error</code>, <code>422→validation_error</code>, <code>500→internal_error</code> (<code>detail == null</code>, no leak). Invalid code → <code>ValidationError</code>. No-detail <code>401</code>/<code>404</code>/<code>400</code> still have a non-empty <code>message</code>, <code>detail == null</code> (round-3 #1).</td></tr>
+      <tr><td><code>internal_error</code> documented in MODELS</td><td><code>grep -n "internal_error" docs/architecture/MODELS.md</code> finds it in the "Errors" code list, so every <code>ErrorCode</code> member is in the source-of-truth doc (round-2 #1).</td></tr>
+      <tr><td><code>Error</code> camelCase + null-vs-absent <code>detail</code></td><td><code>test_errors.py</code>: raw <code>model_dump_json()</code> emits the <code>{ "error": { … } }</code> keys; <code>detail</code> accepted both omitted and explicit <code>null</code>.</td></tr>
+      <tr><td>Auth reusable + constant-time</td><td><code>test_auth.py</code> attaches <code>require_auth</code> to a second route (also gated); impl uses <code>secrets.compare_digest</code> vs <code>get_settings().api_token</code> (grep / wrong-token → <code>401</code>).</td></tr>
+      <tr><td><code>ruff</code> + <code>pytest</code> pass</td><td>Covered by the gating Lint / Tests checks above.</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="val-crosscut" data-label="Cross-cutting checks">
+    <h3>Cross-cutting</h3>
+    <ul class="clean">
+      <li><b>No dropped deps reintroduced</b> — <code>grep -rIn -e psycopg -e celery -e redis -e pgvector -e supabase -e vecs app tests</code> returns nothing (ARCHITECTURE §1 stack note).</li>
+      <li><b>Importability</b> — <code>uv run python -c "import app.api.errors, app.api.auth, app.api.routes.health"</code> succeeds.</li>
+      <li><b>All acceptance met</b> — <code>PLAN.md</code> acceptance criteria all satisfied.</li>
+    </ul>
+  </div>
+</section>
+
+<section class="section" data-name="Adversarial review" id="adversarial-validation">
+  <div class="shead">
+    <div class="idx">06</div>
+    <div class="meta">
+      <div class="kick">validation · pre-implementation</div>
+      <h2>Adversarial validation</h2>
+      <p>Three rounds of adversarial review against the freshly-authored plan (cap reached). Every finding in every round was applied; none deferred or rejected.</p>
+    </div>
+  </div>
+
+  <div class="commentable" data-anchor="val-stats" data-label="Validation stats">
+    <h3>Rounds at a glance</h3>
+    <div class="cards">
+      <div class="card2"><div class="lab">rounds</div><div class="big">3<small> / cap 3</small></div></div>
+      <div class="card2"><div class="lab">findings</div><div class="big">6</div></div>
+      <div class="card2"><div class="lab">applied</div><div class="big green">6</div></div>
+      <div class="card2"><div class="lab">deferred</div><div class="big">0</div></div>
+      <div class="card2"><div class="lab">rejected</div><div class="big">0</div></div>
+    </div>
+    <div class="note">Plan status at validation: <b>draft</b> · run on <b>2026-06-02</b>. Final Codex verdict (round 3): <code>needs-attention</code> — both round-3 findings were applied; the 3-round cap was reached, so validation stopped after applying them (per runbook Step 3).</div>
+  </div>
+
+  <div class="commentable" data-anchor="val-rounds" data-label="Rounds table">
+    <h3>Rounds table</h3>
+    <table>
+      <tr><th>round</th><th>findings</th><th>applied</th><th>deferred</th><th>rejected</th></tr>
+      <tr><td>1</td><td>2</td><td><span class="tag keep">2</span></td><td>0</td><td>0</td></tr>
+      <tr><td>2</td><td>2</td><td><span class="tag keep">2</span></td><td>0</td><td>0</td></tr>
+      <tr><td>3</td><td>2</td><td><span class="tag keep">2</span></td><td>0</td><td>0</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="val-applied" data-label="Applied fixes by round">
+    <h3>Applied fixes</h3>
+    <table>
+      <tr><th>round</th><th>fix</th><th>touched</th></tr>
+      <tr><td>1 · #1</td><td>Resolved the closed-<code>ErrorCode</code> vs "status-derived generic" contradiction — a closed enum (5 MODELS codes + one named <code>internal_error</code> fallback) with an explicit <code>STATUS_TO_CODE</code> table.</td><td>PLAN.md (Scope/Decisions/Acceptance/Research/Risks), TASK-001, TASK-004</td></tr>
+      <tr><td>1 · #2</td><td>Replaced the weak <code>utcoffset() is not None</code> <code>serverTime</code> check with an injectable <code>now_sofia()</code> (<code>ZoneInfo</code>) tested across a winter and a summer instant, plus a no-fixed-offset source guard.</td><td>TASK-003, TASK-004, PLAN.md:Acceptance</td></tr>
+      <tr><td>2 · #1</td><td>Folded the <code>internal_error</code> addition into <code>docs/architecture/MODELS.md</code> "Errors" <b>in the same PR</b> (file + step + acceptance + final grep), removing the deferred contract drift.</td><td>PLAN.md (Scope/Out of Scope/Decisions/Research/Risks/Acceptance), TASK-001, TASK-004</td></tr>
+      <tr><td>2 · #2</td><td>DST proof now injects only the <b>base UTC instant</b> into <code>now_sofia</code> so the production <code>astimezone(ZoneInfo("Europe/Sofia"))</code> path runs — asserting Jan → <code>+02:00</code> / Jul → <code>+03:00</code> plus a <code>ZoneInfo</code>-present / fixed-offset-absent source check.</td><td>TASK-003, TASK-004</td></tr>
+      <tr><td>3 · #1</td><td><code>STATUS_TO_CODE</code> now carries a non-null public <code>message</code> per status; the handler uses <code>exc.detail</code> only as <code>detail</code> (when a string), so a no-detail <code>HTTPException</code> never yields <code>message=None</code>; final validation asserts no-detail <code>401</code>/<code>404</code>/<code>400</code> envelopes have a non-empty <code>message</code>.</td><td>TASK-001 (Files/Acceptance/Steps), TASK-002 (Notes), TASK-004</td></tr>
+      <tr><td>3 · #2</td><td>DST proof strengthened to assert the <b>full converted wall-clock</b> (<code>12:00Z</code> → <code>14:00+02:00</code> Jan, <code>15:00+03:00</code> Jul) and a source guard requiring <code>astimezone(ZoneInfo(...))</code> / rejecting <code>.replace(tzinfo=...)</code>, so an instant-relabel impl is rejected.</td><td>TASK-003 (Files/Acceptance/Steps/Notes), TASK-004</td></tr>
+    </table>
+  </div>
+
+  <div class="commentable" data-anchor="val-deferred-rejected" data-label="Deferred & rejected">
+    <h3>Deferred &amp; rejected</h3>
+    <div class="note"><b>Deferred:</b> none.</div>
+    <div class="note warn"><b>Rejected:</b> none. Round-1 #1 was labelled "reject" by Codex, but its own rationale described a genuine contract contradiction; per the runbook the verdict label is advisory and the defect was real, so it was applied, not rejected.</div>
+  </div>
+</section>
+<!-- ════════════ SECTIONS:END ════════════ -->
+
+</div>
+<div class="pager">
+  <button id="prev">‹ prev</button>
+  <div class="ctr"><span class="pos">section <b id="posNow">1</b> / <span id="posTot">1</span></span></div>
+  <button id="next">next ›</button>
+</div></main>
+<div class="toast" id="toast"></div>
+<script>
+/* ── Reusable viewer + comment harness. Config comes from <body> data-* —
+      do not hard-code doc identity here. Works verbatim for any doc. ── */
+(function(){
+  "use strict";
+  var body=document.body;
+  var STORE=body.dataset.store||"doc-comments-v1";
+  var LASTSEC=STORE+"-lastsec";
+  var DOC=body.dataset.doc||"doc";
+  var EXPORT_TITLE=body.dataset.exportTitle||"Review comments";
+  var sections=[].slice.call(document.querySelectorAll(".section"));
+  var nav=document.getElementById("nav");
+  var scroll=document.getElementById("scroll");
+  var cur=0;
+
+  // ---- storage ----
+  function load(){try{return JSON.parse(localStorage.getItem(STORE))||{};}catch(e){return {};}}
+  function persist(d){localStorage.setItem(STORE,JSON.stringify(d));}
+  var data=load();
+  function uid(){return "n"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
+  function secOf(el){var s=el.closest(".section");return s?s.getAttribute("data-name"):"";}
+
+  // ---- build nav ----
+  sections.forEach(function(s,i){
+    var b=document.createElement("button");
+    b.innerHTML='<span class="n">'+String(i).padStart(2,"0")+'</span><span class="t">'+s.getAttribute("data-name")+'</span><span class="cc" data-sec="'+s.getAttribute("data-name")+'"></span>';
+    b.addEventListener("click",function(){go(i);});
+    nav.appendChild(b);
+  });
+  var navBtns=[].slice.call(nav.children);
+  document.getElementById("posTot").textContent=sections.length;
+
+  function go(i){
+    i=Math.max(0,Math.min(sections.length-1,i));
+    sections[cur].classList.remove("active");
+    navBtns[cur].classList.remove("active");
+    cur=i;
+    sections[cur].classList.add("active");
+    navBtns[cur].classList.add("active");
+    document.getElementById("posNow").textContent=i+1;
+    document.getElementById("prev").disabled=(i===0);
+    document.getElementById("next").disabled=(i===sections.length-1);
+    scroll.scrollTop=0;
+    if(location.hash!=="#"+sections[i].id) history.replaceState(null,"","#"+sections[i].id);
+    localStorage.setItem(LASTSEC,String(i));
+  }
+  document.getElementById("prev").addEventListener("click",function(){go(cur-1);});
+  document.getElementById("next").addEventListener("click",function(){go(cur+1);});
+  document.addEventListener("keydown",function(e){
+    if(e.target.tagName==="TEXTAREA")return;
+    if(e.key==="ArrowRight"||e.key==="]")go(cur+1);
+    if(e.key==="ArrowLeft"||e.key==="[")go(cur-1);
+  });
+
+  // ---- comments ----
+  var commentables=[].slice.call(document.querySelectorAll(".commentable"));
+  function totalCount(){var n=0;for(var k in data){if(data[k]&&data[k].notes)n+=data[k].notes.length;}return n;}
+  function countFor(sec){var n=0;for(var k in data){if(data[k]&&data[k].section===sec&&data[k].notes)n+=data[k].notes.length;}return n;}
+
+  function renderBadges(){
+    document.getElementById("totCt").textContent=totalCount();
+    navBtns.forEach(function(b){
+      var cc=b.querySelector(".cc"); var sec=cc.getAttribute("data-sec"); var c=countFor(sec);
+      cc.textContent=c; cc.classList.toggle("show",c>0);
+    });
+  }
+
+  function renderZone(block){
+    var anchor=block.getAttribute("data-anchor");
+    var rec=data[anchor];
+    var old=block.querySelector(".cmt-zone"); if(old)old.remove();
+    var hasNotes=rec&&rec.notes&&rec.notes.length;
+    block.classList.toggle("has-notes",!!hasNotes);
+    var bdg=block.querySelector(".cmt-badge"); if(bdg)bdg.textContent=hasNotes?rec.notes.length:"";
+    if(!hasNotes)return;
+    var zone=document.createElement("div"); zone.className="cmt-zone";
+    rec.notes.forEach(function(note){
+      var d=document.createElement("div"); d.className="cmt-note";
+      var t=new Date(note.ts);
+      var tm=t.toLocaleDateString(undefined,{month:"short",day:"numeric"})+" "+t.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+      d.innerHTML='<span class="tx"></span><span class="tm">'+tm+'</span><button class="del" title="delete">✕</button>';
+      d.querySelector(".tx").textContent=note.text;
+      d.querySelector(".del").addEventListener("click",function(){
+        rec.notes=rec.notes.filter(function(x){return x.id!==note.id;});
+        if(!rec.notes.length)delete data[anchor];
+        persist(data); renderZone(block); renderBadges();
+      });
+      zone.appendChild(d);
+    });
+    block.appendChild(zone);
+  }
+
+  function openEditor(block){
+    if(block.querySelector(".cmt-edit"))return;
+    var anchor=block.getAttribute("data-anchor");
+    var ed=document.createElement("div"); ed.className="cmt-edit";
+    ed.innerHTML='<textarea placeholder="Comment on: '+(block.getAttribute("data-label")||anchor)+'"></textarea>'+
+      '<div class="ebtns"><button class="cancel">cancel</button><button class="save">save note</button></div>';
+    block.appendChild(ed);
+    var ta=ed.querySelector("textarea"); ta.focus();
+    function close(){ed.remove();}
+    ed.querySelector(".cancel").addEventListener("click",close);
+    ta.addEventListener("keydown",function(e){if((e.metaKey||e.ctrlKey)&&e.key==="Enter")save();if(e.key==="Escape")close();});
+    ed.querySelector(".save").addEventListener("click",save);
+    function save(){
+      var v=ta.value.trim(); if(!v){close();return;}
+      if(!data[anchor])data[anchor]={section:secOf(block),label:block.getAttribute("data-label")||anchor,notes:[]};
+      data[anchor].notes.push({id:uid(),text:v,ts:new Date().toISOString()});
+      persist(data); close(); renderZone(block); renderBadges();
+    }
+  }
+
+  commentables.forEach(function(block){
+    var add=document.createElement("button"); add.className="cmt-add"; add.textContent="＋ note";
+    add.addEventListener("click",function(e){e.stopPropagation();openEditor(block);});
+    block.insertBefore(add,block.firstChild);
+    var badge=document.createElement("span"); badge.className="cmt-badge";
+    block.insertBefore(badge,block.firstChild);
+    renderZone(block);
+  });
+  function refreshBadgeNums(){commentables.forEach(function(b){var r=data[b.getAttribute("data-anchor")];b.querySelector(".cmt-badge").textContent=r&&r.notes?r.notes.length:"";});}
+  refreshBadgeNums();
+
+  // ---- comment mode toggle ----
+  var on=false, tgl=document.getElementById("cmtToggle");
+  tgl.addEventListener("click",function(){
+    on=!on; document.body.classList.toggle("comments-on",on);
+    tgl.classList.toggle("on",on); document.getElementById("cmStat").textContent=on?"on":"off";
+  });
+
+  // ---- export ----
+  function toast(m){var t=document.getElementById("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show");},1900);}
+  function download(name,text,type){
+    var blob=new Blob([text],{type:type});var u=URL.createObjectURL(blob);
+    var a=document.createElement("a");a.href=u;a.download=name;document.body.appendChild(a);a.click();
+    a.remove();setTimeout(function(){URL.revokeObjectURL(u);},1000);
+  }
+  function payload(){
+    var out={exportedAt:new Date().toISOString(),total:totalCount(),comments:[]};
+    var order={}; commentables.forEach(function(b,i){order[b.getAttribute("data-anchor")]=i;});
+    Object.keys(data).sort(function(a,b){return (order[a]||0)-(order[b]||0);}).forEach(function(k){
+      var r=data[k]; if(!r||!r.notes||!r.notes.length)return;
+      out.comments.push({anchor:k,section:r.section,block:r.label,notes:r.notes.map(function(n){return {text:n.text,ts:n.ts};})});
+    });
+    return out;
+  }
+  function toMarkdown(){
+    var p=payload();
+    var s="# "+EXPORT_TITLE+"\n\n_Exported "+p.exportedAt+" · "+p.total+" comment(s)_\n";
+    var curSec=null;
+    p.comments.forEach(function(c){
+      if(c.section!==curSec){curSec=c.section;s+="\n## "+curSec+"\n";}
+      s+="\n**"+c.block+"**  \n`#"+c.anchor+"`\n";
+      c.notes.forEach(function(n){s+="\n- "+n.text.replace(/\n/g,"\n  ")+"  \n  _"+n.ts+"_\n";});
+    });
+    if(!p.comments.length)s+="\n_No comments yet._\n";
+    return s;
+  }
+  document.getElementById("expJson").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to export");
+    download(DOC+"-comments.json",JSON.stringify(payload(),null,2),"application/json");toast("Saved "+DOC+"-comments.json");
+  });
+  document.getElementById("expMd").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to export");
+    download(DOC+"-comments.md",toMarkdown(),"text/markdown");toast("Saved "+DOC+"-comments.md");
+  });
+  document.getElementById("copyMd").addEventListener("click",function(){
+    if(!totalCount())return toast("No comments to copy");
+    navigator.clipboard.writeText(toMarkdown()).then(function(){toast("Copied as Markdown");},function(){toast("Copy failed");});
+  });
+  document.getElementById("clearAll").addEventListener("click",function(){
+    if(!totalCount())return;
+    if(!confirm("Delete all "+totalCount()+" comment(s)? This cannot be undone."))return;
+    data={};persist(data);commentables.forEach(renderZone);refreshBadgeNums();renderBadges();toast("All comments cleared");
+  });
+
+  renderBadges();
+
+  // ---- initial section ----
+  var start=0;
+  if(location.hash){var idx=sections.findIndex(function(s){return "#"+s.id===location.hash;});if(idx>=0)start=idx;}
+  else{var ls=parseInt(localStorage.getItem(LASTSEC),10);if(!isNaN(ls)&&ls<sections.length)start=ls;}
+  sections[0].classList.add("active");navBtns[0].classList.add("active");go(start);
+})();
+</script>
+</body>
+</html>
