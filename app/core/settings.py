@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # --- LLM / coaching ---
     model_id: str = Field("claude-opus-4-8", description="Default Claude model id for AgentNodes (E9).")
     constitution_version: str = Field("v1", description="Active health-constitution version tag (E3).")
+    # Optional override for the profile.yaml location (E3·P1). Defaults (when
+    # unset) to the repo-root file resolved in `app/core/profile.py`. A deployed
+    # runtime whose profile.yaml is not at the source-tree root sets PROFILE_PATH
+    # to point the loader at the real file. Read as a bare env var by the loader
+    # so loading constants never requires the auth-bearing Settings; this field
+    # is the typed mirror of that same env var.
+    profile_path: str | None = Field(
+        None, description="Override filesystem path to profile.yaml (E3·P1); env PROFILE_PATH."
+    )
 
     # --- Observability (optional; wired in E12) ---
     langfuse_public_key: str | None = None
