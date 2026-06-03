@@ -77,6 +77,13 @@ def valid_profile_dict() -> dict:
     return copy.deepcopy(VALID_PROFILE)
 
 
+@pytest.fixture(autouse=True)
+def _clear_profile_path_env(monkeypatch):
+    # Default-path tests must be deterministic regardless of a developer's
+    # PROFILE_PATH override in the ambient environment.
+    monkeypatch.delenv("PROFILE_PATH", raising=False)
+
+
 # --- TASK-001: structure, round-trip, extra-forbid, static-vs-live ---
 
 
@@ -450,3 +457,47 @@ def test_loaded_profile_exposes_no_live_or_derived_field():
     p = load_profile()
     for model in (type(p), type(p.athlete), type(p.thresholds), type(p.zones), type(p.nutrition), type(p.meta)):
         assert not (LIVE_DERIVED_NAMES & set(model.model_fields))
+
+
+# --- Deployment seam: PROFILE_PATH env override (review round-2 #3) ---
+
+
+def test_profile_path_env_override_is_honored(tmp_path, monkeypatch):
+    # A deployed runtime points the loader at the real file via PROFILE_PATH;
+    # the no-arg default load picks it up instead of the repo-root anchor.
+    custom = write_yaml(tmp_path, name="custom-profile.yaml")
+    monkeypatch.setenv("PROFILE_PATH", str(custom))
+    p = load_profile()
+    assert isinstance(p, Profile)
+    assert p.meta.constitution_version == "v1"
+
+
+def test_explicit_path_arg_beats_env_override(tmp_path, monkeypatch):
+    # An explicit argument always wins over the env override.
+    monkeypatch.setenv("PROFILE_PATH", str(tmp_path / "nonexistent.yaml"))
+    p = load_profile(write_yaml(tmp_path))
+    assert isinstance(p, Profile)
+
+
+def test_settings_exposes_profile_path_override(monkeypatch):
+    # Settings is the typed mirror of the same PROFILE_PATH env var.
+    from app.core.settings import Settings, get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("API_TOKEN", "test-api-token-0123456789")
+    monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
+    monkeypatch.setenv("PROFILE_PATH", "/data/profile.yaml")
+    s = Settings(_env_file=None)
+    assert s.profile_path == "/data/profile.yaml"
+    get_settings.cache_clear()
+
+
+def test_settings_profile_path_defaults_to_none(monkeypatch):
+    from app.core.settings import Settings, get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("API_TOKEN", "test-api-token-0123456789")
+    monkeypatch.setenv("APP_DB_PATH", "/tmp/app.db")
+    s = Settings(_env_file=None)
+    assert s.profile_path is None
+    get_settings.cache_clear()

@@ -15,6 +15,7 @@ baselines, per-day sleep/zone-minutes/readiness — live in `daily_metrics`
 The example file and accessors land in TASK-003.
 """
 
+import os
 from datetime import date
 from pathlib import Path
 
@@ -25,6 +26,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # module's location (parents[2] == backend/), never cwd, so the default works
 # identically under pytest and at runtime.
 PROFILE_PATH = Path(__file__).resolve().parents[2] / "profile.yaml"
+
+# Env var a deployed runtime sets when profile.yaml is not at the source-tree
+# root (e.g. an installed wheel packages only `app/`). `Settings.profile_path`
+# is the typed mirror; the loader reads the bare env var so loading constants
+# never pulls in the auth-bearing Settings (api_token).
+_PROFILE_PATH_ENV = "PROFILE_PATH"
+
+
+def _default_profile_path() -> Path:
+    """The path `load_profile()` uses when no explicit path is passed.
+
+    Honours the `PROFILE_PATH` env override (the deployment seam), falling back
+    to the repo-root `PROFILE_PATH` anchor for the source-tree runtime.
+    """
+    override = os.environ.get(_PROFILE_PATH_ENV)
+    return Path(override) if override else PROFILE_PATH
 
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
@@ -221,12 +238,13 @@ class Profile(BaseModel):
 def load_profile(path: Path | None = None) -> Profile:
     """Load and validate `profile.yaml` into a typed `Profile`.
 
-    `path` defaults to the app-root `PROFILE_PATH`; pass an explicit path to
-    override. Raises `FileNotFoundError` when the file is missing, `ValueError`
-    on a YAML parse error or a non-mapping document, and lets
-    `pydantic.ValidationError` propagate when a constant violates a §5 rule.
+    When `path` is omitted, resolves the `PROFILE_PATH` env override (deployment
+    seam) and falls back to the repo-root anchor. Raises `FileNotFoundError`
+    when the file is missing, `ValueError` on a YAML parse error or a non-mapping
+    document, and lets `pydantic.ValidationError` propagate when a constant
+    violates a §5 rule.
     """
-    resolved = Path(path) if path is not None else PROFILE_PATH
+    resolved = Path(path) if path is not None else _default_profile_path()
     if not resolved.is_file():
         raise FileNotFoundError(f"profile.yaml not found at {resolved}")
     try:
