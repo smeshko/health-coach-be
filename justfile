@@ -1,4 +1,4 @@
-# Local-dev runner for the Coach App backend (no Docker — that's deployment, E12).
+# Local-dev runner for the Coach App backend — just `uv` + `just`, no containers.
 # Bare `just` lists every recipe. See the README "Local development" section.
 
 # List all recipes (runs when `just` is invoked with no arguments).
