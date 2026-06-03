@@ -15,32 +15,45 @@ baselines, per-day sleep/zone-minutes/readiness — live in `daily_metrics`
 The example file and accessors land in TASK-003.
 """
 
-import os
 from datetime import date
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # The default `profile.yaml` lives at the app/repo root. Resolve it from this
 # module's location (parents[2] == backend/), never cwd, so the default works
 # identically under pytest and at runtime.
 PROFILE_PATH = Path(__file__).resolve().parents[2] / "profile.yaml"
 
-# Env var a deployed runtime sets when profile.yaml is not at the source-tree
-# root (e.g. an installed wheel packages only `app/`). `Settings.profile_path`
-# is the typed mirror; the loader reads the bare env var so loading constants
-# never pulls in the auth-bearing Settings (api_token).
-_PROFILE_PATH_ENV = "PROFILE_PATH"
+
+class _ProfilePathSettings(BaseSettings):
+    """Auth-free resolver for the `profile.yaml` location override.
+
+    Reads `PROFILE_PATH` from the process env **and** `.env` — full parity with
+    the main `Settings` (which mirrors the same knob as `Settings.profile_path`)
+    — but without the required `api_token`/`app_db_path` fields, so loading
+    constants never depends on the auth secret. A deployed runtime whose
+    `profile.yaml` is not at the source-tree root sets `PROFILE_PATH` to point
+    the loader at the real file.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    profile_path: str | None = None
 
 
 def _default_profile_path() -> Path:
     """The path `load_profile()` uses when no explicit path is passed.
 
-    Honours the `PROFILE_PATH` env override (the deployment seam), falling back
-    to the repo-root `PROFILE_PATH` anchor for the source-tree runtime.
+    Honours the `PROFILE_PATH` override from **either** the process env or `.env`
+    (the deployment seam, parity with `Settings`), falling back to the repo-root
+    `PROFILE_PATH` anchor for the source-tree runtime.
     """
-    override = os.environ.get(_PROFILE_PATH_ENV)
+    override = _ProfilePathSettings().profile_path
     return Path(override) if override else PROFILE_PATH
 
 
@@ -73,10 +86,12 @@ class Athlete(BaseModel):
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    age: int
+    # Physical measures are strictly positive — a negative/zero age, height, or
+    # goal weight is a bad hand-edit that would corrupt TDEE/BMR math (E8).
+    age: int = Field(gt=0)
     sex: str
-    height_cm: int
-    goal_weight_kg: float
+    height_cm: int = Field(gt=0)
+    goal_weight_kg: float = Field(gt=0)
 
 
 class Thresholds(BaseModel):
@@ -84,18 +99,31 @@ class Thresholds(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    max_hr: int
-    rhr_baseline: int
-    hrv_baseline_ms: int
-    easy_hr_cap: int
-    cadence_target_spm: int
-    cadence_current_spm: int
+    # All HR/cadence anchors are strictly positive bpm/spm values.
+    max_hr: int = Field(gt=0)
+    rhr_baseline: int = Field(gt=0)
+    hrv_baseline_ms: int = Field(gt=0)
+    easy_hr_cap: int = Field(gt=0)
+    cadence_target_spm: int = Field(gt=0)
+    cadence_current_spm: int = Field(gt=0)
 
     @model_validator(mode="after")
-    def _max_hr_above_rhr(self) -> "Thresholds":
+    def _hr_cadence_consistent(self) -> "Thresholds":
+        # The anchors must agree with each other, not just be individually
+        # positive — an inconsistent set would feed E8 (zone bucketing) one
+        # ceiling while E9 renders another.
         if self.max_hr <= self.rhr_baseline:
             raise ValueError(
                 f"max_hr ({self.max_hr}) must be greater than rhr_baseline ({self.rhr_baseline})"
+            )
+        if self.easy_hr_cap >= self.max_hr:
+            raise ValueError(
+                f"easy_hr_cap ({self.easy_hr_cap}) must be below max_hr ({self.max_hr})"
+            )
+        if self.cadence_current_spm > self.cadence_target_spm:
+            raise ValueError(
+                f"cadence_current_spm ({self.cadence_current_spm}) must be <= "
+                f"cadence_target_spm ({self.cadence_target_spm})"
             )
         return self
 
@@ -119,6 +147,8 @@ class Zones(BaseModel):
         # (which, with low < high, forces strictly-increasing lows too).
         names = ("z1", "z2", "z3", "z4", "z5")
         bounds = (self.z1, self.z2, self.z3, self.z4, self.z5)
+        if self.z1[0] <= 0:
+            raise ValueError(f"zone z1 low must be a positive bpm, got {self.z1[0]}")
         for name, (low, high) in zip(names, bounds, strict=True):
             if low >= high:
                 raise ValueError(f"zone {name} bounds must be low < high, got [{low}, {high}]")
@@ -218,6 +248,18 @@ class Profile(BaseModel):
     zones: Zones
     nutrition: Nutrition
     meta: Meta
+
+    @model_validator(mode="after")
+    def _zones_consistent_with_max_hr(self) -> "Profile":
+        # The top zone's high bound is the max HR — `compute_zones.py` derives Z5
+        # from `max_hr`, so a mismatch means E8 buckets against a different
+        # ceiling than `thresholds.max_hr` and the rendered constitution (E9).
+        if self.zones.z5[1] != self.thresholds.max_hr:
+            raise ValueError(
+                f"zones.z5 high ({self.zones.z5[1]}) must equal thresholds.max_hr "
+                f"({self.thresholds.max_hr})"
+            )
+        return self
 
     def zone_bounds(self) -> dict[str, tuple[int, int]]:
         """The Z1–Z5 bpm bounds the zone-minute math (E8) buckets against."""

@@ -501,3 +501,59 @@ def test_settings_profile_path_defaults_to_none(monkeypatch):
     s = Settings(_env_file=None)
     assert s.profile_path is None
     get_settings.cache_clear()
+
+
+def test_profile_path_dotenv_override_is_honored(tmp_path, monkeypatch):
+    # Parity with Settings: a PROFILE_PATH set only in `.env` (not process env)
+    # is honored by the loader too — no auth secret required. (review round-3 #1)
+    custom = write_yaml(tmp_path, name="custom.yaml")
+    (tmp_path / ".env").write_text(f"PROFILE_PATH={custom}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    p = load_profile()
+    assert isinstance(p, Profile)
+    assert p.meta.constitution_version == "v1"
+
+
+# --- Physiological consistency / positive constants (review round-3 #2) ---
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [{"age": 0}, {"age": -34}, {"height_cm": -174}, {"goal_weight_kg": 0}, {"goal_weight_kg": -75}],
+)
+def test_non_positive_athlete_constant_rejected(tmp_path, patch):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"athlete": patch}))
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [{"max_hr": 0}, {"rhr_baseline": -58}, {"hrv_baseline_ms": 0}, {"cadence_target_spm": -172}],
+)
+def test_non_positive_threshold_constant_rejected(tmp_path, patch):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"thresholds": patch}))
+
+
+@pytest.mark.parametrize("easy_hr_cap", [192, 200])
+def test_easy_hr_cap_not_below_max_hr_rejected(tmp_path, easy_hr_cap):
+    # easy_hr_cap must sit below max_hr (192); equal or above is inconsistent.
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"thresholds": {"easy_hr_cap": easy_hr_cap}}))
+
+
+def test_cadence_current_above_target_rejected(tmp_path):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"thresholds": {"cadence_current_spm": 200}}))
+
+
+@pytest.mark.parametrize("bad_z1", [[0, 125], [-10, 125]])
+def test_non_positive_zone_low_rejected(tmp_path, bad_z1):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"zones": {"z1": bad_z1}}))
+
+
+def test_z5_high_must_equal_max_hr(tmp_path):
+    # max_hr changed (190) but z5 high stays 192 -> the ceilings disagree.
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"thresholds": {"max_hr": 190}}))
