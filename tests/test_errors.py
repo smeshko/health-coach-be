@@ -129,6 +129,21 @@ def test_unhandled_exception_is_internal_error_without_leak():
     assert "secret internal detail" not in json.dumps(resp.json())
 
 
+def test_unhandled_exception_is_logged_server_side(caplog):
+    # The catch-all must record the stack + request context (review round-1 #3),
+    # even though the client envelope stays sanitized.
+    import logging
+
+    client = TestClient(_app_with_routes(), raise_server_exceptions=False)
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        resp = client.get("/boom")
+    assert resp.status_code == 500
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "expected an error log for the unhandled exception"
+    assert any("/boom" in r.getMessage() for r in errors)
+    assert any(r.exc_info is not None for r in errors)
+
+
 def test_error_model_camel_and_null_detail():
     payload = ErrorResponse(error=Error(code=ErrorCode.not_found, message="x"))
     assert json.loads(payload.model_dump_json()) == {

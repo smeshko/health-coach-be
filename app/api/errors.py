@@ -8,6 +8,7 @@ string (never raw exception text), keeping internals off the wire.
 """
 
 import http
+import logging
 from enum import Enum
 
 from fastapi import FastAPI
@@ -17,6 +18,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
 from app.api.schemas.base import CamelModel
+
+logger = logging.getLogger(__name__)
 
 
 class ErrorCode(str, Enum):
@@ -123,5 +126,8 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _on_unhandled(request: Request, exc: Exception) -> JSONResponse:
+        # Record the full stack + request context server-side so a sanitized 500 still
+        # leaves a root-cause trail. Stdlib logging only — Langfuse tracing is E12.
+        logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=exc)
         code, message = _DEFAULT_CODE_MESSAGE
         return error_response(code, message, status_code=500, detail=None)
