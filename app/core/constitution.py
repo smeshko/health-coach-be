@@ -11,9 +11,9 @@ rather than rendering a silent blank (epic §4 "no silent blanks"), and
 `autoescape=False` because the output is Markdown, not HTML (escaping would
 corrupt `&`/`<`/quotes/`−`/`≤` in the prose).
 
-`constitution_version` and the live-weight injection seam are added in TASK-003.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
@@ -50,3 +50,38 @@ def render_constitution(profile: Profile) -> str:
         zones=profile.zones,
         nutrition=profile.nutrition,
     )
+
+
+def constitution_version(profile: Profile) -> str:
+    """The rulebook-snapshot version stamped onto each brief (epic R6; LLM.md §2).
+
+    Surfaced from `profile.meta.constitution_version` so the brief layer (E9) can
+    record which constitution produced a brief, without coupling the renderer to
+    the brief model.
+    """
+    return profile.meta.constitution_version
+
+
+@dataclass
+class LiveContext:
+    """The live, per-call inputs fed via the **user context** — never the system
+    prompt. Currently just the live weight (`body_mass` → `daily_metrics`); E9
+    grows this with readiness/budgets/aggregates/flags. (epic R4; LLM.md §2)
+    """
+
+    live_weight_kg: float
+
+
+def build_user_context(profile: Profile, live: LiveContext) -> dict:
+    """Seam (stub) where E9 injects live weight at call time, kept **distinct**
+    from the system prompt (`render_constitution`).
+
+    Live weight is fed via the user context, never baked into the constitution
+    and never read from `profile.yaml` (epic R4; LLM.md §2; DB.md §5). This stub
+    proves the injection point exists and stamps `constitution_version`; the full
+    user-context assembly (readiness, budgets, aggregates, flags) is **E9**.
+    """
+    return {
+        "constitution_version": profile.meta.constitution_version,
+        "live_weight_kg": live.live_weight_kg,
+    }

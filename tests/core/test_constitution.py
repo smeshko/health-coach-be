@@ -9,6 +9,7 @@ as context, live weight is never baked into the prompt, and rendering is fresh
 each call (caching off).
 """
 
+import inspect
 import re
 from pathlib import Path
 
@@ -17,7 +18,13 @@ import jinja2
 import pytest
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from app.core.constitution import _env, render_constitution
+from app.core.constitution import (
+    LiveContext,
+    _env,
+    build_user_context,
+    constitution_version,
+    render_constitution,
+)
 from app.core.profile import Profile, load_profile
 
 TEMPLATES_DIR = Path(app.core.__file__).parent / "templates"
@@ -206,3 +213,36 @@ def test_render_is_fresh_each_call():
     r2 = render_constitution(p2)
     assert r1 != r2  # no stale memoized result
     assert "201" in r2 and "201" not in r1
+
+
+# --- TASK-003: constitution_version + live-weight injection seam ---
+
+
+def test_constitution_version_surfaced():
+    p = load_profile()
+    assert constitution_version(p) == "v1"
+    assert constitution_version(p) == p.meta.constitution_version
+
+
+def test_render_constitution_takes_only_profile():
+    # No weight parameter — live weight never enters the system prompt (epic R4).
+    params = list(inspect.signature(render_constitution).parameters)
+    assert params == ["profile"]
+
+
+def test_live_weight_seam_carries_weight_and_version_not_the_prompt():
+    p = load_profile()
+    ctx = build_user_context(p, LiveContext(live_weight_kg=83.4))
+    # The seam (user-context payload) carries live weight + the version stamp...
+    assert ctx["live_weight_kg"] == 83.4
+    assert ctx["constitution_version"] == "v1"
+    # ...and is a payload distinct from the rendered system prompt, which never
+    # contains the runtime live-weight sentinel.
+    assert "83.4" not in render_constitution(p)
+
+
+def test_seam_payload_is_not_the_system_prompt():
+    p = load_profile()
+    ctx = build_user_context(p, LiveContext(live_weight_kg=80.0))
+    assert isinstance(ctx, dict)
+    assert ctx != render_constitution(p)
