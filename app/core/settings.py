@@ -6,6 +6,7 @@ lazily at first use (ARCHITECTURE §1 — env-driven config, one process).
 """
 
 from functools import lru_cache
+from pathlib import PurePath
 from typing import Annotated
 
 from pydantic import Field, StringConstraints, field_validator
@@ -27,6 +28,12 @@ _SENTINEL_TOKEN_FRAGMENTS = (
     "example",
     "placeholder",
 )
+
+# baseline.db / health.db are read-only *build inputs*, never opened at runtime
+# (ARCHITECTURE §1; DB.md). Runtime + Alembic (E2) route through app_db_path, so
+# pointing it at one of these — or at a non-durable in-memory database — would
+# silently corrupt the build corpus or lose state. Reject both at startup.
+_FORBIDDEN_DB_BASENAMES = frozenset({"baseline.db", "health.db"})
 
 
 class Settings(BaseSettings):
@@ -67,6 +74,25 @@ class Settings(BaseSettings):
             raise ValueError(
                 "api_token looks like a placeholder/example value — set a real secret "
                 "(a copied .env.example must not boot)"
+            )
+        return value
+
+    @field_validator("app_db_path")
+    @classmethod
+    def _reject_unsafe_db_path(cls, value: str) -> str:
+        # `value` is already stripped + non-empty via RequiredStr.
+        lowered = value.lower()
+        # In-memory SQLite is non-durable; runtime state must persist to a file.
+        if ":memory:" in lowered or "mode=memory" in lowered:
+            raise ValueError(
+                "app_db_path must be a durable file path, not an in-memory SQLite database"
+            )
+        # baseline.db / health.db are read-only build inputs, never opened at runtime.
+        basename = PurePath(value).name.lower()
+        if basename in _FORBIDDEN_DB_BASENAMES:
+            raise ValueError(
+                f"app_db_path must not target the read-only build database ({basename}); "
+                "use a runtime path such as ./app.db"
             )
         return value
 

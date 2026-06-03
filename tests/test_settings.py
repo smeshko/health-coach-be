@@ -81,6 +81,32 @@ def test_short_token_rejected(monkeypatch):
         Settings(_env_file=None)
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    ["baseline.db", "./baseline.db", "/data/baseline.db", "health.db", "sqlite:///baseline.db"],
+)
+def test_build_db_path_rejected(monkeypatch, bad_path):
+    # baseline.db / health.db are read-only build inputs (review round-3 #1).
+    monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
+    monkeypatch.setenv("APP_DB_PATH", bad_path)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("mem_path", [":memory:", "sqlite:///:memory:", "file::memory:?cache=shared"])
+def test_in_memory_db_path_rejected(monkeypatch, mem_path):
+    monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
+    monkeypatch.setenv("APP_DB_PATH", mem_path)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_normal_db_path_accepted(monkeypatch):
+    monkeypatch.setenv("API_TOKEN", VALID_TOKEN)
+    monkeypatch.setenv("APP_DB_PATH", "./app.db")
+    assert Settings(_env_file=None).app_db_path == "./app.db"
+
+
 def test_env_overrides_default(monkeypatch):
     _set_required(monkeypatch)
     monkeypatch.setenv("MODEL_ID", "claude-sonnet-4-6")
