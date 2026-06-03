@@ -299,6 +299,28 @@ def _make_step():
     return type("Step", (Node,), {"process": process})
 
 
+def test_composed_same_named_nodes_are_rejected():
+    # Two independently-valid workflows each with a "Step" node, composed on one context,
+    # must not silently overwrite each other's output slot (review round-4 #1).
+    step_parent = _make_step()
+    step_child = _make_step()
+
+    class _ParentWF(Workflow):
+        workflow_schema = WorkflowSchema(
+            event_schema=_Event, start=step_parent, nodes=[NodeConfig(node=step_parent)]
+        )
+
+    class _ChildWF(Workflow):
+        workflow_schema = WorkflowSchema(
+            event_schema=_Event, start=step_child, nodes=[NodeConfig(node=step_child)]
+        )
+
+    ctx = TaskContext(event={"direction": "left"})
+    ctx.metadata["nodes"] = _ParentWF().nodes  # parent registry, as the runner installs it
+    with pytest.raises(ValueError, match="collides with a different"):
+        _ChildWF().run(context=ctx)
+
+
 def test_validator_rejects_colliding_node_names():
     # Two distinct classes named "Step" would overwrite each other's output slot
     # (review round-3 #2).

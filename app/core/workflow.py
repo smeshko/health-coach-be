@@ -199,6 +199,10 @@ class Workflow(ABC):
     ) -> TaskContext:
         if existing_context is not None:
             task_context = existing_context
+            # Output keys are node_name (class __name__); within one schema uniqueness is
+            # validated, but a composed child sharing a context could overwrite a parent
+            # node of the same name. Reject that overlap before running.
+            self._check_no_output_key_collision(task_context)
             # Let the child run its own walk, but remember the parent's stop decision so
             # composing a child can't silently erase a parent's stop_workflow() (the
             # incoming flag is OR-restored on exit).
@@ -241,6 +245,22 @@ class Workflow(ABC):
             # The parent's stop decision survives the child run.
             task_context.should_stop = task_context.should_stop or incoming_stop
         return task_context
+
+    def _check_no_output_key_collision(self, task_context: TaskContext) -> None:
+        # When composing onto a parent context, a child node sharing a name with a
+        # *different* parent node would overwrite its output slot (node_name keying).
+        # Same name + same class is fine (re-entrant composition).
+        parent_registry = task_context.metadata.get("nodes")
+        if not isinstance(parent_registry, dict):
+            return
+        parent_by_name = {node.__name__: node for node in parent_registry}
+        for child_node in self.nodes:
+            clash = parent_by_name.get(child_node.__name__)
+            if clash is not None and clash is not child_node:
+                raise ValueError(
+                    f"Composed workflow node {child_node.__name__} collides with a different "
+                    f"parent node of the same name (shared output key)."
+                )
 
     async def _next_node_class(
         self, current_node_class: type[Node], task_context: TaskContext
