@@ -260,6 +260,22 @@ def test_validator_rejects_nonrouter_fanout():
         WorkflowValidator(schema).validate()
 
 
+def test_validator_rejects_duplicate_node_configs():
+    # A duplicate could make validation and execution see different graphs
+    # (validator first-match vs runtime last-write) — review round-1 #2.
+    schema = WorkflowSchema(
+        event_schema=_Event,
+        start=_A,
+        nodes=[
+            NodeConfig(node=_A, connections=[_B]),
+            NodeConfig(node=_B),
+            NodeConfig(node=_A, connections=[_A]),  # duplicate, sneaks in a self-loop
+        ],
+    )
+    with pytest.raises(ValueError, match="Duplicate node configs"):
+        WorkflowValidator(schema).validate()
+
+
 def test_validator_rejects_is_router_on_non_baserouter():
     schema = WorkflowSchema(
         event_schema=_Event,

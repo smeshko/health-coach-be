@@ -15,7 +15,7 @@ can never jump off the validated DAG at runtime.
 
 import asyncio
 from abc import ABC
-from collections import deque
+from collections import Counter, deque
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -49,8 +49,18 @@ class WorkflowValidator:
         self.workflow_schema = workflow_schema
 
     def validate(self) -> None:
+        self._validate_unique_nodes()
         self._validate_dag()
         self._validate_connections()
+
+    def _validate_unique_nodes(self) -> None:
+        # A node may appear at most once. Otherwise the validator (first match) and the
+        # runtime registry (last write) could see different graphs — e.g. a later
+        # duplicate adding a self-loop the cycle check already approved.
+        counts = Counter(nc.node for nc in self.workflow_schema.nodes)
+        dupes = sorted(node.__name__ for node, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"Duplicate node configs for: {dupes}")
 
     def _validate_dag(self) -> None:
         if self._has_cycle():
