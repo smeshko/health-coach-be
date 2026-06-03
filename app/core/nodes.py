@@ -84,28 +84,34 @@ class RouterNode(ABC):
 class BaseRouter(Node):
     """The router **node placed in the DAG** — the runner calls `.route(ctx)` on it.
 
-    It composes one or more `RouterNode` predicates (`routes`) plus an optional
-    `fallback` node. `route()` walks the predicates in order, handing each the live
-    context, and returns the first non-None next node, else the `fallback`, else None.
-    It does **not** itself stop the workflow — the §2 safety-gate short-circuit is this
-    router *routing to* a terminal override node whose `process()` writes the brief and
-    calls `ctx.stop_workflow()` (so the gated REST brief is still produced; the router
-    must not stop before that terminal runs).
+    It composes one or more `RouterNode` predicate **classes** (`routes`) plus an
+    optional `fallback` **node class**. `route()` walks the predicates in order,
+    instantiating each **fresh** with the live context, and returns the **class** of
+    the first non-None next node, else the `fallback` class, else None. It does **not**
+    itself stop the workflow — the §2 safety-gate short-circuit is this router *routing
+    to* a terminal override node whose `process()` writes the brief and calls
+    `ctx.stop_workflow()` (so the gated REST brief is still produced; the router must
+    not stop before that terminal runs).
+
+    `routes`/`fallback` are **classes**, not instances: a predicate is constructed per
+    evaluation so no mutable `RouterNode` state is shared across runs, and the fallback
+    is returned by class (never constructed here — so an `AgentNode` fallback isn't
+    instantiated, and its E9 LLM `Agent`, just to read its type).
     """
 
-    routes: ClassVar[list[RouterNode]] = []
-    fallback: ClassVar["Node | None"] = None
+    routes: ClassVar[list[type[RouterNode]]] = []
+    fallback: ClassVar["type[Node] | None"] = None
 
     async def process(self, task_context: TaskContext) -> TaskContext:
         # Routers don't process; the runner resolves their edge via route().
         return task_context
 
-    def route(self, task_context: TaskContext) -> "Node | None":
-        for route_node in self.routes:
-            route_node.task_context = task_context
-            next_node = route_node.determine_next_node(task_context)
+    def route(self, task_context: TaskContext) -> "type[Node] | None":
+        for route_cls in self.routes:
+            predicate = route_cls(task_context=task_context)
+            next_node = predicate.determine_next_node(task_context)
             if next_node is not None:
-                return next_node
+                return type(next_node)
         return self.fallback
 
 

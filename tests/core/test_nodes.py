@@ -40,12 +40,12 @@ class _GoLeftWhenFlagged(RouterNode):
 
 
 class _FlagRouter(BaseRouter):
-    routes = [_GoLeftWhenFlagged()]
-    fallback = _Right()
+    routes = [_GoLeftWhenFlagged]
+    fallback = _Right
 
 
 class _NoFallbackRouter(BaseRouter):
-    routes = [_GoLeftWhenFlagged()]
+    routes = [_GoLeftWhenFlagged]
     fallback = None
 
 
@@ -70,26 +70,27 @@ def test_concrete_node_saves_and_gets_output():
 
 def test_router_selects_by_context():
     ctx = TaskContext(event=None, metadata={"go": "left"})
-    assert isinstance(_FlagRouter().route(ctx), _Left)
-
-
-def test_router_assigns_context_to_subrouters():
-    sub = _GoLeftWhenFlagged()
-    router = _FlagRouter()
-    router.routes = [sub]
-    ctx = TaskContext(event=None, metadata={"go": "left"})
-    router.route(ctx)
-    assert sub.task_context is ctx
+    # route() returns the next node CLASS (predicates are instantiated fresh).
+    assert _FlagRouter().route(ctx) is _Left
 
 
 def test_router_falls_back_when_no_route_matches():
     ctx = TaskContext(event=None, metadata={})
-    assert isinstance(_FlagRouter().route(ctx), _Right)
+    assert _FlagRouter().route(ctx) is _Right
 
 
 def test_router_returns_none_without_fallback():
     ctx = TaskContext(event=None, metadata={})
     assert _NoFallbackRouter().route(ctx) is None
+
+
+def test_router_predicates_are_isolated_per_evaluation():
+    # Two routings with different contexts must not bleed state through a shared
+    # predicate instance (data isolation — review round-1 #1).
+    left = _FlagRouter().route(TaskContext(event=None, metadata={"go": "left"}))
+    right = _FlagRouter().route(TaskContext(event=None, metadata={"go": "stay"}))
+    assert left is _Left
+    assert right is _Right
 
 
 def test_node_process_can_set_stop_flag():

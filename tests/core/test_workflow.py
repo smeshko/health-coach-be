@@ -64,7 +64,7 @@ class _DirPredicate(RouterNode):
 
 
 class _DirRouter(BaseRouter):
-    routes = [_DirPredicate()]
+    routes = [_DirPredicate]
     fallback = None
 
 
@@ -140,7 +140,7 @@ class _GatePredicate(RouterNode):
 
 
 class _GateRouter(BaseRouter):
-    routes = [_GatePredicate()]
+    routes = [_GatePredicate]
     fallback = None
 
 
@@ -172,7 +172,7 @@ class _OffDagPredicate(RouterNode):
 
 
 class _OffDagRouter(BaseRouter):
-    routes = [_OffDagPredicate()]
+    routes = [_OffDagPredicate]
     fallback = None
 
 
@@ -193,8 +193,8 @@ class _NeverMatch(RouterNode):
 
 
 class _BadFallbackRouter(BaseRouter):
-    routes = [_NeverMatch()]
-    fallback = _RightTerm()  # fallback is not a declared connection
+    routes = [_NeverMatch]
+    fallback = _RightTerm  # fallback class is not a declared connection
 
 
 class _BadFallbackWF(Workflow):

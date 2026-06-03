@@ -201,10 +201,9 @@ class Workflow(ABC):
     def _handle_router(
         self, node_config: NodeConfig, router: BaseRouter, task_context: TaskContext
     ) -> type[Node] | None:
-        next_node = router.route(task_context)
-        if next_node is None:
+        next_class = router.route(task_context)
+        if next_class is None:
             return None
-        next_class = type(next_node)
         if next_class not in node_config.connections:
             declared = [c.__name__ for c in node_config.connections]
             raise ValueError(
