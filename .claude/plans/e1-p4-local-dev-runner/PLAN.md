@@ -159,5 +159,5 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 
 - [x] TASK-001: justfile with core dev recipes (install, run, test, lint, fmt)
 - [x] TASK-002: Forward-declared lifecycle recipes (migrate, seed, bootstrap, db-reset) and .env handling
-- [ ] TASK-003: README Local development section
+- [x] TASK-003: README Local development section
 - [ ] TASK-004: Final Validation
