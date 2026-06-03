@@ -282,6 +282,63 @@ def test_max_hr_not_above_rhr_rejected(tmp_path):
         load_profile(write_yaml(tmp_path, {"thresholds": {"max_hr": 50, "rhr_baseline": 58}}))
 
 
+# A hand-edited single-source-of-truth file must fail loudly on impossible
+# values, not just on the upper caps — a negative protein/hydration/fiber/carb
+# would otherwise reach the macro engine (PLAN R2). (review round-1 #2)
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"activity_factor": -1.65},
+        {"activity_factor": 0},
+        {"protein_g_per_kg": -1.8},
+        {"protein_g_per_kg": 0},
+        {"fat_g_per_kg_low": -0.8},
+        {"fat_g_per_kg_high": 0},
+        {"hydration_l_low": -3.0},
+        {"hydration_l_high": 0},
+        {"fiber_g_low": -25},
+        {"fiber_g_high": 0},
+        {"deficit_pct": -0.05},
+    ],
+)
+def test_negative_or_zero_nutrition_constant_rejected(tmp_path, patch):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"nutrition": patch}))
+
+
+@pytest.mark.parametrize(
+    "carb_patch",
+    [
+        {"hard_low": -4},
+        {"moderate": 0},
+        {"rest_high": -2.5},
+    ],
+)
+def test_negative_or_zero_carb_multiplier_rejected(tmp_path, carb_patch):
+    d = valid_profile_dict()
+    d["nutrition"]["carbs_g_per_kg"].update(carb_patch)
+    path = tmp_path / "profile.yaml"
+    path.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(path)
+
+
+def test_hydration_low_above_high_rejected(tmp_path):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"nutrition": {"hydration_l_low": 3.5, "hydration_l_high": 3.0}}))
+
+
+def test_fiber_low_above_high_rejected(tmp_path):
+    with pytest.raises(pydantic.ValidationError):
+        load_profile(write_yaml(tmp_path, {"nutrition": {"fiber_g_low": 35, "fiber_g_high": 25}}))
+
+
+def test_deficit_pct_zero_accepted(tmp_path):
+    # 0% deficit == maintenance, a legitimate floor (the cap is the upper bound).
+    p = load_profile(write_yaml(tmp_path, {"nutrition": {"deficit_pct": 0}}))
+    assert p.nutrition.deficit_pct == 0
+
+
 # --- TASK-003: shipped example file + constant accessors ---
 
 

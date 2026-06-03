@@ -99,11 +99,13 @@ class CarbsPerKg(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    hard_low: float
-    hard_high: float
-    moderate: float
-    rest_low: float
-    rest_high: float
+    # All multipliers are g/kg per day — strictly positive; a negative/zero
+    # multiplier is a bad hand-edit that would zero out or invert carb targets.
+    hard_low: float = Field(gt=0)
+    hard_high: float = Field(gt=0)
+    moderate: float = Field(gt=0)
+    rest_low: float = Field(gt=0)
+    rest_high: float = Field(gt=0)
 
 
 class Nutrition(BaseModel):
@@ -111,26 +113,34 @@ class Nutrition(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    activity_factor: float
+    # Every numeric constant feeds the macro/hydration engine (E8), so each has
+    # a positive floor — a hand-edited negative/zero value is a bad file and must
+    # fail loudly rather than corrupt downstream guidance (PLAN R2).
+    activity_factor: float = Field(gt=0)
     # Hard/medical caps from the §5 comments, enforced at load (inclusive — the
     # boundary value is valid) so a bad file can never reach the macro engine.
-    deficit_pct: float = Field(le=0.20)
-    protein_g_per_kg: float = Field(le=2.0)
-    fat_g_per_kg_low: float
-    fat_g_per_kg_high: float
+    # `deficit_pct` floors at 0 (== maintenance; negative would be a surplus).
+    deficit_pct: float = Field(ge=0, le=0.20)
+    protein_g_per_kg: float = Field(gt=0, le=2.0)
+    fat_g_per_kg_low: float = Field(gt=0)
+    fat_g_per_kg_high: float = Field(gt=0)
     carbs_g_per_kg: CarbsPerKg
-    hydration_l_low: float
-    hydration_l_high: float
-    fiber_g_low: float
-    fiber_g_high: float
+    hydration_l_low: float = Field(gt=0)
+    hydration_l_high: float = Field(gt=0)
+    fiber_g_low: float = Field(gt=0)
+    fiber_g_high: float = Field(gt=0)
 
     @model_validator(mode="after")
-    def _fat_low_below_high(self) -> "Nutrition":
-        if self.fat_g_per_kg_low > self.fat_g_per_kg_high:
-            raise ValueError(
-                f"fat_g_per_kg_low ({self.fat_g_per_kg_low}) must be <= "
-                f"fat_g_per_kg_high ({self.fat_g_per_kg_high})"
-            )
+    def _ranges_low_below_high(self) -> "Nutrition":
+        # The three low/high pairs must be correctly ordered — an inverted range
+        # would invert the target band the macro/hydration engine reads.
+        for low_name, low, high_name, high in (
+            ("fat_g_per_kg_low", self.fat_g_per_kg_low, "fat_g_per_kg_high", self.fat_g_per_kg_high),
+            ("hydration_l_low", self.hydration_l_low, "hydration_l_high", self.hydration_l_high),
+            ("fiber_g_low", self.fiber_g_low, "fiber_g_high", self.fiber_g_high),
+        ):
+            if low > high:
+                raise ValueError(f"{low_name} ({low}) must be <= {high_name} ({high})")
         return self
 
 
