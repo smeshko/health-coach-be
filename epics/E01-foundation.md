@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | 🔵 ready for dev |
-| **Phases** | 3 |
+| **Phases** | 4 |
 | **Depends on** | — (bedrock) |
 | **Unblocks** | E2, E3, E5, E7, E9 |
 | **Primary refs** | [`ARCHITECTURE.md`](../docs/architecture/ARCHITECTURE.md) §1, §5 · [`MODELS.md`](../docs/architecture/MODELS.md) "Conventions", "Errors" · [`LLM.md`](../docs/architecture/LLM.md) §0 |
@@ -64,6 +64,17 @@ Redis, Supabase, streaming, and `vecs`/RAG are **not** used and must not be carr
 - A `WorkflowRunner`/executor that walks the node graph and honors `stop_workflow()`.
 - Tests: linear flow, router branch, early stop.
 
+### E1·P4 — Local dev runner (`justfile`)
+- A **`justfile`** giving turnkey local-dev recipes so the app runs without Docker (which is deployment-only,
+  E12·P2) and without memorising commands: `install` (`uv sync`), `run` (`uv run uvicorn app.main:app
+  --reload`), `test`, `lint`, `fmt` — with bare `just` listing recipes.
+- **Forward-declared lifecycle recipes** that shortcut commands arriving in later epics: `migrate`
+  (`alembic upgrade head`, E2), `seed` (the bootstrap scripts, E4), `bootstrap` (chain
+  install→migrate→seed), `db-reset`. Present now; they light up as their epics land.
+- A `.env.example` and a `just`-driven `.env` bootstrap, plus a **README "Local development"** section
+  documenting the workflow. (This is local-dev ergonomics; it does not duplicate E12 — no Docker, no
+  litestream, no migrate-on-startup.)
+
 ## 4. Acceptance criteria
 
 - [ ] `uvicorn` boots the app from a clean checkout following the README steps.
@@ -74,6 +85,8 @@ Redis, Supabase, streaming, and `vecs`/RAG are **not** used and must not be carr
 - [ ] A trivial 3-node workflow (Node → RouterNode → Node) runs end-to-end over one `TaskContext`, and a
       `stop_workflow()` in the router short-circuits the rest.
 - [ ] No Postgres/Celery/Redis/pgvector imports anywhere in the tree.
+- [ ] `just` (no args) lists recipes; `just install`, `just lint`, `just test`, and `just run` work against
+      the E1 scaffold; `migrate`/`seed`/`bootstrap` recipes exist and invoke the correct (future) commands.
 
 ## 5. Expected outcome
 
