@@ -63,11 +63,16 @@ class WorkflowValidator:
             raise ValueError(f"Duplicate node configs for: {dupes}")
 
     def _validate_dag(self) -> None:
+        all_nodes = {nc.node for nc in self.workflow_schema.nodes}
+        # The start node must have its own config, else run() KeyErrors on the first
+        # registry lookup — a validator/runtime mismatch caught here at construction.
+        if self.workflow_schema.start not in all_nodes:
+            raise ValueError(
+                f"Start node {self.workflow_schema.start.__name__} has no NodeConfig."
+            )
         if self._has_cycle():
             raise ValueError("Workflow schema contains a cycle")
-        reachable = self._reachable_nodes()
-        all_nodes = {nc.node for nc in self.workflow_schema.nodes}
-        unreachable = all_nodes - reachable
+        unreachable = all_nodes - self._reachable_nodes()
         if unreachable:
             names = sorted(n.__name__ for n in unreachable)
             raise ValueError(f"Unreachable nodes: {names}")

@@ -271,6 +271,13 @@ def test_validator_rejects_cycle():
         WorkflowValidator(schema).validate()
 
 
+def test_validator_rejects_missing_start_config():
+    # start with no NodeConfig validated before, then KeyError'd at runtime (round-2 #3).
+    schema = WorkflowSchema(event_schema=_Event, start=_A, nodes=[])
+    with pytest.raises(ValueError, match="Start node"):
+        WorkflowValidator(schema).validate()
+
+
 def test_validator_rejects_unreachable():
     schema = WorkflowSchema(
         event_schema=_Event,
