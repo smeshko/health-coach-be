@@ -71,6 +71,20 @@ class NarrativeType(str, Enum):
     plan = "plan"
 
 
+class ReadinessBand(str, Enum):
+    """Daily readiness band (MODELS § Enums, Readiness ``band``).
+
+    A **readiness** enum (not one of the card-system enums) — the daily
+    validators (E7·P3) key the RED/AMBER gating rules on this typed value rather
+    than a bare string. Added here, the shared enum home, because no earlier
+    phase has shipped it.
+    """
+
+    green = "green"
+    amber = "amber"
+    red = "red"
+
+
 class WorkoutCard(str, Enum):
     """The 20 prescribable workout cards (MODELS § Enums; CARDS.md §1)."""
 
