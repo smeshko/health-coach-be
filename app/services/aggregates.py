@@ -23,7 +23,7 @@ no profile/macro import, no DB write.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
 from sqlalchemy import ColumnElement, func, select
@@ -263,4 +263,51 @@ def nutrition_adherence(
         protein_hit_days=protein_hit_days,
         days_over_target=days_over_target,
         days_under_target=days_under_target,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public aggregate shape + accessor (TASK-003).
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Aggregates:
+    """The single context block E10's `LoadAggregatesNode` and the E11 daily context
+    read — both training windows + both nutrition-adherence windows (ARCHITECTURE §5)."""
+
+    anchor: date
+    training_7d: TrainingRollup
+    training_28d: TrainingRollup
+    nutrition_7d: NutritionAdherence
+    nutrition_28d: NutritionAdherence
+
+    def to_dict(self) -> dict:
+        """A plain JSON-serialisable dict (nested rollups flattened to primitives, anchor
+        as ISO string) for `plans.inputs_snapshot` / the LLM context (DB.md §4). Each
+        nutrition window's per-nutrient logged-day counts and `n_days` are **always**
+        serialised alongside the adherence ratios/flags, so a (possibly low / `None`) ratio
+        is never emitted without its coverage (round-2 #1)."""
+        data = asdict(self)
+        data["anchor"] = self.anchor.isoformat()
+        return data
+
+
+def load_aggregates(
+    session: Session,
+    anchor: date,
+    *,
+    nutrition_target_7d: NutritionTarget | None = None,
+    nutrition_target_28d: NutritionTarget | None = None,
+) -> Aggregates:
+    """The one public accessor: build both training rollups (7/28) and both
+    nutrition-adherence views (7/28, each against its **own** window's optional per-day
+    target — never interchanged), and assemble the `Aggregates`. Takes a `Session` (the
+    caller owns the txn — it runs inside a brief node's session); opens no `SessionLocal`,
+    writes nothing.
+    """
+    return Aggregates(
+        anchor=anchor,
+        training_7d=training_rollup(session, anchor, 7),
+        training_28d=training_rollup(session, anchor, 28),
+        nutrition_7d=nutrition_adherence(session, anchor, 7, target=nutrition_target_7d),
+        nutrition_28d=nutrition_adherence(session, anchor, 28, target=nutrition_target_28d),
     )

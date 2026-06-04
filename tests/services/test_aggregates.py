@@ -7,6 +7,7 @@ reads `daily_metrics` directly, it does not drive `/sync` or the E6·P1 engine.
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 import pytest
@@ -15,7 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.database.models import DailyMetrics
 from app.services.aggregates import (
+    Aggregates,
     NutritionTarget,
+    load_aggregates,
     nutrition_adherence,
     nutrition_consumed,
     training_rollup,
@@ -219,3 +222,79 @@ def test_nutrition_adherence_partial_logging_counts_only_logged(session: Session
     assert a.days_over_target == 1  # 2500 > 2000
     assert a.days_under_target == 0
     assert a.protein_hit_days == 0  # 120 < 150
+
+
+# ---------------------------------------------------------------------------
+# load_aggregates + Aggregates.to_dict (TASK-003)
+# ---------------------------------------------------------------------------
+def test_load_aggregates_full_shape_and_reads_cache_not_source(session: Session) -> None:
+    _dm(session, D, z1_min=10.0, active_energy=100.0, hard_day=1, kcal_in=2000.0, protein_in_g=150.0)
+    _dm(session, D - timedelta(days=10), z1_min=5.0, active_energy=50.0, kcal_in=1500.0)
+    session.commit()
+    # Pure read-side: no records/workouts seeded at all.
+    assert _count(session, "records") == 0
+    assert _count(session, "workouts") == 0
+
+    aggs = load_aggregates(session, D)
+    assert isinstance(aggs, Aggregates)
+    assert aggs.anchor == D
+    assert aggs.training_7d.z1_min == pytest.approx(10.0)  # only D in the 7d window
+    assert aggs.training_28d.z1_min == pytest.approx(15.0)  # D + D-10 in the 28d window
+    assert aggs.nutrition_7d.consumed.kcal_in == pytest.approx(2000.0)
+    assert aggs.nutrition_28d.consumed.kcal_in == pytest.approx(3500.0)
+    # No target → ratios None.
+    assert aggs.nutrition_7d.kcal_pct is None
+    assert aggs.nutrition_28d.kcal_pct is None
+
+
+def test_load_aggregates_distinct_targets_no_swap(session: Session) -> None:
+    _dm(session, D, kcal_in=2100.0, protein_in_g=150.0)               # in both windows
+    _dm(session, D - timedelta(days=20), kcal_in=1000.0, protein_in_g=100.0)  # 28d only
+    session.commit()
+    a = NutritionTarget(kcal=2000.0, protein_g=145.0)  # 7d target
+    b = NutritionTarget(kcal=3000.0, protein_g=145.0)  # 28d target (distinct)
+    aggs = load_aggregates(session, D, nutrition_target_7d=a, nutrition_target_28d=b)
+
+    # 7d uses A: avg 2100 / 2000
+    assert aggs.nutrition_7d.kcal_pct == pytest.approx(2100.0 / 2000.0)
+    assert aggs.nutrition_7d.days_over_target == 1   # 2100 > 2000
+    assert aggs.nutrition_7d.days_under_target == 0
+    # 28d uses B: avg (2100+1000)/2 = 1550 / 3000
+    assert aggs.nutrition_28d.kcal_pct == pytest.approx(1550.0 / 3000.0)
+    assert aggs.nutrition_28d.days_over_target == 0  # both < 3000
+    assert aggs.nutrition_28d.days_under_target == 2
+
+
+def test_load_aggregates_target_28d_alone(session: Session) -> None:
+    _dm(session, D, kcal_in=2100.0)
+    session.commit()
+    aggs = load_aggregates(session, D, nutrition_target_28d=NutritionTarget(kcal=2000.0))
+    assert aggs.nutrition_28d.kcal_pct == pytest.approx(2100.0 / 2000.0)  # 28d filled
+    assert aggs.nutrition_7d.kcal_pct is None  # 7d had no target
+
+
+def test_to_dict_json_serialisable_with_coverage(session: Session) -> None:
+    # A sparse 7d window (1 logged of 5 rows) — the low ratio travels with its coverage.
+    for i in range(4):
+        _dm(session, D - timedelta(days=6 - i), sleep_h=8.0)  # rows present, no dietary
+    _dm(session, D, kcal_in=1000.0)  # the one logged day
+    session.commit()
+    aggs = load_aggregates(session, D, nutrition_target_7d=NutritionTarget(kcal=2000.0))
+
+    blob = json.dumps(aggs.to_dict())  # must not raise
+    data = json.loads(blob)
+    assert data["anchor"] == D.isoformat()
+    assert "training_7d" in data and "training_28d" in data
+    n7 = data["nutrition_7d"]
+    # ratio is serialised ALONGSIDE its coverage (n_days + per-nutrient logged count).
+    assert n7["kcal_pct"] == pytest.approx(1000.0 / 2000.0)  # 0.5 — a low ratio...
+    assert n7["consumed"]["kcal_in_n"] == 1                  # ...next to its small coverage
+    assert n7["consumed"]["n_days"] == 5
+
+
+def test_load_aggregates_performs_no_write(session: Session) -> None:
+    _dm(session, D, kcal_in=2000.0, z1_min=10.0)
+    session.commit()
+    before = _count(session)
+    load_aggregates(session, D, nutrition_target_7d=NutritionTarget(kcal=2000.0))
+    assert _count(session) == before  # read-only
