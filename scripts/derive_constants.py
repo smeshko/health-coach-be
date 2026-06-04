@@ -20,13 +20,33 @@ Split of constants (PLAN Decisions):
 
 from __future__ import annotations
 
+import argparse
+import os
 import sqlite3
+import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import yaml
+
+from app.core.profile import Profile
 from compute_zones import compute_zones
+
+# Repo root is backend/; the corpus lives in the sibling ../db/ and profile.yaml
+# at the repo root (the E3·P1 PROFILE_PATH).
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB = REPO_ROOT.parent / "db" / "baseline.db"
+DEFAULT_OUT = REPO_ROOT / "profile.yaml"
+
+# DB.md §0 derives period keys through the Europe/Sofia tz, never a fixed offset.
+SOFIA = ZoneInfo("Europe/Sofia")
+
+# The §5 section order the written file preserves (human-readable, git-diffable).
+_SECTION_ORDER = ("athlete", "thresholds", "zones", "nutrition", "meta")
 
 # --- HealthKit record types (DB.md §1; confirmed against the corpus) ----------
 HR_TYPE = "HKQuantityTypeIdentifierHeartRate"
@@ -192,3 +212,83 @@ def derive_constants(con: sqlite3.Connection, config: DerivationConfig) -> dict:
             "fiber_g_high": config.fiber_g_high,
         },
     }
+
+
+def build_profile(
+    con: sqlite3.Connection,
+    config: DerivationConfig,
+    computed_at: date,
+    constitution_version: str,
+) -> Profile:
+    """Derive + stamp `meta` + **validate via the E3·P1 `Profile`**.
+
+    Constructing `Profile(**data)` is the single guarantee the output passes the
+    E3 validator — any `pydantic.ValidationError` (a cap breach, `max_hr ≤ rhr`,
+    a renamed key) propagates and aborts before anything is written (PLAN
+    Decision: validate-before-write).
+    """
+    data = derive_constants(con, config)
+    data["meta"] = {
+        "derived_from": "baseline.db",
+        "computed_at": computed_at,
+        "constitution_version": constitution_version,
+    }
+    return Profile(**data)
+
+
+def write_profile(profile: Profile, out_path: str | Path) -> None:
+    """Atomically write `profile` to `out_path` as YAML in §5 section order.
+
+    Dumps via `model_dump(mode="json")` so `computed_at` serializes as a bare ISO
+    date and zone tuples as `[low, high]` lists; `yaml.safe_dump(sort_keys=False)`
+    keeps it human-readable and deterministic. Writes to a temp file then
+    `os.replace` so a failure never leaves a partial profile.yaml.
+    """
+    out_path = Path(out_path)
+    dumped = profile.model_dump(mode="json")
+    ordered = {section: dumped[section] for section in _SECTION_ORDER}
+    text = yaml.safe_dump(ordered, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=out_path.parent, prefix=f"{out_path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_name, out_path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Derive constants from baseline.db and write a validated profile.yaml."
+    )
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB, help="source baseline.db")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="target profile.yaml")
+    parser.add_argument(
+        "--computed-at",
+        type=date.fromisoformat,
+        default=None,
+        help="ISO date stamped into meta.computed_at (default: today, Europe/Sofia)",
+    )
+    parser.add_argument("--constitution-version", default="v1", help="meta.constitution_version")
+    args = parser.parse_args(argv)
+
+    if not args.db.exists():
+        print(f"error: {args.db} not found", file=sys.stderr)
+        return 1
+
+    computed_at = args.computed_at or datetime.now(SOFIA).date()
+    con = open_readonly(args.db)
+    try:
+        profile = build_profile(con, DerivationConfig(), computed_at, args.constitution_version)
+    finally:
+        con.close()
+    write_profile(profile, args.out)
+    print(f"wrote {args.out} (computed_at={computed_at}, max_hr={profile.thresholds.max_hr})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

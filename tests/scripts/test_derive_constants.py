@@ -7,7 +7,13 @@ in tmp_path so tests are deterministic and never touch the real corpus.
 from __future__ import annotations
 
 import sqlite3
+from datetime import date
 from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from app.core.profile import load_profile
 
 # Mirrors the E4·P1 raw `records` schema (the columns the derivation reads).
 _RECORDS_DDL = """
@@ -152,3 +158,87 @@ def test_cadence_falls_back_to_anchor_when_absent(derive_constants, tmp_path) ->
     finally:
         con.close()
     assert data["thresholds"]["cadence_current_spm"] == derive_constants.DerivationConfig().cadence_current_spm
+
+
+# --- stamp / validate / write (TASK-003) ------------------------------------
+
+
+def test_round_trip_loads_via_e3_validator(derive_constants, tmp_path) -> None:
+    db = _make_baseline_db(tmp_path / "b.db", derive_constants)
+    out = tmp_path / "profile.yaml"
+    rc = derive_constants.main(
+        ["--db", str(db), "--out", str(out), "--computed-at", "2026-06-02"]
+    )
+    assert rc == 0
+    profile = load_profile(out)  # E3·P1 validator — raises if invalid
+    assert profile.thresholds.max_hr == 191
+    assert profile.zones.z5[1] == 191
+
+
+def test_meta_stamped(derive_constants, tmp_path) -> None:
+    db = _make_baseline_db(tmp_path / "b.db", derive_constants)
+    out = tmp_path / "profile.yaml"
+    derive_constants.main(
+        ["--db", str(db), "--out", str(out), "--computed-at", "2026-06-02",
+         "--constitution-version", "v1"]
+    )
+    profile = load_profile(out)
+    assert profile.meta.derived_from == "baseline.db"
+    assert profile.meta.computed_at == date.fromisoformat("2026-06-02")
+    assert profile.meta.constitution_version == "v1"
+
+
+def test_caps_backstop_raises_and_writes_nothing(derive_constants, tmp_path) -> None:
+    db = _make_baseline_db(tmp_path / "b.db", derive_constants)
+    out = tmp_path / "profile.yaml"
+    con = _open_ro(derive_constants, db)
+    try:
+        with pytest.raises(ValidationError):
+            profile = derive_constants.build_profile(
+                con,
+                derive_constants.DerivationConfig(deficit_pct=0.25),
+                computed_at=date.fromisoformat("2026-06-02"),
+                constitution_version="v1",
+            )
+            derive_constants.write_profile(profile, out)
+    finally:
+        con.close()
+    assert not out.exists()
+
+
+def test_max_hr_le_rhr_raises(derive_constants, tmp_path) -> None:
+    db = tmp_path / "b.db"
+    con0 = sqlite3.connect(db)
+    con0.execute(_RECORDS_DDL)
+    con0.executemany(
+        "INSERT INTO records (type, value, start_date) VALUES (?,?,?)",
+        [
+            (derive_constants.HR_TYPE, 150.0, _ts("2026-05-30")),  # max_hr 150
+            (derive_constants.RHR_TYPE, 160.0, _ts("2026-05-30")),  # rhr 160 >= max_hr
+            (derive_constants.HRV_TYPE, 40.0, _ts("2026-05-30")),
+        ],
+    )
+    con0.commit()
+    con0.close()
+    con = _open_ro(derive_constants, db)
+    try:
+        with pytest.raises(ValidationError):
+            derive_constants.build_profile(
+                con,
+                derive_constants.DerivationConfig(),
+                computed_at=date.fromisoformat("2026-06-02"),
+                constitution_version="v1",
+            )
+    finally:
+        con.close()
+
+
+def test_determinism_byte_identical(derive_constants, tmp_path) -> None:
+    db = _make_baseline_db(tmp_path / "b.db", derive_constants)
+    out1 = tmp_path / "p1.yaml"
+    out2 = tmp_path / "p2.yaml"
+    for out in (out1, out2):
+        derive_constants.main(
+            ["--db", str(db), "--out", str(out), "--computed-at", "2026-06-02"]
+        )
+    assert out1.read_bytes() == out2.read_bytes()
