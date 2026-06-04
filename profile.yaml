@@ -19,7 +19,7 @@ zones:                        # bpm bounds, from compute_zones.py
   z4: [167, 177]
   z5: [177, 192]
 nutrition:                    # §7 constants — the macro engine reads these
-  activity_factor: 1.65       # TDEE multiplier (very high NEAT)
+  activity_factor: 1.50       # TDEE multiplier; moderate NEAT (~10k deduped steps/day, not the ~17k summed-source figure)
   deficit_pct: 0.12           # modest deficit for slow recomp (hard cap 0.20)
   protein_g_per_kg: 1.8       # constant daily (kidney-stone cap 2.0)
   fat_g_per_kg_low: 0.8

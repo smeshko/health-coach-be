@@ -87,7 +87,7 @@ class DerivationConfig:
     cadence_target_spm: int = 172
     cadence_current_spm: int = 160
     # nutrition (§7 medical/clinician constants the macro engine reads)
-    activity_factor: float = 1.65
+    activity_factor: float = 1.50  # moderate NEAT (~10k deduped steps/day; the raw multi-source sum over-counts ~2x)
     deficit_pct: float = 0.12
     protein_g_per_kg: float = 1.8
     fat_g_per_kg_low: float = 0.8

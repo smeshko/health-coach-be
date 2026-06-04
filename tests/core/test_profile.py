@@ -47,7 +47,7 @@ VALID_PROFILE: dict = {
         "z5": [177, 192],
     },
     "nutrition": {
-        "activity_factor": 1.65,
+        "activity_factor": 1.50,
         "deficit_pct": 0.12,
         "protein_g_per_kg": 1.8,
         "fat_g_per_kg_low": 0.8,
@@ -95,7 +95,7 @@ def test_valid_dict_constructs_and_round_trips():
     assert p.thresholds.cadence_current_spm == 160
     assert p.zones.z1 == (96, 125)
     assert p.zones.z5 == (177, 192)
-    assert p.nutrition.activity_factor == 1.65
+    assert p.nutrition.activity_factor == 1.50
     assert p.nutrition.carbs_g_per_kg.hard_low == 4
     assert p.nutrition.carbs_g_per_kg.rest_high == 2.5
     assert p.meta.computed_at == date(2026, 6, 2)
@@ -295,7 +295,7 @@ def test_max_hr_not_above_rhr_rejected(tmp_path):
 @pytest.mark.parametrize(
     "patch",
     [
-        {"activity_factor": -1.65},
+        {"activity_factor": -1.50},
         {"activity_factor": 0},
         {"protein_g_per_kg": -1.8},
         {"protein_g_per_kg": 0},
@@ -392,7 +392,7 @@ def test_inverted_carb_range_rejected(tmp_path, carb_patch):
 @pytest.mark.parametrize(
     ("find", "replace"),
     [
-        ("activity_factor: 1.65", "activity_factor: .inf"),
+        ("activity_factor: 1.5", "activity_factor: .inf"),
         ("protein_g_per_kg: 1.8", "protein_g_per_kg: .inf"),
         ("hydration_l_high: 3.5", "hydration_l_high: .inf"),
         ("fiber_g_low: 25", "fiber_g_low: .nan"),
@@ -434,7 +434,7 @@ def test_zone_bounds_accessor_returns_db_md_bounds():
 def test_nutrition_constants_reachable_for_macro_engine():
     p = load_profile()
     assert p.nutrition.deficit_pct == 0.12
-    assert p.nutrition.activity_factor == 1.65
+    assert p.nutrition.activity_factor == 1.50
     assert p.nutrition.protein_g_per_kg == 1.8
     assert p.nutrition.carbs_g_per_kg.hard_high == 5
 

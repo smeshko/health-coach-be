@@ -49,7 +49,7 @@
 | HRV (SDNN) baseline | **`{{ thresholds.hrv_baseline_ms }}` ms** | `profile.yaml` (informational); readiness uses the live 30-day mean |
 | VO₂max | **~42.5** (was ~37 a year ago) | *live/derived snapshot* — climbing; "good" for age |
 | Sleep | **~5.7 h/night avg** (3.3–7.9) | *live/derived snapshot* — ⚠️ chronic short sleep = #1 recovery limiter |
-| Daily steps | 12.7k–21.5k | *live/derived snapshot* — very high NEAT, big fat-loss ally |
+| Daily steps | ~10k (≈6k–15k) | *live/derived snapshot* — solidly active NEAT; raw multi-source sums over-count ~2× (Watch + phone) |
 | Active energy | ~550 kcal rest / ~1,500 kcal boxing day | *live/derived snapshot* — from activity_summary |
 
 **Goals, ranked (recomp — both slowly):**
@@ -137,7 +137,7 @@ frequency cap · flags**. Categories match the user's four buckets + a supportin
 | **Easy run** | Z2 (cap `{{ thresholds.easy_hr_cap }}`) | 25–50 min | aerobic base, fat ox., recovery | the bread-and-butter; cadence cue (§3); run/walk OK |
 | **Long run** | Z2 *by effort* (start ≤`{{ thresholds.easy_hr_cap }}`; allow drift to ~155 in the final third) | start ~60–70 min / ~8–10 km, build | endurance, durability (time on feet), HM progression | run by easy *effort*, not a hard HR ceiling — accept cardiac drift late, don't slow to a crawl; cadence cue (§3); progress +~1 km/wk *or* ≤10%/wk; the week's marquee easy session |
 | **Progression / quality long run** | Z2→Z3/Z4 | easy first 75–85%, then 15–25% at moderate/HM effort *or* an embedded tempo block | running on tired legs; HM-specific stamina | **counts as a QUALITY/hard day** (consumes a hard-day slot); periodized *upgrade* — only once base is built / nearing a HM, not in base phase |
-| **Active recovery** (walk / easy spin / row / mobility) | Z1 | 20–40 min | blood flow, gentle recovery — *no impact* | replaces the old "recovery jog": a Z1 jog ≈ walking pace for him and just adds pounding; 13–21k daily steps already supply his Z1. Running = two flavors only: easy (Z2) & quality (Z4/5). A true recovery *jog* re-earns a slot only at HM-peak mileage. |
+| **Active recovery** (walk / easy spin / row / mobility) | Z1 | 20–40 min | blood flow, gentle recovery — *no impact* | replaces the old "recovery jog": a Z1 jog ≈ walking pace for him and just adds pounding; ~10k daily steps already supply his Z1. Running = two flavors only: easy (Z2) & quality (Z4/5). A true recovery *jog* re-earns a slot only at HM-peak mileage. |
 | **Threshold / tempo** | Z4 (Z3→Z4) | 2–4 × 6–10 min @ ~167–175, or 20 min steady | lactate threshold, "comfortably hard" stamina | **quality day**; needs ≥1 easy/rest day on each side |
 | **VO₂ intervals** | Z5 | 4–6 × 3 min / 5–8 × 2 min, equal jog | top-end aerobic power, VO₂max | **quality day**; high knee load → only with green knee |
 | **Strides / sprints** | Z5 (brief) | 6–8 × 15–20 s relaxed fast + 5–10 × short hill sprints | running economy, neuromuscular, fast w/ low injury risk | low systemic cost; great cadence teacher; add to end of easy run |
@@ -289,11 +289,11 @@ constraints in §2 are filters the brain applies to *every* recommendation. All 
 ### 7.1 Calorie target (recomp = modest deficit)
 ```
 BMR  = 10·W + 6.25·{{ athlete.height_cm }} − 5·{{ athlete.age }} + 5     # Mifflin-St Jeor (male)
-TDEE = BMR · {{ nutrition.activity_factor }}                            # very high NEAT: 13–21k steps + training
+TDEE = BMR · {{ nutrition.activity_factor }}                            # moderate NEAT: ~10k deduped steps + training
 Target_avg = TDEE · (1 − {{ nutrition.deficit_pct }})                   # modest deficit for slow recomp
 ```
-**Worked example at W=81 kg:** BMR ≈ 1,733 · 1.65 ≈ **TDEE ~2,860** → **avg target ~2,520 kcal/day**.
-Expected loss ≈ 0.3–0.5 kg/wk. *(Computed in code from live `W`; never let the deficit exceed ~20%.)*
+**Worked example at W=81 kg:** BMR ≈ 1,733 · 1.50 ≈ **TDEE ~2,600** → **avg target ~2,290 kcal/day**.
+Expected loss ≈ 0.2–0.4 kg/wk. *(Computed in code from live `W`; never let the deficit exceed ~20%.)*
 
 ### 7.2 Macro rules (constant protein, gallbladder-aware fat, periodized carbs)
 - **Protein: `{{ nutrition.protein_g_per_kg }}` g/kg/day** (range 1.6–2.0; **kidney-stone cap ~2.0** — don't megadose). ≈ **146 g** at 81 kg. Spread across 3–4 feedings; lactose-safe sources (poultry, fish, eggs, lean meat, legumes, Greek yogurt/kefir, hard cheese, **whey isolate or plant powder**).
@@ -303,9 +303,9 @@ Expected loss ≈ 0.3–0.5 kg/wk. *(Computed in code from live `W`; never let t
 ### 7.3 Day-type carb cycling (this is what the morning loop tunes)
 | Day type (planned session) | Carbs | Calories | Rationale |
 |---|---|---|---|
-| **Hard / long** (boxing, threshold, VO₂, long run, HIIT) | `{{ nutrition.carbs_g_per_kg.hard_low }}`–`{{ nutrition.carbs_g_per_kg.hard_high }}` g/kg (~325–405 g) | ~maintenance (~2,800) | fuel performance + recovery; don't under-fuel a flare-risk gut |
-| **Moderate** (easy run, strength) | ~`{{ nutrition.carbs_g_per_kg.moderate }}` g/kg (~245 g) | ~avg target (~2,520) | steady |
-| **Rest / recovery** | `{{ nutrition.carbs_g_per_kg.rest_low }}`–`{{ nutrition.carbs_g_per_kg.rest_high }}` g/kg (~165–200 g) | larger deficit (~2,200) | protein + fat hold; deficit comes from carbs |
+| **Hard / long** (boxing, threshold, VO₂, long run, HIIT) | `{{ nutrition.carbs_g_per_kg.hard_low }}`–`{{ nutrition.carbs_g_per_kg.hard_high }}` g/kg (~325–405 g) | ~maintenance (~2,600) | fuel performance + recovery; don't under-fuel a flare-risk gut |
+| **Moderate** (easy run, strength) | ~`{{ nutrition.carbs_g_per_kg.moderate }}` g/kg (~245 g) | ~avg target (~2,290) | steady |
+| **Rest / recovery** | `{{ nutrition.carbs_g_per_kg.rest_low }}`–`{{ nutrition.carbs_g_per_kg.rest_high }}` g/kg (~165–200 g) | larger deficit (~2,080) | protein + fat hold; deficit comes from carbs |
 
 > The `dayType` is the brain's **one nutrition lever** (the only nutrition choice it makes; code computes
 > every gram from it). It **defaults** to the planned card's intensity, but the daily loop may adjust it —
