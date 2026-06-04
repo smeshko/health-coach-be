@@ -40,8 +40,10 @@ def upsert_activity(session, summaries: Iterable[ActivitySummary]) -> int:
     if not summaries:
         return 0
 
-    # Dedupe by date (last wins) so a single statement never upserts a date twice
-    # (SQLite rejects a double-upsert of the same conflict target in one INSERT).
+    # Dedupe by date (last wins) so the returned distinct-date count is exact and a
+    # single statement never upserts one date twice. (Modern SQLite ≥3.35 applies a
+    # repeated conflict target last-wins, but older SQLite errors "cannot UPSERT a
+    # row twice" — deduping keeps the write deterministic and portable either way.)
     by_date: dict[str, dict[str, Any]] = {}
     for summary in summaries:
         row = _to_row(summary)
