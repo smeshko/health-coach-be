@@ -23,6 +23,7 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time, timedelta
 
@@ -30,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
+from app.core.healthkit import RECORD_TYPE_TO_HK
 from app.core.profile import Profile, load_profile
 from app.core.time import SOFIA, now_sofia, parse_ts, to_sofia
 from app.database.engine import SessionLocal
@@ -80,6 +82,58 @@ _ZONE_KEYS: tuple[str, ...] = ("z1", "z2", "z3", "z4", "z5")
 
 
 # ---------------------------------------------------------------------------
+# Stored-type normalization (review round-1 #1, #2).
+#
+# `app.db.records`/`workouts` hold BOTH origins: live `/sync` rows store the
+# snake_case `RecordType` value (E5·P2 `r.type.value`, e.g. `heart_rate`), while the
+# E4 seed copies Apple-Health rows VERBATIM — `records.type` as `HK…Identifier`,
+# sleep `value_text` as `HKCategoryValueSleepAnalysis…`, `workouts.activity_type` as
+# `HKWorkoutActivityType…`. The seed's HK form is load-bearing for E4's aggregate
+# queries, so the engine canonicalizes BOTH forms at read time rather than touching
+# the seed — otherwise the entire seeded history recomputes to null metrics.
+_HK_TO_SNAKE_RECORD_TYPE: dict[str, str] = {hk: snake for snake, hk in RECORD_TYPE_TO_HK.items()}
+_SLEEP_VALUE_PREFIX = "HKCategoryValueSleepAnalysis"
+_HK_WORKOUT_PREFIX = "HKWorkoutActivityType"
+_CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _canonical_record_type(type_: str | None) -> str:
+    """Map a stored `records.type` to its snake_case form (HK identifier → snake;
+    snake passes through). So a seeded `HKQuantityTypeIdentifierStepCount` and a live
+    `step_count` collapse to the same `step_count`."""
+    return _HK_TO_SNAKE_RECORD_TYPE.get(type_ or "", type_ or "")
+
+
+def _record_type_aliases(types: set[str]) -> set[str]:
+    """Expand snake_case record types to also include the seeded HK-identifier form,
+    so a single `Records.type.in_(...)` (index-backed) matches both origins."""
+    aliases = set(types)
+    aliases.update(RECORD_TYPE_TO_HK[t] for t in types if t in RECORD_TYPE_TO_HK)
+    return aliases
+
+
+def _canonical_sleep_stage(value_text: str | None) -> str:
+    """Lower-cased sleep stage with the seeded `HKCategoryValueSleepAnalysis` prefix
+    stripped, so `HKCategoryValueSleepAnalysisAsleepCore` and `asleepCore` both →
+    `asleepcore`."""
+    s = (value_text or "").strip()
+    if s.startswith(_SLEEP_VALUE_PREFIX):
+        s = s[len(_SLEEP_VALUE_PREFIX) :]
+    return s.lower()
+
+
+def _canonical_activity_type(activity_type: str | None) -> str:
+    """Lower-cased snake_case workout activity type. Strips the seeded
+    `HKWorkoutActivityType` prefix and splits CamelCase, so
+    `HKWorkoutActivityTypeHighIntensityIntervalTraining` and a live
+    `high_intensity_interval_training` both → `high_intensity_interval_training`."""
+    s = (activity_type or "").strip()
+    if s.startswith(_HK_WORKOUT_PREFIX):
+        s = _CAMEL_BOUNDARY.sub("_", s[len(_HK_WORKOUT_PREFIX) :])
+    return s.lower()
+
+
+# ---------------------------------------------------------------------------
 # Shared readers + source de-duplication (DECISIONS.md Decision 4).
 # ---------------------------------------------------------------------------
 def source_rank(source_name: str | None) -> int:
@@ -114,7 +168,7 @@ def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[
     lo, hi = _window(day)
     stmt = (
         select(Records)
-        .where(Records.type.in_(types))
+        .where(Records.type.in_(_record_type_aliases(types)))
         .where(Records.start_date >= lo)
         .where(Records.start_date < hi)
     )
@@ -183,7 +237,7 @@ def sleep_h(session: Session, day: date) -> float | None:
         r
         for r in _records_of_types(session, day, {"sleep_analysis"})
         if r.end_date is not None
-        and (r.value_text or "").strip().lower() in ASLEEP_STAGES
+        and _canonical_sleep_stage(r.value_text) in ASLEEP_STAGES
         and to_sofia(parse_ts(r.end_date)).date() == day
     ]
     if not asleep:
@@ -308,7 +362,7 @@ def _dominant_dietary_source(rows: list[Records]) -> str | None:
         by_source.setdefault(r.source_name, []).append(r)
 
     def kcal(srows: list[Records]) -> float:
-        return sum(r.value or 0.0 for r in srows if r.type == _KCAL_TYPE)
+        return sum(r.value or 0.0 for r in srows if _canonical_record_type(r.type) == _KCAL_TYPE)
 
     def key(item: tuple[str | None, list[Records]]) -> tuple[float, int, str]:
         source, srows = item
@@ -333,7 +387,7 @@ def nutrition_intake(session: Session, day: date) -> dict[str, float | None]:
     by_type: dict[str, list[Records]] = {}
     for r in rows:
         if r.source_name == dominant:
-            by_type.setdefault(r.type, []).append(r)
+            by_type.setdefault(_canonical_record_type(r.type), []).append(r)
     for type_, column in DIETARY_TYPE_TO_COLUMN.items():
         if type_ in by_type:
             result[column] = sum(r.value or 0.0 for r in by_type[type_])
@@ -382,7 +436,7 @@ def hard_day(session: Session, day: date) -> int:
     for w in session.execute(stmt).scalars().all():
         if to_sofia(parse_ts(w.start_date)).date() != day:
             continue
-        if (w.activity_type or "").strip().lower() in HARD_ACTIVITY_TYPES:
+        if _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES:
             return 1
         if _duration_minutes(w) >= LONG_DURATION_MIN:
             return 1

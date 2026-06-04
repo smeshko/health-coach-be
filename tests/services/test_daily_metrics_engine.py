@@ -565,3 +565,64 @@ def test_recompute_matches_stored_type_form_via_upsert_records(session: Session)
     assert row["steps"] == 8000
     assert row["hrv_sdnn"] == 46.0
     assert row["kcal_in"] == 2100.0
+
+
+# ---------------------------------------------------------------------------
+# Review round-1 #1/#2: the engine must read the SEEDED HK-identifier stored form
+# (build_db/seed_app_db copy Apple-Health types verbatim), not only the snake_case
+# form that /sync stores — else the whole 90-day seed history recomputes to null.
+# ---------------------------------------------------------------------------
+def test_recompute_reads_seeded_hk_identifier_records(session: Session) -> None:
+    _seed(
+        session,
+        _rec("HKCategoryTypeIdentifierSleepAnalysis", "2026-05-31T23:30:00+03:00",
+             end="2026-06-01T07:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore"),
+        _rec("HKQuantityTypeIdentifierHeartRateVariabilitySDNN", "2026-06-01T06:30:00+03:00", value=48.0),
+        _rec("HKQuantityTypeIdentifierRestingHeartRate", "2026-06-01T06:30:00+03:00", value=54.0),
+        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T10:00:00+03:00", value=9000.0,
+             source="Apple Watch"),
+        _rec("HKQuantityTypeIdentifierActiveEnergyBurned", "2026-06-01T10:00:00+03:00", value=500.0,
+             source="Apple Watch"),
+        _rec("HKQuantityTypeIdentifierHeartRate", "2026-06-01T10:00:00+03:00",
+             end="2026-06-01T10:10:00+03:00", value=130.0),
+        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4),
+        _rec("HKQuantityTypeIdentifierDietaryEnergyConsumed", "2026-06-01T12:00:00+03:00",
+             value=2200.0, source="MacroFactor"),
+        _rec("HKQuantityTypeIdentifierDietaryProtein", "2026-06-01T12:00:00+03:00",
+             value=160.0, source="MacroFactor"),
+    )
+    recompute_day(session, D1, profile=PROFILE)
+    session.commit()
+    row = _row(session, "2026-06-01")
+    assert row["sleep_h"] == pytest.approx(7.5)  # seeded HKCategoryValue sleep stage read
+    assert row["hrv_sdnn"] == 48.0
+    assert row["rhr"] == 54.0
+    assert row["steps"] == 9000
+    assert row["active_energy"] == 500.0
+    assert row["z2_min"] == pytest.approx(10.0)
+    assert row["body_weight"] == 78.4
+    assert row["kcal_in"] == 2200.0
+    assert row["protein_in_g"] == 160.0
+
+
+def test_nutrition_dominant_app_across_seeded_and_live_type_forms(session: Session) -> None:
+    # The dominant-app pick + per-type sum must canonicalize HK vs snake forms together.
+    _seed(
+        session,
+        _rec("HKQuantityTypeIdentifierDietaryEnergyConsumed", "2026-06-01T12:00:00+03:00",
+             value=1200.0, source="MacroFactor"),
+        _rec("dietary_energy_consumed", "2026-06-01T19:00:00+03:00", value=900.0, source="MacroFactor"),
+    )
+    # Both rows are the same canonical type + source → summed to one app's kcal.
+    assert nutrition_intake(session, D1)["kcal_in"] == 2100.0
+
+
+@pytest.mark.parametrize(
+    "hk_activity",
+    ["HKWorkoutActivityTypeBoxing", "HKWorkoutActivityTypeHighIntensityIntervalTraining",
+     "HKWorkoutActivityTypeKickboxing", "HKWorkoutActivityTypeMartialArts"],
+)
+def test_hard_day_matches_seeded_hk_workout_activity_types(session: Session, hk_activity: str) -> None:
+    # A sub-90-min seeded hard session (HK activity form) must read hard_day=1.
+    _seed(session, _workout(hk_activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
+    assert hard_day(session, D1) == 1
