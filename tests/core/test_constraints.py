@@ -12,6 +12,7 @@ cases.
 """
 
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,8 +23,11 @@ from app.core.constraints import (
     ValidationContext,
     Violation,
     WeeklyBudgets,
+    validate_daily,
 )
-from app.core.enums import ReadinessBand, WorkoutCard
+from app.core.enums import DayType, ReadinessBand, WorkoutCard
+
+C = WorkoutCard
 
 # --- Documented per-family rule-key sets (the closed contract, PLAN.md/TASK-001).
 EXPECTED_WEEKLY_RULES = {
@@ -130,3 +134,250 @@ def test_validation_context_is_frozen_and_round_trips():
     assert ctx.safety_gate_triggered is False
     with pytest.raises(dataclasses.FrozenInstanceError):
         ctx.knee_pain = 5  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------
+# TASK-002 — validate_daily. Lightweight structural builders (the validators
+# read `out`/`pick` attributes structurally — duck-typed — so a SimpleNamespace
+# stands in for the real MODELS DailyBriefLLMOutput / SessionPick).
+# --------------------------------------------------------------------------
+def _pick(card, low, high):
+    return SimpleNamespace(
+        card=card, duration_min_low=low, duration_min_high=high
+    )
+
+
+def _daily_out(session, day_type, alternatives=None):
+    return SimpleNamespace(
+        session=session,
+        alternatives=list(alternatives or []),
+        day_type=day_type,
+    )
+
+
+def _daily_ctx(
+    *,
+    band=ReadinessBand.green,
+    knee_pain=0,
+    week_plan_cards=frozenset({C.easy_run}),
+):
+    # budgets are weekly-only; supply a placeholder so the daily ctx is complete.
+    return ValidationContext(
+        budgets=WeeklyBudgets(
+            hard_days=2, strength_sessions=2, long_run_km=18.0, deload=False
+        ),
+        quality_run_pick=None,
+        band=band,
+        knee_pain=knee_pain,
+        week_plan_cards=week_plan_cards,
+        safety_gate_triggered=False,
+    )
+
+
+def _rules(violations):
+    return {v.rule for v in violations}
+
+
+def test_daily_clean_session_returns_empty():
+    # In-plan easy_run, green band, in-band dose (25–50), dayType not below
+    # easy_run's (non-)floor, ≤2 alternatives → clean.
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate)
+    assert validate_daily(out, _daily_ctx()) == []
+
+
+def test_daily_card_not_in_plan_flags_unrelated_card():
+    out = _daily_out(_pick(C.boxing, 60, 90), DayType.hard)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    v = validate_daily(out, ctx)
+    assert _rules(v) == {"card_not_in_plan"}
+
+
+def test_daily_downgrade_substitute_of_planned_card_is_accepted():
+    # vo2 is planned; steady_cardio is its DOWNGRADE_MAP[vo2].amber sub → accepted.
+    out = _daily_out(_pick(C.steady_cardio, 30, 50), DayType.moderate)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.vo2}))
+    assert validate_daily(out, ctx) == []
+
+
+def test_daily_red_requires_rest_card_flags_non_rest():
+    # easy_run is day_type=moderate, not rest → flags under RED.
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate)
+    ctx = _daily_ctx(band=ReadinessBand.red, week_plan_cards=frozenset({C.easy_run}))
+    assert "red_requires_rest_card" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_red_rest_type_card_is_clean():
+    # active_recovery is day_type=rest → clean under RED.
+    out = _daily_out(_pick(C.active_recovery, 20, 40), DayType.rest)
+    ctx = _daily_ctx(
+        band=ReadinessBand.red, week_plan_cards=frozenset({C.active_recovery})
+    )
+    assert validate_daily(out, ctx) == []
+
+
+def test_daily_amber_blocks_vo2():
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.hard)
+    ctx = _daily_ctx(band=ReadinessBand.amber, week_plan_cards=frozenset({C.vo2}))
+    assert "amber_full_intensity" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_amber_blocks_z5_card():
+    # hiit targets Zone.z5 (and is not vo2) → still blocked under AMBER.
+    out = _daily_out(_pick(C.hiit, 15, 25), DayType.hard)
+    ctx = _daily_ctx(band=ReadinessBand.amber, week_plan_cards=frozenset({C.hiit}))
+    assert "amber_full_intensity" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_vo2_under_green_is_clean_for_amber_rule():
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.hard)
+    ctx = _daily_ctx(band=ReadinessBand.green, week_plan_cards=frozenset({C.vo2}))
+    assert "amber_full_intensity" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_knee_blocks_impact_flag_card():
+    # easy_run carries Flag.impact → blocked at knee_pain=5.
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate)
+    ctx = _daily_ctx(knee_pain=5, week_plan_cards=frozenset({C.easy_run}))
+    assert "knee_impact_blocked" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_knee_does_not_block_low_impact_boxing():
+    # boxing is Impact.low but carries NO Flag.impact → not knee-blocked
+    # (the gate keys on the flag, not the column — E7·P1 round-1#1).
+    out = _daily_out(_pick(C.boxing, 60, 90), DayType.hard)
+    ctx = _daily_ctx(knee_pain=5, week_plan_cards=frozenset({C.boxing}))
+    assert "knee_impact_blocked" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_knee_does_not_block_strength_lower():
+    out = _daily_out(_pick(C.strength_lower, 25, 35), DayType.moderate)
+    ctx = _daily_ctx(knee_pain=5, week_plan_cards=frozenset({C.strength_lower}))
+    assert "knee_impact_blocked" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_dose_over_band_flags():
+    # easy_run band is 25–50; 60 high is over.
+    out = _daily_out(_pick(C.easy_run, 30, 60), DayType.moderate)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    assert "dose_out_of_band" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_dose_under_band_flags():
+    # easy_run band is 25–50; 10 low is under.
+    out = _daily_out(_pick(C.easy_run, 10, 20), DayType.moderate)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    assert "dose_out_of_band" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_long_run_open_ended_high_is_clean():
+    # long_run has dose_min_high None → only the low bound (60) applies; 95 ok.
+    out = _daily_out(_pick(C.long_run, 90, 95), DayType.hard)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.long_run}))
+    assert "dose_out_of_band" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_rest_nonzero_dose_flags():
+    # rest band is (0,0); any non-zero dose is out of band.
+    out = _daily_out(_pick(C.rest, 0, 10), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.rest}))
+    assert "dose_out_of_band" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_rest_zero_dose_is_clean():
+    out = _daily_out(_pick(C.rest, 0, 0), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.rest}))
+    assert validate_daily(out, ctx) == []
+
+
+def test_daily_fuel_floor_rejects_rest_on_hard_card():
+    # vo2 floors dayType at hard; dayType=rest is under-fuelling.
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.vo2}))
+    assert "day_type_below_floor" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_fuel_floor_rejects_moderate_on_long_run():
+    out = _daily_out(_pick(C.long_run, 70, 90), DayType.moderate)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.long_run}))
+    assert "day_type_below_floor" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_fuel_floor_accepts_hard_on_hard_card():
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.hard)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.vo2}))
+    assert "day_type_below_floor" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_fuel_floor_does_not_fire_for_non_floor_card():
+    # easy_run does not floor — any dayType (even rest) is clean for the floor rule.
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    assert "day_type_below_floor" not in _rules(validate_daily(out, ctx))
+
+
+def test_daily_too_many_alternatives_flags_three():
+    alts = [
+        _pick(C.steady_cardio, 30, 50),
+        _pick(C.active_recovery, 20, 40),
+        _pick(C.mobility, 10, 30),
+    ]
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate, alternatives=alts)
+    ctx = _daily_ctx(
+        week_plan_cards=frozenset(
+            {C.easy_run, C.steady_cardio, C.active_recovery, C.mobility}
+        )
+    )
+    assert "too_many_alternatives" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_two_alternatives_is_clean():
+    alts = [_pick(C.steady_cardio, 30, 50), _pick(C.active_recovery, 20, 40)]
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate, alternatives=alts)
+    ctx = _daily_ctx(
+        week_plan_cards=frozenset({C.easy_run, C.steady_cardio, C.active_recovery})
+    )
+    assert validate_daily(out, ctx) == []
+
+
+def test_daily_offending_alternative_dose_flags():
+    # primary is clean; an alternative is out-of-band → dose_out_of_band fires.
+    alts = [_pick(C.easy_run, 30, 90)]  # over band 25–50
+    out = _daily_out(_pick(C.easy_run, 30, 45), DayType.moderate, alternatives=alts)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    assert "dose_out_of_band" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_offending_alternative_impact_under_knee_flags():
+    # primary boxing (no impact flag) clean for knee; an alt easy_run has impact.
+    alts = [_pick(C.easy_run, 30, 45)]
+    out = _daily_out(_pick(C.boxing, 60, 90), DayType.hard, alternatives=alts)
+    ctx = _daily_ctx(
+        knee_pain=5, week_plan_cards=frozenset({C.boxing, C.easy_run})
+    )
+    assert "knee_impact_blocked" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_multiple_breaks_return_multiple_violations():
+    # vo2 not in plan + dayType=rest under floor → ≥2 violations.
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    v = validate_daily(out, ctx)
+    assert len(v) >= 2
+    assert {"card_not_in_plan", "day_type_below_floor"} <= _rules(v)
+
+
+def test_daily_every_emitted_rule_is_in_daily_rules():
+    # Drive several breaks and confirm all emitted rules are pinned.
+    out = _daily_out(_pick(C.vo2, 5, 200), DayType.rest)
+    ctx = _daily_ctx(
+        band=ReadinessBand.amber, knee_pain=5, week_plan_cards=frozenset({C.easy_run})
+    )
+    v = validate_daily(out, ctx)
+    assert _rules(v) <= DAILY_RULES
+
+
+def test_daily_validators_never_raise():
+    out = _daily_out(_pick(C.vo2, 25, 45), DayType.rest)
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    # Must return a list, not raise.
+    assert isinstance(validate_daily(out, ctx), list)
