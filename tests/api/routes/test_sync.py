@@ -196,6 +196,30 @@ def test_sync_real_engine_persists_daily_metrics_row(ctx) -> None:
     assert rows[0][2] is None  # band null this phase
 
 
+def test_sync_cross_midnight_sample_refreshes_both_sofia_days(ctx) -> None:
+    # A single HR sample spanning the Sofia midnight: E5·P3 fans out only its start
+    # day, but the engine expands its work-set to recompute BOTH Sofia days from one
+    # sync (round-2 #1), so neither neighbour daily_metrics row is left stale.
+    client, _app, db_path = ctx
+    body = {
+        "records": [
+            {
+                "uuid": "hr-cross",
+                "type": "heart_rate",
+                "start": "2026-06-01T23:50:00+03:00",
+                "end": "2026-06-02T00:10:00+03:00",
+                "value": 130.0,
+                "unit": "count/min",
+            }
+        ]
+    }
+    resp = client.post("/sync", json=body, headers=AUTH)
+    assert resp.status_code == 200
+    with sqlite3.connect(db_path) as raw:
+        dates = {r[0] for r in raw.execute("SELECT date FROM daily_metrics").fetchall()}
+    assert dates == {"2026-06-01", "2026-06-02"}  # both rows refreshed from one sync
+
+
 # ---------------------------------------------------------------------------
 # E5·P3: check-in / strength-test persistence + recompute seam.
 # ---------------------------------------------------------------------------

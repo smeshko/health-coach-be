@@ -23,15 +23,17 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
-from datetime import date
+from collections.abc import Callable, Iterable, Sequence
+from datetime import date, datetime, time, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from app.core.profile import Profile, load_profile
-from app.core.time import now_sofia
+from app.core.time import SOFIA, now_sofia, parse_ts, to_sofia
 from app.database.engine import SessionLocal
-from app.database.models import DailyMetrics
+from app.database.models import DailyMetrics, Records
 from app.services.recompute import RecomputeDailyMetrics
 
 # The seven nutrition-intake columns, in DB.md §2 order (filled by TASK-003).
@@ -61,39 +63,216 @@ PRESERVED_COLUMNS: tuple[str, ...] = (
 )
 
 
+# Category sleep-stage values (stored in `value_text`) that count as ASLEEP — the
+# asleep* family, NOT `inBed`/`awake`. Matched case-insensitively (DB.md §1; round-2 #2).
+ASLEEP_STAGES: frozenset[str] = frozenset(
+    {"asleep", "asleepunspecified", "asleepcore", "asleepdeep", "asleeprem"}
+)
+
+# Third-party workout apps — rank 3 (below the iPhone/other rank-2 tier) in the
+# source-priority pick (DECISIONS.md Decision 4). Lower-cased, whitespace-normalized.
+THIRD_PARTY_WORKOUT_APPS: frozenset[str] = frozenset(
+    {"strava", "nike run club", "nike training club", "ntc", "runkeeper", "komoot"}
+)
+
+# The five zone keys (without the `_min` suffix), in order.
+_ZONE_KEYS: tuple[str, ...] = ("z1", "z2", "z3", "z4", "z5")
+
+
 # ---------------------------------------------------------------------------
-# Per-metric helpers — stubbed here (return the no-data shape); TASK-002/003 fill
-# the bodies. Keeping the call signatures stable means those tasks only edit the
-# helper bodies, not `recompute_day`'s assembly.
+# Shared readers + source de-duplication (DECISIONS.md Decision 4).
+# ---------------------------------------------------------------------------
+def source_rank(source_name: str | None) -> int:
+    """Source priority for the device-cumulative pick — lower = higher priority.
+
+    Keys on capabilities, not phone hostnames (which change per device), so a phone
+    swap can't break it: anything unrecognised falls to the rank-2 "phone/other"
+    tier, which the Watch (rank 0) outranks on a normal day (DECISIONS.md Decision 4).
+    """
+    s = (source_name or "").lower().replace(" ", " ").strip()
+    if "apple watch" in s:
+        return 0  # wrist truth
+    if "garmin" in s or s == "connect":
+        return 1  # Garmin Connect
+    if s in THIRD_PARTY_WORKOUT_APPS:
+        return 3  # strava / nike run club / …
+    return 2  # iPhone hostnames & unknown → phone/other
+
+
+def _window(day: date) -> tuple[str, str]:
+    """A ±1-day TEXT `start_date` range around `day` (covers any offset/DST skew).
+
+    `records.start_date` is ISO-8601 TEXT prefixed `YYYY-MM-DD`, so a lexical range
+    on the date prefix uses the `(type, start_date)` index while the precise Sofia-date
+    filter runs in Python. ±1 day is wide enough for every real offset (< 24h).
+    """
+    return (day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat()
+
+
+def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[Records]:
+    """The `records` rows of the given `type`s within the ±1-day window around `day`."""
+    lo, hi = _window(day)
+    stmt = (
+        select(Records)
+        .where(Records.type.in_(types))
+        .where(Records.start_date >= lo)
+        .where(Records.start_date < hi)
+    )
+    return session.execute(stmt).scalars().all()
+
+
+def _instant_records(session: Session, day: date, types: set[str]) -> list[Records]:
+    """Records whose **start** instant lands on the Sofia `day` (instant attribution)."""
+    return [
+        r
+        for r in _records_of_types(session, day, types)
+        if to_sofia(parse_ts(r.start_date)).date() == day
+    ]
+
+
+def _choose_source(rows: Iterable[Records], weight: Callable[[Records], float]) -> str | None:
+    """The single source_name for the day: min `source_rank`, then larger weighted
+    total, then `source_name` (deterministic) — DECISIONS.md Decision 4."""
+    by_source: dict[str | None, list[Records]] = {}
+    for r in rows:
+        by_source.setdefault(r.source_name, []).append(r)
+
+    def key(item: tuple[str | None, list[Records]]) -> tuple[int, float, str]:
+        source, srows = item
+        return (source_rank(source), -sum(weight(r) for r in srows), source or "")
+
+    return min(by_source.items(), key=key)[0]
+
+
+def _picked_source_rows(rows: list[Records], weight: Callable[[Records], float]) -> list[Records]:
+    """Keep only the rows of the day's highest-priority source (Decision 4)."""
+    if not rows:
+        return []
+    chosen = _choose_source(rows, weight)
+    return [r for r in rows if r.source_name == chosen]
+
+
+def _sofia_day_bounds(day: date) -> tuple[datetime, datetime]:
+    """The `[start, end)` Sofia-local instants bounding `day` (00:00..next 00:00)."""
+    start = datetime.combine(day, time.min, tzinfo=SOFIA)
+    return start, start + timedelta(days=1)
+
+
+def _in_day_overlap_seconds(r: Records, day: date) -> float:
+    """Seconds of `[start_date, end_date]` that fall inside the Sofia `day`."""
+    if r.end_date is None:
+        return 0.0
+    start, end = parse_ts(r.start_date), parse_ts(r.end_date)
+    day_start, day_end = _sofia_day_bounds(day)
+    lo, hi = max(start, day_start), min(end, day_end)
+    return max(0.0, (hi - lo).total_seconds())
+
+
+# ---------------------------------------------------------------------------
+# Activity / recovery metrics (TASK-002).
 # ---------------------------------------------------------------------------
 def sleep_h(session: Session, day: date) -> float | None:
-    """Last night's asleep hours, anchored to the wake/end Sofia day (TASK-002)."""
-    return None
+    """Last night's asleep hours, anchored WHOLLY to the wake/end Sofia day.
+
+    An asleep `sleep_analysis` block is credited in full to
+    `to_sofia(parse_ts(end_date)).date()` — NOT split — so a 23:30→07:00 night puts
+    its entire 7.5h on the wake (morning) row and 0 on the prior day (round-2 #2;
+    DB.md §2). Sums all asleep blocks whose wake day is `day`; `None` if none.
+    """
+    asleep = [
+        r
+        for r in _records_of_types(session, day, {"sleep_analysis"})
+        if r.end_date is not None
+        and (r.value_text or "").strip().lower() in ASLEEP_STAGES
+        and to_sofia(parse_ts(r.end_date)).date() == day
+    ]
+    if not asleep:
+        return None
+    seconds = sum((parse_ts(r.end_date) - parse_ts(r.start_date)).total_seconds() for r in asleep)
+    return seconds / 3600.0
+
+
+def _pick_instant_reading(rows: list[Records]) -> float | None:
+    """One reading from same-day instant samples: highest `source_rank`, then the
+    latest instant (DECISIONS.md Decision 4 instant pick). `None` if no rows."""
+    candidates = [r for r in rows if r.value is not None]
+    if not candidates:
+        return None
+    best = min(
+        candidates,
+        key=lambda r: (source_rank(r.source_name), -parse_ts(r.start_date).timestamp()),
+    )
+    return best.value
 
 
 def hrv_sdnn(session: Session, day: date) -> float | None:
-    """This-morning HRV SDNN (TASK-002)."""
-    return None
+    """This-morning HRV SDNN from the day's `heart_rate_variability_sdnn` records."""
+    return _pick_instant_reading(_instant_records(session, day, {"heart_rate_variability_sdnn"}))
 
 
 def rhr(session: Session, day: date) -> float | None:
-    """This-morning resting HR (TASK-002)."""
-    return None
+    """This-morning resting HR from the day's `resting_heart_rate` records."""
+    return _pick_instant_reading(_instant_records(session, day, {"resting_heart_rate"}))
 
 
 def steps(session: Session, day: date) -> int | None:
-    """Source-deduped sum of the day's `step_count` records (TASK-002)."""
-    return None
+    """Source-deduped sum of the day's `step_count` records (Decision 4).
+
+    Picks the single highest-priority `source_name` and sums only its rows — a blind
+    SUM doubles steps because the Watch and the iPhone both log the same walking
+    (≈ ×2). `None` when no `step_count` record; a real `0` from the picked source → 0.
+    """
+    rows = _instant_records(session, day, {"step_count"})
+    if not rows:
+        return None
+    picked = _picked_source_rows(rows, weight=lambda r: r.value or 0.0)
+    return int(round(sum(r.value or 0.0 for r in picked)))
 
 
 def active_energy(session: Session, day: date) -> float | None:
-    """Source-deduped sum of the day's `active_energy_burned` records (TASK-002)."""
+    """Source-deduped sum of the day's `active_energy_burned` records (kcal; Decision 4)."""
+    rows = _instant_records(session, day, {"active_energy_burned"})
+    if not rows:
+        return None
+    picked = _picked_source_rows(rows, weight=lambda r: r.value or 0.0)
+    return sum(r.value or 0.0 for r in picked)
+
+
+def _bucket_zone(bpm: float, bounds: dict[str, tuple[int, int]]) -> str | None:
+    """The zone key (`z1`…`z5`) for `bpm` under `low <= bpm < high`; the top bound
+    (`bpm == z5.high == max_hr`) lands in z5. `None` below z1 / above z5."""
+    for z in _ZONE_KEYS:
+        low, high = bounds[z]
+        if low <= bpm < high:
+            return z
+    if bpm == bounds["z5"][1]:
+        return "z5"
     return None
 
 
 def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, float | None]:
-    """HR zone-minutes bucketed against `profile.zone_bounds()` (TASK-002)."""
-    return {col: None for col in ZONE_COLUMNS}
+    """HR zone-minutes for `day`, bucketed against `profile.zone_bounds()`.
+
+    Restricts to the single highest-priority HR source first (Decision 4 — so
+    overlapping dual-device HR can't double-count), then credits each sample's
+    **in-day** minutes (split at the Sofia midnight; round-1 #2) to its zone. A day
+    with no overlapping HR sample → every `z*_min` is `None` (no-data convention).
+    """
+    overlapping = [
+        r
+        for r in _records_of_types(session, day, {"heart_rate"})
+        if r.value is not None and _in_day_overlap_seconds(r, day) > 0
+    ]
+    if not overlapping:
+        return {col: None for col in ZONE_COLUMNS}
+    picked = _picked_source_rows(overlapping, weight=lambda r: 1.0)
+    bounds = profile.zone_bounds()
+    minutes = {z: 0.0 for z in _ZONE_KEYS}
+    for r in picked:
+        zone = _bucket_zone(r.value, bounds)
+        if zone is not None:
+            minutes[zone] += _in_day_overlap_seconds(r, day) / 60.0
+    return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
 
 
 def nutrition_intake(session: Session, day: date) -> dict[str, float | None]:
@@ -111,15 +290,41 @@ def hard_day(session: Session, day: date) -> int:
     return 0
 
 
+def _sofia_days_spanned(r: Records) -> set[date]:
+    """Every Sofia day the interval `[start_date, end_date]` touches (inclusive)."""
+    if r.end_date is None:
+        return set()
+    start = to_sofia(parse_ts(r.start_date)).date()
+    end = to_sofia(parse_ts(r.end_date)).date()
+    days, d = set(), start
+    while d <= end:
+        days.add(d)
+        d += timedelta(days=1)
+    return days
+
+
 def expand_affected_dates(session: Session, dates: set[date]) -> set[date]:
     """Expand the handed dates to every Sofia day an overlapping interval reaches.
 
-    E5·P3's `affected_dates` is **start-date** based, so a cross-midnight interval
-    record (an HR sample / a sleep block) can touch a Sofia day it did not fan out.
-    The engine owns its work-set, so it widens `dates` here before recomputing
-    (round-2 #1). TASK-002 adds the interval reads; until then this is identity.
+    E5·P3's `affected_dates` is **start-date** based, so a cross-midnight HR sample
+    or a sleep block whose wake day differs from its start day touches a Sofia day it
+    did not fan out. The engine owns its work-set, so it widens `dates` here before
+    recomputing — both neighbour rows refresh from one sync (round-2 #1). E5·P3's
+    `affected_dates` is unchanged.
     """
-    return set(dates)
+    expanded = set(dates)
+    for day in dates:
+        for r in _records_of_types(session, day, {"heart_rate"}):
+            if _in_day_overlap_seconds(r, day) > 0:
+                expanded |= _sofia_days_spanned(r)
+        for r in _records_of_types(session, day, {"sleep_analysis"}):
+            if r.end_date is None:
+                continue
+            start_day = to_sofia(parse_ts(r.start_date)).date()
+            wake_day = to_sofia(parse_ts(r.end_date)).date()
+            if day in (start_day, wake_day):
+                expanded |= {start_day, wake_day}
+    return expanded
 
 
 # ---------------------------------------------------------------------------
