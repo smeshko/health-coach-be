@@ -263,6 +263,28 @@ def test_daily_checkin_is_objective_only() -> None:
     assert set(DailyCheckin.model_fields) == {"date", "gi_symptoms", "knee_pain", "illness"}
 
 
+def test_daily_checkin_ignores_stray_weight_field() -> None:
+    # Pins the chosen extra-field behavior (PLAN risk mitigation): a stray
+    # weight/bodyMass is silently IGNORED, not rejected and not stored — weight
+    # is a body_mass HealthRecord, the single live-weight source (DB.md §1). The
+    # model stays forward-compatible (no extra="forbid"), consistent with the
+    # metadata/stat-type passthrough elsewhere in /sync.
+    checkin = DailyCheckin.model_validate(
+        {
+            "date": "2026-06-01",
+            "giSymptoms": False,
+            "kneePain": 1,
+            "illness": False,
+            "weight": 80.0,
+            "bodyMass": 80.0,
+        }
+    )
+    payload = json.loads(checkin.model_dump_json())
+    assert "weight" not in payload
+    assert "bodyMass" not in payload
+    assert not hasattr(checkin, "weight")
+
+
 def test_daily_checkin_emits_camel_case() -> None:
     checkin = DailyCheckin.model_validate(
         {"date": "2026-06-01", "giSymptoms": True, "kneePain": 3, "illness": False}
