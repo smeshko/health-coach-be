@@ -25,7 +25,8 @@ from app.core.time import get_clock, now_sofia
 from app.database.engine import SessionLocal
 from app.services.activity_upsert import upsert_activity
 from app.services.checkin_upsert import upsert_checkin
-from app.services.recompute import RecomputeDailyMetrics, affected_dates, noop_recompute
+from app.services.daily_metrics_engine import get_engine_recompute
+from app.services.recompute import RecomputeDailyMetrics, affected_dates
 from app.services.record_upsert import upsert_records
 from app.services.strength_test_upsert import upsert_strength_test
 from app.services.workout_upsert import upsert_workouts
@@ -36,10 +37,13 @@ router = APIRouter()
 def get_recompute() -> RecomputeDailyMetrics:
     """Provider for the `daily_metrics` recompute callable.
 
-    Defaults to the no-op seam; E6 overrides this provider with the real engine
-    (and tests override it with a spy) — the route never changes.
+    Returns the real E6 engine (E5·P3 shipped a `noop_recompute` default behind this
+    seam precisely so E6 swaps it in with no route change). Tests still override this
+    provider with a spy. If the engine raises (post-commit), the exception propagates
+    and `/sync` returns a 5xx while the already-committed ingest stays durable
+    (round-2 #4) — the route does **not** swallow it.
     """
-    return noop_recompute
+    return get_engine_recompute()
 
 
 @router.post("/sync", response_model=SyncResponse, dependencies=[Depends(require_auth)])
