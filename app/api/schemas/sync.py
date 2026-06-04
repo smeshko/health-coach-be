@@ -17,7 +17,9 @@ upsert, and `SyncResponse` count derivation are E5·P2 / E5·P3.
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
+
+from pydantic import Field
 
 from app.api.schemas.base import CamelModel
 
@@ -74,3 +76,91 @@ class HealthRecord(CamelModel):
     category: str | None = None
     source: str | None = None
     metadata: dict | None = None
+
+
+class WorkoutStat(CamelModel):
+    """One aggregate stat for a workout (e.g. `avg_hr`, `max_speed`).
+
+    `type` is a free `str` — MODELS shows it as a bare string and lists no
+    validation, so a forward-compatible stat type is accepted (PLAN Decisions).
+    """
+
+    type: str
+    value: float
+    unit: str
+
+
+class Workout(CamelModel):
+    """A workout session. `type` is the free HealthKit activity-type string
+    (e.g. `boxing`, `running`); `zone_minutes` is a tolerant `str→float` map of
+    the `z1…z5` payload rather than a typed `Zone` map (MODELS Workout).
+    """
+
+    uuid: str
+    type: str
+    start: datetime
+    end: datetime
+    duration_s: float
+    distance_m: float | None = None
+    active_energy_kcal: float | None = None
+    effort_score: int | None = None
+    zone_minutes: dict[str, float] | None = None
+    statistics: list[WorkoutStat] = []
+
+
+class ActivitySummary(CamelModel):
+    """A per-day activity-ring summary (MODELS ActivitySummary)."""
+
+    date: date
+    active_energy_kcal: float
+    exercise_minutes: int
+    stand_hours: int
+    steps: int | None = None
+
+
+class DailyCheckin(CamelModel):
+    """The objective-only daily check-in (epic R7; MODELS DailyCheckin).
+
+    **No body-weight field** — weight arrives as a `body_mass` HealthRecord
+    (single live-weight source, DB.md §1). `knee_pain` is bounded 0–10.
+    """
+
+    date: date
+    gi_symptoms: bool
+    knee_pain: int = Field(ge=0, le=10)
+    illness: bool
+
+
+class StrengthTest(CamelModel):
+    """The periodic strength benchmark (MODELS StrengthTest)."""
+
+    date: date
+    max_pushups: int
+    max_pullups: int
+
+
+class SyncRequest(CamelModel):
+    """The `POST /sync` request envelope (MODELS SyncRequest). Every collection
+    defaults empty and both top-level singletons default `None`, so a minimal
+    `{}` body validates.
+    """
+
+    records: list[HealthRecord] = []
+    workouts: list[Workout] = []
+    activity_summary: list[ActivitySummary] = []
+    checkin: DailyCheckin | None = None
+    strength_test: StrengthTest | None = None
+
+
+class SyncResponse(CamelModel):
+    """The `POST /sync` response envelope (MODELS SyncResponse). This phase
+    defines the *shape*; populating the counts from DB writes is E5·P2.
+    """
+
+    records_upserted: int
+    records_duplicate: int
+    workouts_upserted: int
+    activity_days_upserted: int
+    checkin_saved: bool
+    strength_test_saved: bool
+    server_time: datetime
