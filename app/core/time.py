@@ -9,10 +9,32 @@ by assuming a fixed offset. Used by E5/E6/E10/E11 — hence this lives in `app/c
 not the DB layer.
 """
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 SOFIA = ZoneInfo("Europe/Sofia")
+
+
+def utc_now() -> datetime:
+    """Default clock: the current aware UTC instant (the seam tests override)."""
+    return datetime.now(timezone.utc)
+
+
+def now_sofia(clock: Callable[[], datetime] = utc_now) -> datetime:
+    """Convert the injected aware-UTC instant to Europe/Sofia, preserving the instant.
+
+    The offset always comes from the tz database (DST-aware: `+02:00` winter /
+    `+03:00` summer), never a hard-coded fixed offset and never a tzinfo relabel
+    (MODELS "Conventions → Timestamps"). Shared by `/health` and `/sync` so neither
+    route imports a time helper from another route module.
+    """
+    return clock().astimezone(SOFIA)
+
+
+def get_clock() -> Callable[[], datetime]:
+    """FastAPI seam for the UTC clock source (overridden in tests via dependency_overrides)."""
+    return utc_now
 
 
 def parse_ts(value: str) -> datetime:

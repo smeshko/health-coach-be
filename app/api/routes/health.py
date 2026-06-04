@@ -12,30 +12,20 @@ relabel (MODELS "Conventions → Timestamps").
 """
 
 from collections.abc import Callable
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from fastapi import APIRouter, Depends
 
 from app.api.auth import require_auth
 from app.api.schemas.base import CamelModel
 
+# now_sofia / utc_now / get_clock moved to app/core/time.py (E5·P2) so /sync and
+# /health share one DST-aware serverTime source without a route→route import. They
+# are re-exported here so existing `app.api.routes.health.get_clock` references
+# (and the E1·P2 dependency_overrides in tests) keep resolving unchanged.
+from app.core.time import get_clock, now_sofia, utc_now
 
-def utc_now() -> datetime:
-    """Default clock: the current aware UTC instant (the seam tests override)."""
-    return datetime.now(timezone.utc)
-
-
-def now_sofia(clock: Callable[[], datetime] = utc_now) -> datetime:
-    """Convert the injected aware-UTC instant to Europe/Sofia, preserving the instant."""
-    # ZoneInfo is internally cached by key, so constructing it here is free and keeps
-    # the tz-database (DST-aware) conversion explicit at the call site.
-    return clock().astimezone(ZoneInfo("Europe/Sofia"))
-
-
-def get_clock() -> Callable[[], datetime]:
-    """FastAPI seam for the UTC clock source (overridden in tests via dependency_overrides)."""
-    return utc_now
+__all__ = ["HealthResponse", "get_clock", "health", "now_sofia", "probe", "router", "utc_now"]
 
 
 class HealthResponse(CamelModel):
