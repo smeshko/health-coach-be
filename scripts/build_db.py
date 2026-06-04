@@ -28,8 +28,10 @@ draining the root so empty shells can't accumulate. Never load the whole DOM.
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -324,9 +326,23 @@ def build(xml_path: str | Path, db_path: str | Path) -> dict[str, int]:
 
     Idempotent: `init_schema` drops + recreates the four tables, so a re-run over
     the same input yields identical contents (no stale rows, no duplication).
+
+    Atomic: the build writes to a sibling temp DB and `os.replace`s the target
+    only after it fully succeeds. A malformed export, a failed insert, or a killed
+    process therefore never destroys, half-overwrites, or corrupts an existing
+    `baseline.db` that a later seed could otherwise silently consume (review #1.2).
+    The `journal_mode=OFF` bulk pragma stays safe because it only ever touches the
+    disposable temp file, not the live corpus.
     """
-    conn = sqlite3.connect(str(db_path))
-    # Tuned for bulk insert; durability mid-import is unnecessary (rebuildable).
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=db_path.parent, prefix=f"{db_path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+
+    conn = sqlite3.connect(str(tmp_path))
+    # Tuned for bulk insert; durability mid-import is unnecessary (the temp is
+    # discarded on any failure and only swapped in atomically on success).
     conn.execute("PRAGMA journal_mode = OFF;")
     conn.execute("PRAGMA synchronous = OFF;")
     conn.execute("PRAGMA temp_store = MEMORY;")
@@ -453,9 +469,16 @@ def build(xml_path: str | Path, db_path: str | Path) -> dict[str, int]:
         conn.execute("ANALYZE;")
         conn.commit()
 
-        return summarize(conn)
-    finally:
+        counts = summarize(conn)
         conn.close()
+        # Same-directory rename → atomic on POSIX; the live corpus flips from the
+        # old contents to the fully-built new ones in a single step.
+        os.replace(tmp_path, db_path)
+        return counts
+    except BaseException:
+        conn.close()
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> int:
