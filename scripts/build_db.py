@@ -21,8 +21,8 @@ Timestamps are stored as ISO-8601 TEXT exactly as Apple emits them
 stay debuggable (DB.md §0).
 
 The corpus is large (~3.5M records, 2019→2026), so the parse MUST stream:
-`ET.iterparse(events=("end",))` + `elem.clear()` after each element. Never load
-the whole DOM.
+`ET.iterparse` reading each element on its `end` event, then `elem.clear()` plus
+draining the root so empty shells can't accumulate. Never load the whole DOM.
 """
 
 from __future__ import annotations
@@ -155,21 +155,33 @@ def iter_health_elements(
     `kind` is one of `"record"`, `"workout"`, `"activity_summary"`. Workout rows
     carry their child `WorkoutStatistics` under `row["statistics"]`.
 
-    Memory-bounded by construction: `iterparse(events=("end",))` reads each
-    element as it closes, and `elem.clear()` drops it (and its children) right
-    after — the DOM is never materialized.
+    Memory-bounded by construction: we read each element on its `end` event and
+    then `elem.clear()` it. Crucially, `elem.clear()` empties an element but does
+    **not** detach it from its parent — so we also drain the root's processed
+    children after every top-level element. Without that, the root would retain
+    one (empty) element object per record and memory would still grow with the
+    1.5 GB corpus (review round-1 #1). The DOM is never materialized.
     """
-    for _, elem in ET.iterparse(str(xml_path), events=("end",)):
+    # events=("start", "end") so the first event hands us the root element; we
+    # then clear the root's accumulated children after each top-level element.
+    context = ET.iterparse(str(xml_path), events=("start", "end"))
+    _, root = next(context)
+    for event, elem in context:
+        if event != "end":
+            continue
         tag = elem.tag
         if tag == "Record":
             yield "record", _record_row(elem.attrib)
-            elem.clear()
         elif tag == "Workout":
             yield "workout", _workout_row(elem)
-            elem.clear()
         elif tag == "ActivitySummary":
             yield "activity_summary", _activity_summary_row(elem.attrib)
-            elem.clear()
+        else:
+            continue
+        elem.clear()
+        # Detach every processed top-level child from the root so the parser
+        # can't accumulate empty shells across millions of records.
+        root.clear()
 
 
 def init_schema(conn: sqlite3.Connection) -> None:

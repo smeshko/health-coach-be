@@ -8,6 +8,9 @@ so we assert the approach structurally from the source text.
 
 from __future__ import annotations
 
+import gc
+import xml.etree.ElementTree as ET
+
 
 def _by_kind(items: list[tuple[str, dict]]) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {"record": [], "workout": [], "activity_summary": []}
@@ -54,10 +57,41 @@ def test_workout_statistics_attached_to_parent(build_db, fixture_xml) -> None:
     assert running["statistics"][0]["average"] == 150.0
 
 
+def test_root_is_drained_during_iteration(build_db, tmp_path) -> None:
+    """elem.clear() alone leaves empty shells on the root; the parser must also
+    drain the root so live Element count stays bounded (review round-1 #1)."""
+    n = 2000
+    consume = 1500
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>', "<HealthData>"]
+    for i in range(n):
+        parts.append(
+            '<Record type="HKQuantityTypeIdentifierStepCount" unit="count" '
+            'startDate="2025-01-01 00:00:00 +0000" '
+            f'endDate="2025-01-01 00:00:00 +0000" value="{i}"/>'
+        )
+    parts.append("</HealthData>")
+    xml_path = tmp_path / "many.xml"
+    xml_path.write_text("".join(parts))
+
+    gen = build_db.iter_health_elements(xml_path)
+    for _ in range(consume):
+        next(gen)
+    gc.collect()
+    live = sum(1 for obj in gc.get_objects() if isinstance(obj, ET.Element))
+    # Drained: a tiny constant remains. Un-drained: ~`consume` shells survive.
+    assert live < 100, f"root accumulated {live} elements — not memory-bounded"
+
+    # Draining the root must not drop any data.
+    remaining = sum(1 for _ in gen)
+    assert consume + remaining == n
+
+
 def test_source_is_memory_bounded_by_construction(build_db_source) -> None:
     src = build_db_source
     assert "iterparse" in src
     assert "elem.clear()" in src
+    # The root must be drained too, not just each element.
+    assert "root.clear()" in src
     # No whole-DOM load.
     assert "ET.parse(" not in src
     assert "fromstring" not in src
