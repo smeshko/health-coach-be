@@ -163,8 +163,38 @@ def _window(day: date) -> tuple[str, str]:
     return (day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat()
 
 
+def _covered_start_days(session: Session, day: date) -> set[date]:
+    """Sofia start-days in the window with ≥1 live `origin='sync'` row (records OR
+    workouts). On such a "fully covered" day the seed estimate is superseded — the
+    engine drops its `origin='seed'` rows at read time, mirroring `reconcile_seed.py`
+    (live sync is authoritative for the whole Sofia day), so the recompute matches the
+    post-reconcile state even before the offline reconcile runs (review round-2 #1)."""
+    lo, hi = _window(day)
+    days: set[date] = set()
+    for model in (Records, Workouts):
+        starts = session.execute(
+            select(model.start_date)
+            .where(model.origin == "sync")
+            .where(model.start_date >= lo)
+            .where(model.start_date < hi)
+        ).scalars()
+        days.update(to_sofia(parse_ts(sd)).date() for sd in starts)
+    return days
+
+
+def _drop_superseded_seed(rows: Sequence[Records], covered: set[date]) -> list[Records]:
+    """Drop `origin='seed'` rows whose Sofia **start-day** is sync-covered (mirrors
+    `reconcile_seed.py`'s per-day supersede). Works on `Records` or `Workouts` rows."""
+    return [
+        r
+        for r in rows
+        if r.origin != "seed" or to_sofia(parse_ts(r.start_date)).date() not in covered
+    ]
+
+
 def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[Records]:
-    """The `records` rows of the given `type`s within the ±1-day window around `day`."""
+    """The `records` rows of the given `type`s within the ±1-day window around `day`,
+    with seed rows on sync-covered days dropped (read-time reconcile)."""
     lo, hi = _window(day)
     stmt = (
         select(Records)
@@ -172,7 +202,8 @@ def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[
         .where(Records.start_date >= lo)
         .where(Records.start_date < hi)
     )
-    return session.execute(stmt).scalars().all()
+    rows = session.execute(stmt).scalars().all()
+    return _drop_superseded_seed(rows, _covered_start_days(session, day))
 
 
 def _instant_records(session: Session, day: date, types: set[str]) -> list[Records]:
@@ -433,7 +464,10 @@ def hard_day(session: Session, day: date) -> int:
     real `0`/`1` — never `None` (a flag, not a measurement)."""
     lo, hi = _window(day)
     stmt = select(Workouts).where(Workouts.start_date >= lo).where(Workouts.start_date < hi)
-    for w in session.execute(stmt).scalars().all():
+    workouts = _drop_superseded_seed(
+        session.execute(stmt).scalars().all(), _covered_start_days(session, day)
+    )
+    for w in workouts:
         if to_sofia(parse_ts(w.start_date)).date() != day:
             continue
         if _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES:

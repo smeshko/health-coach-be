@@ -211,6 +211,7 @@ def _rec(
     value_text: str | None = None,
     source: str = "Apple Watch",
     unit: str | None = None,
+    origin: str = "sync",
 ) -> Records:
     return Records(
         type=type_,
@@ -220,7 +221,7 @@ def _rec(
         value_text=value_text,
         source_name=source,
         unit=unit,
-        origin="sync",
+        origin=origin,
     )
 
 
@@ -381,14 +382,16 @@ def test_engine_recomputes_both_rows_for_cross_midnight_sample(engine_db: str) -
 # ---------------------------------------------------------------------------
 # TASK-003: nutrition intake + latest body weight + hard_day flag.
 # ---------------------------------------------------------------------------
-def _workout(activity_type: str, start: str, *, duration: float, unit: str = "s") -> Workouts:
+def _workout(
+    activity_type: str, start: str, *, duration: float, unit: str = "s", origin: str = "sync"
+) -> Workouts:
     return Workouts(
         activity_type=activity_type,
         start_date=start,
         end_date=start,
         duration=duration,
         duration_unit=unit,
-        origin="sync",
+        origin=origin,
     )
 
 
@@ -573,23 +576,29 @@ def test_recompute_matches_stored_type_form_via_upsert_records(session: Session)
 # form that /sync stores — else the whole 90-day seed history recomputes to null.
 # ---------------------------------------------------------------------------
 def test_recompute_reads_seeded_hk_identifier_records(session: Session) -> None:
+    # A seed-only day (origin='seed', HK-identifier stored form) — no sync coverage, so
+    # the seed rows are read (not superseded).
     _seed(
         session,
         _rec("HKCategoryTypeIdentifierSleepAnalysis", "2026-05-31T23:30:00+03:00",
-             end="2026-06-01T07:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore"),
-        _rec("HKQuantityTypeIdentifierHeartRateVariabilitySDNN", "2026-06-01T06:30:00+03:00", value=48.0),
-        _rec("HKQuantityTypeIdentifierRestingHeartRate", "2026-06-01T06:30:00+03:00", value=54.0),
+             end="2026-06-01T07:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore",
+             origin="seed"),
+        _rec("HKQuantityTypeIdentifierHeartRateVariabilitySDNN", "2026-06-01T06:30:00+03:00",
+             value=48.0, origin="seed"),
+        _rec("HKQuantityTypeIdentifierRestingHeartRate", "2026-06-01T06:30:00+03:00",
+             value=54.0, origin="seed"),
         _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T10:00:00+03:00", value=9000.0,
-             source="Apple Watch"),
+             source="Apple Watch", origin="seed"),
         _rec("HKQuantityTypeIdentifierActiveEnergyBurned", "2026-06-01T10:00:00+03:00", value=500.0,
-             source="Apple Watch"),
+             source="Apple Watch", origin="seed"),
         _rec("HKQuantityTypeIdentifierHeartRate", "2026-06-01T10:00:00+03:00",
-             end="2026-06-01T10:10:00+03:00", value=130.0),
-        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4),
+             end="2026-06-01T10:10:00+03:00", value=130.0, origin="seed"),
+        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4,
+             origin="seed"),
         _rec("HKQuantityTypeIdentifierDietaryEnergyConsumed", "2026-06-01T12:00:00+03:00",
-             value=2200.0, source="MacroFactor"),
+             value=2200.0, source="MacroFactor", origin="seed"),
         _rec("HKQuantityTypeIdentifierDietaryProtein", "2026-06-01T12:00:00+03:00",
-             value=160.0, source="MacroFactor"),
+             value=160.0, source="MacroFactor", origin="seed"),
     )
     recompute_day(session, D1, profile=PROFILE)
     session.commit()
@@ -626,3 +635,59 @@ def test_hard_day_matches_seeded_hk_workout_activity_types(session: Session, hk_
     # A sub-90-min seeded hard session (HK activity form) must read hard_day=1.
     _seed(session, _workout(hk_activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
     assert hard_day(session, D1) == 1
+
+
+# ---------------------------------------------------------------------------
+# Review round-2 #1: seed/live overlap must NOT double-count. A Sofia day with ≥1
+# origin='sync' row is "fully covered" — the engine drops that day's origin='seed'
+# rows at read time (mirrors reconcile_seed.py), so the recompute equals the
+# post-reconcile state even before the offline reconcile runs.
+# ---------------------------------------------------------------------------
+def test_sync_covered_day_supersedes_seed_rows_no_double_count(session: Session) -> None:
+    _seed(
+        session,
+        # seeded estimate for D1 (HK form) — same source as the live row below
+        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T09:00:00+03:00", value=9000.0,
+             source="Apple Watch", origin="seed"),
+        _rec("HKQuantityTypeIdentifierActiveEnergyBurned", "2026-06-01T09:00:00+03:00", value=400.0,
+             source="Apple Watch", origin="seed"),
+        # live /sync for the same day — authoritative for the WHOLE day
+        _rec("step_count", "2026-06-01T18:00:00+03:00", value=10000.0, source="Apple Watch",
+             origin="sync"),
+        _rec("active_energy_burned", "2026-06-01T18:00:00+03:00", value=550.0, source="Apple Watch",
+             origin="sync"),
+    )
+    assert steps(session, D1) == 10000  # sync only — NOT 19000
+    assert active_energy(session, D1) == 550.0  # sync only — NOT 950
+
+
+def test_sync_covered_day_drops_seed_metric_even_when_sync_lacks_it(session: Session) -> None:
+    # reconcile_seed drops ALL seed rows on a covered day, so a seed-only metric on a
+    # day the live sync covers is gone — the engine matches that post-reconcile state.
+    _seed(
+        session,
+        _rec("step_count", "2026-06-01T18:00:00+03:00", value=10000.0, source="Apple Watch",
+             origin="sync"),  # makes D1 "covered"
+        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4,
+             origin="seed"),  # seed-only metric on a covered day → superseded
+    )
+    assert body_weight(session, D1) is None  # seed body_mass dropped on the covered day
+
+
+def test_uncovered_seed_day_keeps_seed_rows(session: Session) -> None:
+    # D1 has only seed rows (no sync) → not covered → seed rows are read.
+    _seed(
+        session,
+        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T09:00:00+03:00", value=9000.0,
+             source="Apple Watch", origin="seed"),
+    )
+    assert steps(session, D1) == 9000  # kept — a partial/uncovered day keeps its seed
+
+
+def test_hard_day_seed_workout_superseded_on_sync_covered_day(session: Session) -> None:
+    # A live sync row covers D1, so a seed boxing workout on D1 is superseded.
+    _seed(session, _rec("step_count", "2026-06-01T18:00:00+03:00", value=8000.0, origin="sync"))
+    session.add(_workout("HKWorkoutActivityTypeBoxing", "2026-06-01T19:00:00+03:00",
+                         duration=1800.0, unit="s", origin="seed"))
+    session.commit()
+    assert hard_day(session, D1) == 0  # seed boxing dropped on the covered day
