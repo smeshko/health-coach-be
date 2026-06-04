@@ -26,8 +26,22 @@ from app.core.cards import (
     downgrade_for,
     floors_day_type_hard,
     get_card,
+    is_hard_card,
 )
-from app.core.enums import DayType, ReadinessBand, WorkoutCard, Zone
+from app.core.enums import DayType, ReadinessBand, Weekday, WorkoutCard, Zone
+
+# Weekday order (mon→sun) for spacing adjacency. A plan is one ISO week, so
+# adjacency does **not** wrap sun→mon (Decision).
+_WEEKDAY_ORDER: tuple[Weekday, ...] = (
+    Weekday.mon,
+    Weekday.tue,
+    Weekday.wed,
+    Weekday.thu,
+    Weekday.fri,
+    Weekday.sat,
+    Weekday.sun,
+)
+_WEEKDAY_INDEX: dict[Weekday, int] = {d: i for i, d in enumerate(_WEEKDAY_ORDER)}
 
 
 class Severity(str, Enum):
@@ -307,5 +321,187 @@ def validate_daily(out: object, ctx: ValidationContext) -> list[Violation]:
                 ),
             )
         )
+
+    return violations
+
+
+# --------------------------------------------------------------------------
+# Weekly validator. Reads the **training-load** axis `is_hard` (never `day_type`)
+# for the hard-day rules — a `long_run` is `is_hard=False`, so it does not consume
+# a hard slot or trip spacing (the E7·P1 two-axes rule).
+# --------------------------------------------------------------------------
+def _weekday_index(day: Weekday) -> int:
+    """The mon→sun (0–6) index of ``day``. Only ever called on a non-``None``
+    ``suggestedDay`` — day-less picks are filtered out first."""
+    return _WEEKDAY_INDEX[day]
+
+
+def _is_hard_run(card: WorkoutCard) -> bool:
+    """A "hard run" for the post-boxing spacing rule: a card that is both
+    ``is_hard`` **and** a run (carries ``Flag.impact`` — ``threshold``/``vo2``/
+    ``progression_run``). A flag-derived predicate, not a literal card list, so a
+    future running card is covered automatically (Decision)."""
+    return is_hard_card(card) and Flag.impact in get_card(card).flags
+
+
+def validate_weekly(out: object, ctx: ValidationContext) -> list[Violation]:
+    """Police a weekly LLM plan against ``CARD_META`` + ``ctx``.
+
+    ``out`` is a ``WeeklyPlanLLMOutput``-shaped value (read structurally):
+    ``core`` and ``extras`` are lists of slim ``PlannedPick``s (``card``/
+    ``suggested_day``/``duration_min_low``/``duration_min_high``). Returns
+    **every** broken CARDS.md §4 / LLM.md §4 weekly invariant as a ``Violation``
+    (never short-circuits, never raises); an empty list means a clean plan.
+
+    The hard-day rules read ``is_hard`` (the load axis). ``strength_count`` is an
+    **equality** check (strength is protected at the budget); ``hard_day_count`` /
+    ``long_run_count`` / ``deload_hard_cap`` are ceilings. Spacing adjacency runs
+    mon→sun with **no** sun→mon wrap; day-less (``suggested_day is None``) picks
+    are excluded from the two day-relative rules.
+    """
+    core = list(out.core)  # type: ignore[attr-defined]
+    extras = list(out.extras)  # type: ignore[attr-defined]
+    picks = core + extras
+    violations: list[Violation] = []
+
+    hard_picks = [p for p in picks if is_hard_card(p.card)]
+    n_hard = len(hard_picks)
+
+    # hard_day_count — count(is_hard) ≤ budgets.hard_days.
+    if n_hard > ctx.budgets.hard_days:
+        violations.append(
+            Violation(
+                rule="hard_day_count",
+                message=(
+                    f"{n_hard} hard cards exceed the budget of "
+                    f"{ctx.budgets.hard_days} hard days"
+                ),
+            )
+        )
+
+    # hard_day_spacing — no two is_hard picks on adjacent suggestedDays (mon→sun,
+    # no wrap). Day-less picks excluded.
+    hard_days_idx = sorted(
+        _weekday_index(p.suggested_day)
+        for p in hard_picks
+        if p.suggested_day is not None
+    )
+    if any(b - a == 1 for a, b in zip(hard_days_idx, hard_days_idx[1:])):
+        violations.append(
+            Violation(
+                rule="hard_day_spacing",
+                message="two hard cards sit on adjacent days",
+            )
+        )
+
+    # hard_run_after_boxing — a hard run the day after boxing. Day-less excluded.
+    boxing_days = {
+        _weekday_index(p.suggested_day)
+        for p in picks
+        if p.card is WorkoutCard.boxing and p.suggested_day is not None
+    }
+    hard_run_days = {
+        _weekday_index(p.suggested_day)
+        for p in picks
+        if _is_hard_run(p.card) and p.suggested_day is not None
+    }
+    if any((d + 1) in hard_run_days for d in boxing_days):
+        violations.append(
+            Violation(
+                rule="hard_run_after_boxing",
+                message="a hard run is scheduled the day after boxing",
+            )
+        )
+
+    # strength_count — equality: count(strength) == budgets.strength_sessions.
+    n_strength = sum(1 for p in picks if Flag.strength in get_card(p.card).flags)
+    if n_strength != ctx.budgets.strength_sessions:
+        violations.append(
+            Violation(
+                rule="strength_count",
+                message=(
+                    f"{n_strength} strength sessions != the budget of "
+                    f"{ctx.budgets.strength_sessions}"
+                ),
+            )
+        )
+
+    # core_size — 2 ≤ len(core) ≤ 3.
+    if not (2 <= len(core) <= 3):
+        violations.append(
+            Violation(
+                rule="core_size",
+                message=f"core has {len(core)} picks; must be 2–3",
+            )
+        )
+
+    # extras_size — 1 ≤ len(extras) ≤ 2.
+    if not (1 <= len(extras) <= 2):
+        violations.append(
+            Violation(
+                rule="extras_size",
+                message=f"extras has {len(extras)} picks; must be 1–2",
+            )
+        )
+
+    # long_run_count — ≤ 1 long_run.
+    n_long_run = sum(1 for p in picks if p.card is WorkoutCard.long_run)
+    if n_long_run > 1:
+        violations.append(
+            Violation(
+                rule="long_run_count",
+                message=f"{n_long_run} long_run picks; the max is 1",
+            )
+        )
+
+    # quality_run_mismatch — any picked threshold/vo2 must equal the code-decided
+    # quality pick. Skipped when ctx.quality_run_pick is None.
+    if ctx.quality_run_pick is not None:
+        for p in picks:
+            if (
+                p.card in (WorkoutCard.threshold, WorkoutCard.vo2)
+                and p.card is not ctx.quality_run_pick
+            ):
+                violations.append(
+                    Violation(
+                        rule="quality_run_mismatch",
+                        message=(
+                            f"quality run {p.card.value!r} does not match the "
+                            f"code-decided pick {ctx.quality_run_pick.value!r}"
+                        ),
+                    )
+                )
+
+    # deload_hard_cap — on a deload week, count(is_hard) ≤ 1 (a tighter, distinct
+    # cap from hard_day_count; both may fire on a deload week — Decision).
+    if ctx.budgets.deload and n_hard > 1:
+        violations.append(
+            Violation(
+                rule="deload_hard_cap",
+                message=(
+                    f"deload week allows ≤ 1 hard day; the plan has {n_hard}"
+                ),
+            )
+        )
+
+    # dose_out_of_band — per pick (shared helper + key with validate_daily). A
+    # weekly pick may omit its dose (suggested_day-only sequencing); a pick with a
+    # None bound is left to the daily expansion, so only check filled doses.
+    for p in picks:
+        low = p.duration_min_low
+        high = p.duration_min_high
+        if low is None or high is None:
+            continue
+        if not _dose_in_band(p.card, low, high):
+            meta = get_card(p.card)
+            violations.append(
+                Violation(
+                    rule="dose_out_of_band",
+                    message=(
+                        f"card {p.card.value!r} dose {low}–{high} min is outside "
+                        f"its band {meta.dose_min_low}–{meta.dose_min_high}"
+                    ),
+                )
+            )
 
     return violations

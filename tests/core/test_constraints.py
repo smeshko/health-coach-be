@@ -24,10 +24,12 @@ from app.core.constraints import (
     Violation,
     WeeklyBudgets,
     validate_daily,
+    validate_weekly,
 )
-from app.core.enums import DayType, ReadinessBand, WorkoutCard
+from app.core.enums import DayType, ReadinessBand, Weekday, WorkoutCard
 
 C = WorkoutCard
+D = Weekday
 
 # --- Documented per-family rule-key sets (the closed contract, PLAN.md/TASK-001).
 EXPECTED_WEEKLY_RULES = {
@@ -381,3 +383,421 @@ def test_daily_validators_never_raise():
     ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
     # Must return a list, not raise.
     assert isinstance(validate_daily(out, ctx), list)
+
+
+# --------------------------------------------------------------------------
+# TASK-003 — validate_weekly. A weekly pick carries card + an optional
+# suggestedDay + an optional dose; the validator reads them structurally.
+# --------------------------------------------------------------------------
+def _wpick(card, day=None, low=None, high=None):
+    return SimpleNamespace(
+        card=card, suggested_day=day, duration_min_low=low, duration_min_high=high
+    )
+
+
+def _weekly_out(core, extras):
+    return SimpleNamespace(core=list(core), extras=list(extras))
+
+
+def _weekly_ctx(
+    *,
+    hard_days=2,
+    strength_sessions=2,
+    long_run_km=18.0,
+    deload=False,
+    quality_run_pick=None,
+):
+    return ValidationContext(
+        budgets=WeeklyBudgets(
+            hard_days=hard_days,
+            strength_sessions=strength_sessions,
+            long_run_km=long_run_km,
+            deload=deload,
+        ),
+        quality_run_pick=quality_run_pick,
+    )
+
+
+def _clean_weekly():
+    # 3 core + 2 extras (5 picks): 2 hard non-adjacent (boxing tue, vo2 fri),
+    # 2 strength (strength_pull, strength_lower), 1 easy_run. All in-band.
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    return _weekly_out(core, extras)
+
+
+def test_weekly_clean_plan_returns_empty():
+    out = _clean_weekly()
+    ctx = _weekly_ctx(
+        hard_days=2, strength_sessions=2, quality_run_pick=C.vo2
+    )
+    assert validate_weekly(out, ctx) == []
+
+
+def test_weekly_hard_day_count_flags_three_hard():
+    # 3 hard (boxing, vo2, threshold) with hard_days=2.
+    core = [
+        _wpick(C.boxing, D.mon, 60, 90),
+        _wpick(C.vo2, D.wed, 25, 45),
+        _wpick(C.threshold, D.fri, 30, 50),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.tue, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    # threshold & vo2 mismatch quality pick — assert hard_day_count present.
+    assert "hard_day_count" in _rules(validate_weekly(_weekly_out(core, extras), ctx))
+
+
+def test_weekly_long_run_not_counted_as_hard():
+    # long_run (is_hard=False) + 2 genuine hard under hard_days=2 → clean count.
+    core = [
+        _wpick(C.boxing, D.mon, 60, 90),
+        _wpick(C.vo2, D.wed, 25, 45),
+        _wpick(C.long_run, D.sat, 70, 90),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.tue, 30, 45),
+        _wpick(C.strength_lower, D.fri, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "hard_day_count" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_spacing_flags_adjacent_hard():
+    # boxing tue + vo2 wed → adjacent hard.
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.wed, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.mon, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "hard_day_spacing" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_spacing_non_adjacent_is_clean():
+    # tue + thu → not adjacent.
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.thu, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.mon, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "hard_day_spacing" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_spacing_no_sun_mon_wrap():
+    # vo2 sun + boxing mon → not adjacent (no wrap; a plan is one ISO week).
+    core = [
+        _wpick(C.vo2, D.sun, 25, 45),
+        _wpick(C.boxing, D.mon, 60, 90),
+        _wpick(C.easy_run, D.wed, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.tue, 30, 45),
+        _wpick(C.strength_lower, D.fri, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "hard_day_spacing" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_spacing_skips_dayless_hard_pick_without_error():
+    # Two hard picks, one with suggestedDay=None → excluded from spacing; no error.
+    core = [
+        _wpick(C.boxing, None, 60, 90),
+        _wpick(C.vo2, D.wed, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.mon, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    v = validate_weekly(_weekly_out(core, extras), ctx)
+    assert "hard_day_spacing" not in _rules(v)
+
+
+def test_weekly_hard_run_after_boxing_flags():
+    # boxing mon + threshold tue (a hard run: is_hard + Flag.impact) the day after.
+    core = [
+        _wpick(C.boxing, D.mon, 60, 90),
+        _wpick(C.threshold, D.tue, 30, 50),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.thu, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.threshold)
+    assert "hard_run_after_boxing" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_boxing_then_non_run_hard_is_clean_for_after_boxing():
+    # boxing mon + hiit tue (hiit is is_hard but NOT a run — no Flag.impact).
+    core = [
+        _wpick(C.boxing, D.mon, 60, 90),
+        _wpick(C.hiit, D.tue, 15, 25),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.thu, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    # hiit + boxing = 2 hard adjacent → spacing will fire, but after_boxing must not.
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2)
+    assert "hard_run_after_boxing" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_strength_count_over_flags():
+    # 3 strength with strength_sessions=2.
+    core = [
+        _wpick(C.vo2, D.wed, 25, 45),
+        _wpick(C.strength_push, D.mon, 30, 45),
+        _wpick(C.strength_pull, D.thu, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_lower, D.sat, 25, 35),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "strength_count" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_strength_count_under_flags():
+    # 1 strength with strength_sessions=2 (== check, so under flags too).
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "strength_count" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_core_size_too_small_flags():
+    core = [_wpick(C.vo2, D.wed, 25, 45)]  # 1 < 2
+    extras = [
+        _wpick(C.strength_pull, D.mon, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "core_size" in _rules(validate_weekly(_weekly_out(core, extras), ctx))
+
+
+def test_weekly_core_size_too_large_flags():
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+        _wpick(C.steady_cardio, D.mon, 30, 50),
+    ]  # 4 > 3
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "core_size" in _rules(validate_weekly(_weekly_out(core, extras), ctx))
+
+
+def test_weekly_extras_size_too_small_flags():
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.strength_pull, D.wed, 30, 45),
+    ]
+    extras = []  # 0 < 1
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=1, quality_run_pick=C.vo2)
+    assert "extras_size" in _rules(validate_weekly(_weekly_out(core, extras), ctx))
+
+
+def test_weekly_extras_size_too_large_flags():
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+        _wpick(C.steady_cardio, D.mon, 30, 50),
+    ]  # 3 > 2
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "extras_size" in _rules(validate_weekly(_weekly_out(core, extras), ctx))
+
+
+def test_weekly_long_run_count_flags_two():
+    core = [
+        _wpick(C.long_run, D.tue, 70, 90),
+        _wpick(C.long_run, D.fri, 70, 90),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2)
+    assert "long_run_count" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_one_long_run_is_clean_for_count():
+    core = [
+        _wpick(C.long_run, D.tue, 70, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "long_run_count" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_quality_run_mismatch_flags():
+    # vo2 picked but quality_run_pick is threshold.
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(
+        hard_days=2, strength_sessions=2, quality_run_pick=C.threshold
+    )
+    assert "quality_run_mismatch" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_quality_run_match_is_clean():
+    out = _clean_weekly()
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "quality_run_mismatch" not in _rules(validate_weekly(out, ctx))
+
+
+def test_weekly_quality_run_none_never_flags():
+    out = _clean_weekly()
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=None)
+    assert "quality_run_mismatch" not in _rules(validate_weekly(out, ctx))
+
+
+def test_weekly_deload_hard_cap_flags_two_hard():
+    # 2 hard on a deload week → deload_hard_cap (distinct from hard_day_count).
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(
+        hard_days=2, strength_sessions=2, deload=True, quality_run_pick=C.vo2
+    )
+    v = _rules(validate_weekly(_weekly_out(core, extras), ctx))
+    assert "deload_hard_cap" in v
+    # hard_days=2 so hard_day_count must NOT fire — only the deload cap.
+    assert "hard_day_count" not in v
+
+
+def test_weekly_deload_one_hard_is_clean():
+    core = [
+        _wpick(C.vo2, D.fri, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+        _wpick(C.steady_cardio, D.mon, 30, 50),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(
+        hard_days=2, strength_sessions=2, deload=True, quality_run_pick=C.vo2
+    )
+    assert "deload_hard_cap" not in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_dose_out_of_band_flags():
+    # vo2 dose 25–90 is over band (25–45).
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.fri, 25, 90),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.wed, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "dose_out_of_band" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
+
+
+def test_weekly_multiple_breaks_return_multiple_violations():
+    # 3 hard (count) + adjacent (spacing) + wrong core size, etc.
+    core = [_wpick(C.vo2, D.mon, 25, 45)]  # core too small + hard count contributes
+    extras = [_wpick(C.threshold, D.tue, 30, 50)]  # adjacent hard
+    ctx = _weekly_ctx(hard_days=1, strength_sessions=2, quality_run_pick=C.vo2)
+    v = validate_weekly(_weekly_out(core, extras), ctx)
+    assert len(v) >= 2
+
+
+def test_weekly_every_emitted_rule_is_in_weekly_rules():
+    core = [_wpick(C.vo2, D.mon, 5, 200)]
+    extras = [_wpick(C.threshold, D.tue, 30, 50)]
+    ctx = _weekly_ctx(
+        hard_days=1, strength_sessions=2, deload=True, quality_run_pick=C.threshold
+    )
+    v = validate_weekly(_weekly_out(core, extras), ctx)
+    assert _rules(v) <= WEEKLY_RULES
+
+
+def test_weekly_validators_never_raise():
+    out = _weekly_out([_wpick(C.vo2, None, 25, 45)], [])
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2)
+    assert isinstance(validate_weekly(out, ctx), list)
