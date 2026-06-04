@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from app.core.profile import Profile, load_profile
 from app.core.time import SOFIA, now_sofia, parse_ts, to_sofia
 from app.database.engine import SessionLocal
-from app.database.models import DailyMetrics, Records
+from app.database.models import DailyMetrics, Records, Workouts
 from app.services.recompute import RecomputeDailyMetrics
 
 # The seven nutrition-intake columns, in DB.md §2 order (filled by TASK-003).
@@ -275,18 +275,117 @@ def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, 
     return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
 
 
+# ---------------------------------------------------------------------------
+# Nutrition + body weight + hard_day (TASK-003).
+# ---------------------------------------------------------------------------
+# Dietary `records.type` (snake_case, the form E5·P2 stores) → daily_metrics column.
+DIETARY_TYPE_TO_COLUMN: dict[str, str] = {
+    "dietary_energy_consumed": "kcal_in",
+    "dietary_protein": "protein_in_g",
+    "dietary_carbohydrates": "carbs_in_g",
+    "dietary_fat_total": "fat_in_g",
+    "dietary_fiber": "fiber_in_g",
+    "dietary_sodium": "sodium_in_mg",
+    "dietary_water": "water_in_l",
+}
+_KCAL_TYPE = "dietary_energy_consumed"
+
+# `hard_day` predicate constants (DECISIONS.md Decision 3) — matched case-insensitively.
+HARD_ACTIVITY_TYPES: frozenset[str] = frozenset(
+    {"boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"}
+)
+LONG_DURATION_MIN: float = 90.0  # minutes; "long" session fallback, BOUNDARY INCLUSIVE (>=)
+_SECONDS_UNITS: frozenset[str] = frozenset({"s", "sec", "secs", "second", "seconds"})
+_MINUTES_UNITS: frozenset[str] = frozenset({"min", "mins", "minute", "minutes", ""})
+
+
+def _dominant_dietary_source(rows: list[Records]) -> str | None:
+    """The day's dominant nutrition app: largest same-day `kcal_in`, then dietary-record
+    count, then `source_name` (DECISIONS.md Decision 4 — nutrition is single-dominant-app,
+    NOT a cross-source sum)."""
+    by_source: dict[str | None, list[Records]] = {}
+    for r in rows:
+        by_source.setdefault(r.source_name, []).append(r)
+
+    def kcal(srows: list[Records]) -> float:
+        return sum(r.value or 0.0 for r in srows if r.type == _KCAL_TYPE)
+
+    def key(item: tuple[str | None, list[Records]]) -> tuple[float, int, str]:
+        source, srows = item
+        return (-kcal(srows), -len(srows), source or "")
+
+    return min(by_source.items(), key=key)[0]
+
+
 def nutrition_intake(session: Session, day: date) -> dict[str, float | None]:
-    """The seven nutrition-intake aggregates from the dominant app (TASK-003)."""
-    return {col: None for col in NUTRITION_COLUMNS}
+    """The seven nutrition-intake aggregates from the day's **dominant app** (Decision 4).
+
+    Different nutrition apps hold different food entries, so a cross-source sum would
+    double-count an app-switch day. Picks the single dominant `source_name` (max
+    same-day `kcal_in`) and sums only its rows by type. A column with no dietary record
+    of its type in the dominant source → `None`; a real `0` total → `0`.
+    """
+    result: dict[str, float | None] = {col: None for col in NUTRITION_COLUMNS}
+    rows = _instant_records(session, day, set(DIETARY_TYPE_TO_COLUMN))
+    if not rows:
+        return result
+    dominant = _dominant_dietary_source(rows)
+    by_type: dict[str, list[Records]] = {}
+    for r in rows:
+        if r.source_name == dominant:
+            by_type.setdefault(r.type, []).append(r)
+    for type_, column in DIETARY_TYPE_TO_COLUMN.items():
+        if type_ in by_type:
+            result[column] = sum(r.value or 0.0 for r in by_type[type_])
+    return result
 
 
 def body_weight(session: Session, day: date) -> float | None:
-    """Latest `body_mass` of the day by actual instant (TASK-003)."""
-    return None
+    """The **latest** `body_mass` of the day by actual instant (NOT raw TEXT order).
+
+    Stored timestamps carry varying offsets, so a lexical sort can rank an
+    earlier-instant reading after a later one (round-1 #3). Parses each timestamp to an
+    instant and takes the max (tie-break: creation instant, then `id`). NOT first/avg —
+    the single live-weight source for TDEE/macros. `None` when no `body_mass`.
+    """
+    candidates = [r for r in _instant_records(session, day, {"body_mass"}) if r.value is not None]
+    if not candidates:
+        return None
+
+    def instant_key(r: Records) -> tuple[float, float, int]:
+        creation = parse_ts(r.creation_date) if r.creation_date else parse_ts(r.start_date)
+        return (parse_ts(r.start_date).timestamp(), creation.timestamp(), r.id or 0)
+
+    return max(candidates, key=instant_key).value
+
+
+def _duration_minutes(w: Workouts) -> float:
+    """Normalize a workout's `duration` to minutes via `duration_unit` (s→/60, min
+    pass-through; unknown unit → 0 so only `activity_type` can flag it)."""
+    if w.duration is None:
+        return 0.0
+    unit = (w.duration_unit or "").strip().lower()
+    if unit in _SECONDS_UNITS:
+        return w.duration / 60.0
+    if unit in _MINUTES_UNITS:
+        return w.duration
+    return 0.0
 
 
 def hard_day(session: Session, day: date) -> int:
-    """Deterministic 0/1 hard-session flag from the day's `workouts` (TASK-003)."""
+    """Deterministic 0/1 hard-session flag from the day's `workouts` (DECISIONS.md
+    Decision 3): `1` if any workout's `activity_type` is in `HARD_ACTIVITY_TYPES` **or**
+    its duration (normalized to minutes) is `>= LONG_DURATION_MIN`; else `0`. Always a
+    real `0`/`1` — never `None` (a flag, not a measurement)."""
+    lo, hi = _window(day)
+    stmt = select(Workouts).where(Workouts.start_date >= lo).where(Workouts.start_date < hi)
+    for w in session.execute(stmt).scalars().all():
+        if to_sofia(parse_ts(w.start_date)).date() != day:
+            continue
+        if (w.activity_type or "").strip().lower() in HARD_ACTIVITY_TYPES:
+            return 1
+        if _duration_minutes(w) >= LONG_DURATION_MIN:
+            return 1
     return 0
 
 

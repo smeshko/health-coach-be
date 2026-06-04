@@ -25,14 +25,17 @@ from sqlalchemy.orm import Session
 from app.core.profile import load_profile
 from app.core.settings import get_settings
 from app.database.engine import SessionLocal, get_engine
-from app.database.models import Records
+from app.database.models import Records, Workouts
 from app.services import daily_metrics_engine as engine_mod
 from app.services.daily_metrics_engine import (
     PRESERVED_COLUMNS,
     DailyMetricsEngine,
     active_energy,
+    body_weight,
     expand_affected_dates,
+    hard_day,
     hrv_sdnn,
+    nutrition_intake,
     recompute_day,
     rhr,
     sleep_h,
@@ -373,3 +376,142 @@ def test_engine_recomputes_both_rows_for_cross_midnight_sample(engine_db: str) -
     with sqlite3.connect(engine_db) as raw:
         dates = {r[0] for r in raw.execute("SELECT date FROM daily_metrics").fetchall()}
     assert dates == {"2026-06-01", "2026-06-02"}  # both neighbour rows refreshed
+
+
+# ---------------------------------------------------------------------------
+# TASK-003: nutrition intake + latest body weight + hard_day flag.
+# ---------------------------------------------------------------------------
+def _workout(activity_type: str, start: str, *, duration: float, unit: str = "s") -> Workouts:
+    return Workouts(
+        activity_type=activity_type,
+        start_date=start,
+        end_date=start,
+        duration=duration,
+        duration_unit=unit,
+        origin="sync",
+    )
+
+
+def test_nutrition_intake_dominant_app_not_cross_sum(session: Session) -> None:
+    # MacroFactor (higher kcal_in) is dominant; MyFitnessPal's entries are NOT summed in.
+    _seed(
+        session,
+        _rec("dietary_energy_consumed", "2026-06-01T12:00:00+03:00", value=2000.0, source="MacroFactor"),
+        _rec("dietary_protein", "2026-06-01T12:00:00+03:00", value=150.0, source="MacroFactor"),
+        _rec("dietary_carbohydrates", "2026-06-01T12:00:00+03:00", value=220.0, source="MacroFactor"),
+        # a second app logged the same day (lower kcal) — must be ignored entirely
+        _rec("dietary_energy_consumed", "2026-06-01T13:00:00+03:00", value=900.0, source="MyFitnessPal"),
+        _rec("dietary_protein", "2026-06-01T13:00:00+03:00", value=60.0, source="MyFitnessPal"),
+    )
+    n = nutrition_intake(session, D1)
+    assert n["kcal_in"] == 2000.0  # dominant only, NOT 2900
+    assert n["protein_in_g"] == 150.0  # NOT 210
+    assert n["carbs_in_g"] == 220.0
+    assert n["fat_in_g"] is None  # no dietary_fat_total record in the dominant source
+    assert n["fiber_in_g"] is None
+    assert n["sodium_in_mg"] is None
+    assert n["water_in_l"] is None
+
+
+def test_nutrition_intake_single_app_unchanged(session: Session) -> None:
+    _seed(
+        session,
+        _rec("dietary_energy_consumed", "2026-06-01T12:00:00+03:00", value=1800.0, source="YAZIO"),
+        _rec("dietary_fiber", "2026-06-01T12:00:00+03:00", value=30.0, source="YAZIO"),
+    )
+    n = nutrition_intake(session, D1)
+    assert n["kcal_in"] == 1800.0
+    assert n["fiber_in_g"] == 30.0
+    assert nutrition_intake(session, D2)["kcal_in"] is None  # no dietary records
+
+
+def test_body_weight_latest_by_instant_not_lexical(session: Session) -> None:
+    # Three weigh-ins whose LEXICAL order differs from CHRONOLOGICAL order (mixed offsets):
+    #   09:00+03:00 = 06:00Z (77.0) | 08:30+02:00 = 06:30Z latest (80.0) | 07:00+03:00 = 04:00Z (76.0)
+    # Lexical max of start_date is the "09:00+03:00" string (77.0) — the WRONG answer.
+    _seed(
+        session,
+        _rec("body_mass", "2026-06-01T09:00:00+03:00", value=77.0),
+        _rec("body_mass", "2026-06-01T08:30:00+02:00", value=80.0),
+        _rec("body_mass", "2026-06-01T07:00:00+03:00", value=76.0),
+    )
+    assert body_weight(session, D1) == 80.0  # latest INSTANT, not first/avg/raw-text-last
+    assert body_weight(session, D2) is None
+
+
+@pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])
+def test_hard_day_per_hard_activity_type(session: Session, activity: str) -> None:
+    _seed(session, _workout(activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
+    assert hard_day(session, D1) == 1
+
+
+def test_hard_day_long_duration_threshold_inclusive(session: Session) -> None:
+    # 89 min → 0, 90 min → 1 (inclusive), 91 min → 1; an easy short session → 0.
+    _seed(session, _workout("running", "2026-06-01T18:00:00+03:00", duration=89.0, unit="min"))
+    assert hard_day(session, D1) == 0
+
+    # A distinct day per case so the workouts don't accumulate ambiguously.
+    _seed(session, _workout("running", "2026-06-02T18:00:00+03:00", duration=90.0, unit="min"))
+    assert hard_day(session, D2) == 1
+    _seed(session, _workout("cycling", "2026-06-03T18:00:00+03:00", duration=91.0, unit="min"))
+    assert hard_day(session, date(2026, 6, 3)) == 1
+
+
+def test_hard_day_seconds_unit_normalized(session: Session) -> None:
+    # 5400 s == 90 min → hard (pins the duration_unit normalization).
+    _seed(session, _workout("rowing", "2026-06-01T18:00:00+03:00", duration=5400.0, unit="s"))
+    assert hard_day(session, D1) == 1
+
+
+def test_hard_day_easy_only_and_empty_day_are_zero(session: Session) -> None:
+    assert hard_day(session, D1) == 0  # empty day
+    _seed(session, _workout("walking", "2026-06-01T18:00:00+03:00", duration=1200.0, unit="s"))
+    assert hard_day(session, D1) == 0  # 20 min easy walk
+
+
+def test_full_p1_row_matches_source_with_baselines_null(session: Session) -> None:
+    # The integrating assertion (PLAN Acceptance #1): every P1 column reflects the
+    # source, with the 30-day baselines + readiness null.
+    _seed(
+        session,
+        _rec("sleep_analysis", "2026-05-31T23:30:00+03:00", end="2026-06-01T07:00:00+03:00",
+             value_text="asleepCore"),
+        _rec("heart_rate_variability_sdnn", "2026-06-01T06:30:00+03:00", value=48.0),
+        _rec("resting_heart_rate", "2026-06-01T06:30:00+03:00", value=54.0),
+        _rec("step_count", "2026-06-01T10:00:00+03:00", value=9000.0, source="Apple Watch"),
+        _rec("active_energy_burned", "2026-06-01T10:00:00+03:00", value=500.0, source="Apple Watch"),
+        _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0),
+        _rec("body_mass", "2026-06-01T07:00:00+03:00", value=78.4),
+        _rec("dietary_energy_consumed", "2026-06-01T12:00:00+03:00", value=2200.0, source="MacroFactor"),
+    )
+    _seed(session, _workout("boxing", "2026-06-01T18:00:00+03:00", duration=2700.0, unit="s"))
+    recompute_day(session, D1, profile=PROFILE)
+    session.commit()
+    row = _row(session, "2026-06-01")
+
+    assert row["sleep_h"] == pytest.approx(7.5)
+    assert row["hrv_sdnn"] == 48.0
+    assert row["rhr"] == 54.0
+    assert row["steps"] == 9000
+    assert row["active_energy"] == 500.0
+    assert row["z2_min"] == pytest.approx(10.0)
+    assert row["body_weight"] == 78.4
+    assert row["kcal_in"] == 2200.0
+    assert row["hard_day"] == 1
+    # 30-day baselines + readiness stay null this phase.
+    for col in PRESERVED_COLUMNS:
+        assert row[col] is None
+
+
+def test_nutrition_and_body_mass_attributed_to_sofia_date(session: Session) -> None:
+    # 23:30 UTC on 06-02 → 02:30 Sofia (+03:00) on 06-03 → both land on the Sofia date.
+    d3 = date(2026, 6, 3)
+    _seed(
+        session,
+        _rec("body_mass", "2026-06-02T23:30:00+00:00", value=79.1, source="Apple Watch"),
+        _rec("dietary_energy_consumed", "2026-06-02T23:30:00+00:00", value=2100.0, source="MacroFactor"),
+    )
+    assert body_weight(session, d3) == 79.1
+    assert nutrition_intake(session, d3)["kcal_in"] == 2100.0
+    assert body_weight(session, D2) is None  # not the wire-offset date
+    assert nutrition_intake(session, D2)["kcal_in"] is None
