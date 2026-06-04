@@ -14,7 +14,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database.models import DailyMetrics
-from app.services.aggregates import training_rollup, window_bounds
+from app.services.aggregates import (
+    NutritionTarget,
+    nutrition_adherence,
+    nutrition_consumed,
+    training_rollup,
+    window_bounds,
+)
 
 D = date(2026, 6, 30)
 
@@ -109,3 +115,107 @@ def test_training_rollup_performs_no_write(session: Session) -> None:
     training_rollup(session, D, 7)
     training_rollup(session, D, 28)
     assert _count(session) == before  # read-only — no row written
+
+
+# ---------------------------------------------------------------------------
+# nutrition_consumed / nutrition_adherence (TASK-002)
+# ---------------------------------------------------------------------------
+def test_nutrition_consumed_hand_summed_with_logged_day_counts(session: Session) -> None:
+    _dm(session, D - timedelta(days=6), kcal_in=2000.0, protein_in_g=150.0, carbs_in_g=200.0,
+        fat_in_g=70.0, fiber_in_g=30.0, sodium_in_mg=2300.0, water_in_l=3.0)
+    _dm(session, D - timedelta(days=5), kcal_in=2200.0, protein_in_g=140.0)
+    _dm(session, D - timedelta(days=4), kcal_in=1800.0, protein_in_g=160.0)
+    _dm(session, D, sleep_h=8.0)  # row present, no dietary logged
+    session.commit()
+    c = nutrition_consumed(session, D, 7)
+    assert c.kcal_in == pytest.approx(6000.0)
+    assert c.protein_in_g == pytest.approx(450.0)
+    assert c.carbs_in_g == pytest.approx(200.0)  # only D-6 logged carbs
+    assert c.n_days == 4  # rows present
+    assert c.kcal_in_n == 3  # days kcal logged
+    assert c.protein_in_g_n == 3
+    assert c.carbs_in_g_n == 1
+    assert c.sodium_in_mg_n == 1
+    assert c.water_in_l_n == 1
+
+
+def test_nutrition_consumed_window_boundary(session: Session) -> None:
+    _dm(session, D - timedelta(days=7), kcal_in=999.0)  # OUT of 7d
+    _dm(session, D - timedelta(days=6), kcal_in=100.0)  # IN (start)
+    _dm(session, D, kcal_in=50.0)                        # IN (anchor)
+    session.commit()
+    c = nutrition_consumed(session, D, 7)
+    assert c.kcal_in == pytest.approx(150.0)  # excludes the D-7 row
+    assert c.kcal_in_n == 2
+
+
+def test_nutrition_adherence_no_target_consumed_only(session: Session) -> None:
+    _dm(session, D, kcal_in=2000.0, protein_in_g=150.0)
+    session.commit()
+    a = nutrition_adherence(session, D, 7, target=None)
+    assert a.consumed.kcal_in == pytest.approx(2000.0)
+    assert a.avg_kcal is None
+    assert a.avg_protein_g is None
+    assert a.kcal_pct is None
+    assert a.protein_hit_days is None
+    assert a.days_over_target is None
+    assert a.days_under_target is None
+
+
+def test_nutrition_adherence_per_day_comparison(session: Session) -> None:
+    # 3 logged days: kcal [2000, 2200, 1800], protein [150, 140, 160].
+    _dm(session, D - timedelta(days=6), kcal_in=2000.0, protein_in_g=150.0)
+    _dm(session, D - timedelta(days=5), kcal_in=2200.0, protein_in_g=140.0)
+    _dm(session, D - timedelta(days=4), kcal_in=1800.0, protein_in_g=160.0)
+    session.commit()
+    target = NutritionTarget(kcal=2100.0, protein_g=145.0, carbs_g=250.0,
+                             fat_g_low=60.0, fat_g_high=80.0, water_l_low=3.0, water_l_high=3.5)
+    a = nutrition_adherence(session, D, 7, target=target)
+    assert a.avg_kcal == pytest.approx(2000.0)  # 6000/3
+    assert a.avg_protein_g == pytest.approx(150.0)  # 450/3
+    assert a.kcal_pct == pytest.approx(2000.0 / 2100.0)
+    assert a.protein_hit_days == 2  # 150,160 >= 145; 140 < 145
+    assert a.days_over_target == 1  # 2200 > 2100
+    assert a.days_under_target == 2  # 2000,1800 < 2100
+
+
+def test_nutrition_adherence_zero_kcal_target_guards(session: Session) -> None:
+    _dm(session, D, kcal_in=2000.0, protein_in_g=150.0)
+    session.commit()
+    a = nutrition_adherence(session, D, 7, target=NutritionTarget(kcal=0.0, protein_g=140.0))
+    assert a.kcal_pct is None  # divide-by-zero guard
+    assert a.days_over_target is None  # no meaningful kcal target
+    assert a.days_under_target is None
+    assert a.avg_kcal == pytest.approx(2000.0)  # other fields still computed
+    assert a.avg_protein_g == pytest.approx(150.0)
+    assert a.protein_hit_days == 1  # 150 >= 140
+
+
+def test_nutrition_adherence_null_only_window_unknown_not_zero(session: Session) -> None:
+    # Rows present but ALL dietary NULL + a non-zero target → unknown, never 0%.
+    _dm(session, D, sleep_h=8.0)
+    _dm(session, D - timedelta(days=1), steps=10000)
+    session.commit()
+    a = nutrition_adherence(session, D, 7, target=NutritionTarget(kcal=2000.0, protein_g=150.0))
+    assert a.consumed.kcal_in == pytest.approx(0.0)  # COALESCE sum
+    assert a.consumed.kcal_in_n == 0  # nothing logged
+    assert a.consumed.n_days == 2  # rows present (coverage distinct from logged)
+    assert a.avg_kcal is None
+    assert a.kcal_pct is None  # NOT 0%
+    assert a.protein_hit_days is None
+    assert a.days_over_target is None
+    assert a.days_under_target is None
+
+
+def test_nutrition_adherence_partial_logging_counts_only_logged(session: Session) -> None:
+    for i in range(6):  # 6 rows present, no dietary
+        _dm(session, D - timedelta(days=6 - i), sleep_h=8.0)
+    _dm(session, D, kcal_in=2500.0, protein_in_g=120.0)  # the one logged day
+    session.commit()
+    a = nutrition_adherence(session, D, 7, target=NutritionTarget(kcal=2000.0, protein_g=150.0))
+    assert a.consumed.n_days == 7
+    assert a.consumed.kcal_in_n == 1  # coverage reflects sparse logging
+    assert a.avg_kcal == pytest.approx(2500.0)  # only the logged day
+    assert a.days_over_target == 1  # 2500 > 2000
+    assert a.days_under_target == 0
+    assert a.protein_hit_days == 0  # 120 < 150

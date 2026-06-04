@@ -40,6 +40,16 @@ _ZONE_ENERGY_COLUMNS: tuple[str, ...] = (
     "z5_min",
     "active_energy",
 )
+# The seven dietary intake columns (consumed side), in DB.md §2 order.
+_DIETARY_COLUMNS: tuple[str, ...] = (
+    "kcal_in",
+    "protein_in_g",
+    "carbs_in_g",
+    "fat_in_g",
+    "fiber_in_g",
+    "sodium_in_mg",
+    "water_in_l",
+)
 
 
 def window_bounds(anchor: date, days: int) -> tuple[str, str]:
@@ -108,4 +118,149 @@ def training_rollup(session: Session, anchor: date, days: int) -> TrainingRollup
         active_energy=active_energy,
         hard_days=int(hard_days),
         n_days=int(n_days),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Nutrition-intake (consumed) rollups + adherence seam (TASK-002).
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class NutritionConsumed:
+    """One window's summed dietary intake + per-nutrient logged-day coverage.
+
+    `n_days` is the count of `daily_metrics` rows present; the per-nutrient
+    `*_n` counts (`COUNT(col)`, NULL-skipping) are the real adherence coverage — a
+    window can have full `n_days` yet a nutrient never logged (E6·P1 stores a
+    no-source dietary cell as NULL) — round-1 #1.
+    """
+
+    days: int
+    kcal_in: float
+    protein_in_g: float
+    carbs_in_g: float
+    fat_in_g: float
+    fiber_in_g: float
+    sodium_in_mg: float
+    water_in_l: float
+    n_days: int
+    kcal_in_n: int
+    protein_in_g_n: int
+    carbs_in_g_n: int
+    fat_in_g_n: int
+    fiber_in_g_n: int
+    sodium_in_mg_n: int
+    water_in_l_n: int
+
+
+def nutrition_consumed(session: Session, anchor: date, days: int) -> NutritionConsumed:
+    """The windowed consumed-intake rollup: NULL-safe `SUM` of the seven dietary
+    columns + each nutrient's logged-day count (`COUNT(col)`) + `n_days` (`COUNT(*)`)."""
+    sums = [_sum0(col) for col in _DIETARY_COLUMNS]
+    counts = [func.count(getattr(DailyMetrics, col)) for col in _DIETARY_COLUMNS]
+    stmt = _window_select(anchor, days, *sums, *counts, func.count())
+    row = session.execute(stmt).one()
+    sum_vals = row[: len(_DIETARY_COLUMNS)]
+    count_vals = row[len(_DIETARY_COLUMNS) : 2 * len(_DIETARY_COLUMNS)]
+    n_days = row[-1]
+    fields: dict[str, object] = {"days": days, "n_days": int(n_days)}
+    for col, total, logged in zip(_DIETARY_COLUMNS, sum_vals, count_vals, strict=True):
+        fields[col] = total
+        fields[f"{col}_n"] = int(logged)
+    return NutritionConsumed(**fields)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class NutritionTarget:
+    """A caller-injected **PER-DAY** nutrition target, modelled on the documented
+    `MacroFocus`/`WeeklyNutrition` contract (MODELS.md) — scalar daily kcal/protein/carbs,
+    a fat range, and a hydration range, each optional. **No sodium/fiber target**
+    (`MacroFocus` defines neither; they stay consumed-only). E6·P3 computes none of these
+    — the per-day target is E7/E8's `MacroFocus`/TDEE, read by the caller from a prior
+    `plans`/`suggestions` row and injected (DECISIONS Decision 1)."""
+
+    kcal: float | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g_low: float | None = None
+    fat_g_high: float | None = None
+    water_l_low: float | None = None
+    water_l_high: float | None = None
+
+
+@dataclass(frozen=True)
+class NutritionAdherence:
+    """A window's consumed totals + the consumed-vs-target view (per-day comparison).
+
+    The adherence fields are the documented `WeeklyNutrition.lastWeek` / `vsTarget`
+    ones, each `None` (unknown) when the target field is absent/zero or no day was
+    logged (round-1 #1) — never a fabricated `0%`. Sodium & fiber are consumed-only.
+    """
+
+    consumed: NutritionConsumed
+    target: NutritionTarget | None
+    avg_kcal: float | None
+    avg_protein_g: float | None
+    kcal_pct: float | None
+    protein_hit_days: int | None
+    days_over_target: int | None
+    days_under_target: int | None
+
+
+def _safe_ratio(num: float | None, den: float | None) -> float | None:
+    """`num / den`, or `None` when either is absent or the denominator is 0 (no
+    divide-by-zero, no `inf`) — an undefined ratio is unknown, not a fabricated number."""
+    if num is None or den is None or den == 0:
+        return None
+    return num / den
+
+
+def nutrition_adherence(
+    session: Session, anchor: date, days: int, *, target: NutritionTarget | None = None
+) -> NutritionAdherence:
+    """The consumed rollup plus, when a per-day `target` is supplied, the documented
+    per-day-comparison adherence fields over the window's **logged** days.
+
+    Each adherence field is `None` (unknown) when: the relevant target field is `None`,
+    the target is `0` (divide-by-zero guard), or no day was logged for that nutrient
+    (round-1 #1) — so a NULL-only window never reads as `0%`. Day-count fields count
+    only logged days, so they are naturally coverage-aware. `target=None` → all `None`.
+    """
+    consumed = nutrition_consumed(session, anchor, days)
+    avg_kcal: float | None = None
+    avg_protein_g: float | None = None
+    kcal_pct: float | None = None
+    protein_hit_days: int | None = None
+    days_over_target: int | None = None
+    days_under_target: int | None = None
+
+    if target is not None:
+        start, end = window_bounds(anchor, days)
+        rows = session.execute(
+            select(DailyMetrics.kcal_in, DailyMetrics.protein_in_g).where(
+                DailyMetrics.date.between(start, end)
+            )
+        ).all()
+        logged_kcal = [k for (k, _p) in rows if k is not None]
+        logged_protein = [p for (_k, p) in rows if p is not None]
+
+        if logged_kcal:
+            avg_kcal = sum(logged_kcal) / len(logged_kcal)
+            kcal_pct = _safe_ratio(avg_kcal, target.kcal)
+            if target.kcal not in (None, 0):
+                days_over_target = sum(1 for k in logged_kcal if k > target.kcal)
+                days_under_target = sum(1 for k in logged_kcal if k < target.kcal)
+        if logged_protein:
+            avg_protein_g = sum(logged_protein) / len(logged_protein)
+            if target.protein_g not in (None, 0):
+                protein_hit_days = sum(1 for p in logged_protein if p >= target.protein_g)
+
+    return NutritionAdherence(
+        consumed=consumed,
+        target=target,
+        avg_kcal=avg_kcal,
+        avg_protein_g=avg_protein_g,
+        kcal_pct=kcal_pct,
+        protein_hit_days=protein_hit_days,
+        days_over_target=days_over_target,
+        days_under_target=days_under_target,
     )
