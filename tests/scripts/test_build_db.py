@@ -188,3 +188,29 @@ def test_workout_statistics_keyed_to_parent(built_db) -> None:
             ("HKQuantityTypeIdentifierHeartRate",),
         ).fetchone()[0]
     assert stat_wid == wid
+
+
+# --- summary report ---------------------------------------------------------
+
+
+def test_summarize_matches_table_counts(build_db, built_db) -> None:
+    _, db_path = built_db
+    with sqlite3.connect(db_path) as conn:
+        report = build_db.summarize(conn)
+        assert set(report) == {
+            "records",
+            "workouts",
+            "workout_statistics",
+            "activity_summary",
+        }
+        for table, n in report.items():
+            assert n == conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
+def test_main_prints_report(build_db, fixture_xml, tmp_path, capsys) -> None:
+    db_path = tmp_path / "baseline.db"
+    rc = build_db.main(["--xml", str(fixture_xml), "--db", str(db_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    for table in ("records", "workouts", "workout_statistics", "activity_summary"):
+        assert table in out

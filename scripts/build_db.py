@@ -298,6 +298,15 @@ def _backfill_total_distance(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
+def summarize(conn: sqlite3.Connection) -> dict[str, int]:
+    """Per-table row counts for the four tables — the build's sanity-check report.
+
+    Reuses the single `TABLES` constant so the report can never drift from the
+    schema's DROP/CREATE list (epic §3 E4·P1; §4 "non-zero counts").
+    """
+    return {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in TABLES}
+
+
 def build(xml_path: str | Path, db_path: str | Path) -> dict[str, int]:
     """Stream `xml_path` into `db_path` as a raw wholesale rebuild; return counts.
 
@@ -432,7 +441,7 @@ def build(xml_path: str | Path, db_path: str | Path) -> dict[str, int]:
         conn.execute("ANALYZE;")
         conn.commit()
 
-        return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in TABLES}
+        return summarize(conn)
     finally:
         conn.close()
 
