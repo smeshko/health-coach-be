@@ -13,6 +13,7 @@ the `engine_db` fixture (APP_DB_PATH + cache clears, like tests/api/routes/test_
 from __future__ import annotations
 
 import sqlite3
+import statistics
 from collections.abc import Iterator
 from datetime import date, datetime
 
@@ -25,21 +26,24 @@ from sqlalchemy.orm import Session
 from app.core.profile import load_profile
 from app.core.settings import get_settings
 from app.database.engine import SessionLocal, get_engine
-from app.database.models import Records, Workouts
+from app.database.models import DailyMetrics, Records, Workouts
 from app.services import daily_metrics_engine as engine_mod
 from app.services.daily_metrics_engine import (
+    MIN_BASELINE_SAMPLES,
     PRESERVED_COLUMNS,
     DailyMetricsEngine,
     active_energy,
     body_weight,
     expand_affected_dates,
     hard_day,
+    hrv_baseline,
     hrv_sdnn,
     nutrition_intake,
     recompute_day,
     rhr,
     sleep_h,
     steps,
+    window_readings,
     zone_minutes,
 )
 
@@ -759,3 +763,48 @@ def test_sync_hr_ending_exactly_at_midnight_does_not_cover_next_day(session: Ses
              value=130.0, source="Apple Watch", origin="seed"),
     )
     assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # seed kept
+
+
+# ===========================================================================
+# E6·P2 — rolling 30-day HRV/RHR baselines.
+# ===========================================================================
+def _dm(session: Session, day: str, *, hrv: float | None = None, rhr_v: float | None = None) -> None:
+    """Seed a minimal `daily_metrics` row (date PK + hrv_sdnn/rhr; rest null)."""
+    session.add(DailyMetrics(date=day, hrv_sdnn=hrv, rhr=rhr_v))
+
+
+def test_window_readings_boundary_inclusive_of_d(session: Session) -> None:
+    # D = 2026-06-30; window is [2026-06-01, 2026-06-30] (30 calendar days incl. D).
+    _dm(session, "2026-05-31", hrv=40.0, rhr_v=50.0)  # D-30 → OUT
+    _dm(session, "2026-06-01", hrv=41.0, rhr_v=51.0)  # D-29 → IN
+    _dm(session, "2026-06-15", hrv=45.0, rhr_v=55.0)  # mid → IN
+    _dm(session, "2026-06-30", hrv=49.0, rhr_v=59.0)  # D → IN
+    _dm(session, "2026-07-01", hrv=99.0, rhr_v=99.0)  # D+1 → OUT
+    session.commit()
+    hrv_vals, rhr_vals = window_readings(session, date(2026, 6, 30))
+    assert sorted(hrv_vals) == [41.0, 45.0, 49.0]  # D-29, mid, D — not D-30 or D+1
+    assert sorted(rhr_vals) == [51.0, 55.0, 59.0]
+
+
+def test_window_readings_filters_nulls_independently(session: Session) -> None:
+    _dm(session, "2026-06-28", hrv=42.0, rhr_v=None)  # HRV only
+    _dm(session, "2026-06-29", hrv=None, rhr_v=52.0)  # RHR only
+    _dm(session, "2026-06-30", hrv=44.0, rhr_v=54.0)  # both
+    session.commit()
+    hrv_vals, rhr_vals = window_readings(session, date(2026, 6, 30))
+    assert sorted(hrv_vals) == [42.0, 44.0]  # the null-hrv day excluded from HRV
+    assert sorted(rhr_vals) == [52.0, 54.0]  # the null-rhr day excluded from RHR
+
+
+def test_hrv_baseline_population_sd_above_threshold() -> None:
+    values = [40.0, 42.0, 44.0, 46.0, 48.0, 50.0, 52.0, 54.0, 56.0, 58.0]  # exactly 10
+    assert len(values) == MIN_BASELINE_SAMPLES
+    mean, sd = hrv_baseline(values)
+    assert mean == pytest.approx(statistics.fmean(values))
+    assert sd == pytest.approx(statistics.pstdev(values))  # population (÷N)
+    assert sd != pytest.approx(statistics.stdev(values))  # NOT sample (÷N-1)
+
+
+def test_hrv_baseline_below_threshold_is_none_none() -> None:
+    values = [40.0] * (MIN_BASELINE_SAMPLES - 1)  # one short
+    assert hrv_baseline(values) == (None, None)  # mean and SD both null, gated together
