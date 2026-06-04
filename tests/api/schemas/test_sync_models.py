@@ -121,29 +121,15 @@ def test_health_record_round_trips_camel_case() -> None:
         }
     )
     payload = json.loads(rec.model_dump_json())
-    # camelCase keys on the wire (no snake_case leakage for aliased fields).
+    # HealthRecord has only single-word fields, so these keys are unaliased; the
+    # real camelCase-leakage coverage for multi-word fields lives in the
+    # Workout/ActivitySummary/SyncResponse/DailyCheckin tests below.
     assert "uuid" in payload
     assert "type" in payload
     assert "start" in payload and "end" in payload
     # Re-parse the emitted camelCase JSON.
     again = HealthRecord.model_validate(payload)
     assert again == rec
-
-
-def test_snake_case_input_also_accepted() -> None:
-    # HealthRecord has no multi-word aliased field, so build a synthetic check via
-    # populate_by_name: snake_case keys parse identically to the wire form.
-    rec = HealthRecord.model_validate(
-        {
-            "uuid": "s-1",
-            "type": "body_mass",
-            "start": "2026-06-01T08:00:00+03:00",
-            "end": "2026-06-01T08:00:00+03:00",
-            "value": 78.5,
-            "unit": "kg",
-        }
-    )
-    assert rec.value == 78.5
 
 
 def test_metadata_passthrough_object_parses() -> None:
@@ -324,6 +310,43 @@ def test_sync_request_defaults_on_empty() -> None:
 def test_sync_request_top_optionals_omitted_and_null(wire_field: str, attr: str) -> None:
     assert getattr(SyncRequest.model_validate({}), attr) is None
     assert getattr(SyncRequest.model_validate({wire_field: None}), attr) is None
+
+
+def test_aliased_models_accept_snake_case_input() -> None:
+    # AC: parsing accepts both camelCase AND snake_case for genuinely-aliased
+    # (multi-word) fields, via populate_by_name=True. Feed snake_case keys and
+    # confirm they populate the same attributes the camelCase wire form does.
+    workout = Workout.model_validate(
+        {
+            "uuid": "w-snake",
+            "type": "running",
+            "start": "2026-06-01T07:00:00+03:00",
+            "end": "2026-06-01T07:30:00+03:00",
+            "duration_s": 1800.0,
+            "active_energy_kcal": 300.0,
+            "effort_score": 5,
+            "zone_minutes": {"z2": 30.0},
+        }
+    )
+    assert workout.duration_s == 1800.0
+    assert workout.active_energy_kcal == 300.0
+    assert workout.effort_score == 5
+    assert workout.zone_minutes == {"z2": 30.0}
+
+    resp = SyncResponse.model_validate(
+        {
+            "records_upserted": 4,
+            "records_duplicate": 0,
+            "workouts_upserted": 1,
+            "activity_days_upserted": 1,
+            "checkin_saved": True,
+            "strength_test_saved": True,
+            "server_time": "2026-06-01T20:00:00+03:00",
+        }
+    )
+    assert resp.records_upserted == 4
+    assert resp.activity_days_upserted == 1
+    assert resp.strength_test_saved is True
 
 
 def test_sync_response_emits_camel_case() -> None:
