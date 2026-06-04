@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tiny synthetic Apple Health export (HealthKit Export Version 14 shape) for
+     deterministic build_db ETL tests. Known per-element counts:
+       Record           = 5  (4 quantity + 1 category sleep-analysis enum)
+       Workout          = 2  (W1 has totalDistance; W2 omits it -> backfilled)
+       WorkoutStatistics= 2  (one per workout)
+       ActivitySummary  = 2
+     Timestamps are raw Apple strings with offsets and must round-trip verbatim. -->
+<HealthData locale="en_US">
+  <ExportDate value="2025-04-17 09:00:00 +0300"/>
+  <Me HKCharacteristicTypeIdentifierDateOfBirth="1990-01-01"
+      HKCharacteristicTypeIdentifierBiologicalSex="HKBiologicalSexMale"/>
+
+  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Apple Watch"
+          sourceVersion="11.3" device="watch" unit="count/min"
+          creationDate="2025-04-15 07:32:12 +0300"
+          startDate="2025-04-15 07:32:11 +0300"
+          endDate="2025-04-15 07:32:11 +0300" value="62"/>
+  <Record type="HKQuantityTypeIdentifierStepCount" sourceName="iPhone"
+          sourceVersion="18.4" unit="count"
+          creationDate="2025-04-15 08:00:00 +0300"
+          startDate="2025-04-15 07:00:00 +0300"
+          endDate="2025-04-15 07:30:00 +0300" value="1200"/>
+  <Record type="HKQuantityTypeIdentifierBodyMass" sourceName="Health"
+          sourceVersion="18.4" unit="kg"
+          creationDate="2025-04-15 06:00:00 +0300"
+          startDate="2025-04-15 06:00:00 +0300"
+          endDate="2025-04-15 06:00:00 +0300" value="75.5"/>
+  <Record type="HKQuantityTypeIdentifierDietaryEnergyConsumed"
+          sourceName="MyFitnessPal" sourceVersion="1.0" unit="kcal"
+          creationDate="2025-04-15 13:00:00 +0300"
+          startDate="2025-04-15 13:00:00 +0300"
+          endDate="2025-04-15 13:00:00 +0300" value="500"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Apple Watch"
+          sourceVersion="11.3" unit=""
+          creationDate="2025-04-15 06:30:00 +0300"
+          startDate="2025-04-15 00:15:00 +0300"
+          endDate="2025-04-15 06:00:00 +0300"
+          value="HKCategoryValueSleepAnalysisAsleepCore"/>
+
+  <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="30"
+           durationUnit="min" totalDistance="5.0" totalDistanceUnit="km"
+           totalEnergyBurned="350" totalEnergyBurnedUnit="kcal"
+           sourceName="Apple Watch" sourceVersion="11.3" device="watch"
+           creationDate="2025-04-15 18:00:00 +0300"
+           startDate="2025-04-15 17:30:00 +0300"
+           endDate="2025-04-15 18:00:00 +0300">
+    <MetadataEntry key="HKIndoorWorkout" value="0"/>
+    <WorkoutEvent type="HKWorkoutEventTypePause" date="2025-04-15 17:45:00 +0300"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierHeartRate"
+                       startDate="2025-04-15 17:30:00 +0300"
+                       endDate="2025-04-15 18:00:00 +0300"
+                       average="150" minimum="120" maximum="175"
+                       unit="count/min"/>
+  </Workout>
+  <Workout workoutActivityType="HKWorkoutActivityTypeWalking" duration="10"
+           durationUnit="min" totalEnergyBurned="50" totalEnergyBurnedUnit="kcal"
+           sourceName="Apple Watch" sourceVersion="11.3"
+           creationDate="2025-04-16 12:00:00 +0300"
+           startDate="2025-04-16 11:50:00 +0300"
+           endDate="2025-04-16 12:00:00 +0300">
+    <WorkoutStatistics type="HKQuantityTypeIdentifierDistanceWalkingRunning"
+                       startDate="2025-04-16 11:50:00 +0300"
+                       endDate="2025-04-16 12:00:00 +0300"
+                       sum="800" unit="m"/>
+  </Workout>
+
+  <ActivitySummary dateComponents="2025-04-15" activeEnergyBurned="650"
+                   activeEnergyBurnedGoal="600" activeEnergyBurnedUnit="kcal"
+                   appleExerciseTime="45" appleExerciseTimeGoal="30"
+                   appleStandHours="11" appleStandHoursGoal="12"
+                   appleMoveTime="0" appleMoveTimeGoal="0"/>
+  <ActivitySummary dateComponents="2025-04-16" activeEnergyBurned="500"
+                   activeEnergyBurnedGoal="600" activeEnergyBurnedUnit="kcal"
+                   appleExerciseTime="20" appleExerciseTimeGoal="30"
+                   appleStandHours="9" appleStandHoursGoal="12"
+                   appleMoveTime="0" appleMoveTimeGoal="0"/>
+</HealthData>
