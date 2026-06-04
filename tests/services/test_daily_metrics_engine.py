@@ -13,8 +13,9 @@ the `engine_db` fixture (APP_DB_PATH + cache clears, like tests/api/routes/test_
 from __future__ import annotations
 
 import sqlite3
+import statistics
 from collections.abc import Iterator
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from alembic import command
@@ -25,21 +26,25 @@ from sqlalchemy.orm import Session
 from app.core.profile import load_profile
 from app.core.settings import get_settings
 from app.database.engine import SessionLocal, get_engine
-from app.database.models import Records, Workouts
+from app.database.models import DailyMetrics, Records, Workouts
 from app.services import daily_metrics_engine as engine_mod
 from app.services.daily_metrics_engine import (
+    MIN_BASELINE_SAMPLES,
     PRESERVED_COLUMNS,
     DailyMetricsEngine,
     active_energy,
     body_weight,
     expand_affected_dates,
     hard_day,
+    hrv_baseline,
     hrv_sdnn,
     nutrition_intake,
     recompute_day,
     rhr,
+    rhr_baseline,
     sleep_h,
     steps,
+    window_readings,
     zone_minutes,
 )
 
@@ -103,15 +108,17 @@ def test_recompute_day_fresh_insert_leaves_later_phase_columns_null(session: Ses
         assert row[col] is None, f"{col} should be null on a fresh P1 insert"
 
 
-def test_recompute_day_does_not_clobber_later_phase_columns(session: Session) -> None:
+def test_recompute_day_does_not_clobber_readiness_but_refreshes_baselines(session: Session) -> None:
+    # Post-E6·P2 the three 30-day baselines UPDATE on recompute (folded into the set_);
+    # only readiness_score/band (E8/E11) survive a recompute (round-1 #4/#5).
     day = date(2026, 6, 1)
     recompute_day(session, day, profile=PROFILE)
     session.commit()
-    # E6·P2 / E11 fill these later — a P1 re-run must not wipe them.
+    # E11 writes readiness_score AND band together; pre-set both + a stale baseline.
     session.execute(
         text(
-            "UPDATE daily_metrics SET hrv_30d_mean = 42.0, hrv_30d_sd = 5.5, "
-            "rhr_30d_mean = 52.0, readiness_score = 80, band = 'GREEN' WHERE date = :d"
+            "UPDATE daily_metrics SET hrv_30d_mean = 42.0, readiness_score = 80, "
+            "band = 'GREEN' WHERE date = :d"
         ),
         {"d": "2026-06-01"},
     )
@@ -121,11 +128,11 @@ def test_recompute_day_does_not_clobber_later_phase_columns(session: Session) ->
     session.commit()
 
     row = _row(session, "2026-06-01")
-    assert row["hrv_30d_mean"] == 42.0
-    assert row["hrv_30d_sd"] == 5.5
-    assert row["rhr_30d_mean"] == 52.0
+    # readiness verdict survives (excluded from the set_)...
     assert row["readiness_score"] == 80
     assert row["band"] == "GREEN"
+    # ...but the baseline now refreshes from the window (here: single empty day → null).
+    assert row["hrv_30d_mean"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -759,3 +766,201 @@ def test_sync_hr_ending_exactly_at_midnight_does_not_cover_next_day(session: Ses
              value=130.0, source="Apple Watch", origin="seed"),
     )
     assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # seed kept
+
+
+# ===========================================================================
+# E6·P2 — rolling 30-day HRV/RHR baselines.
+# ===========================================================================
+def _dm(session: Session, day: str, *, hrv: float | None = None, rhr_v: float | None = None) -> None:
+    """Seed a minimal `daily_metrics` row (date PK + hrv_sdnn/rhr; rest null)."""
+    session.add(DailyMetrics(date=day, hrv_sdnn=hrv, rhr=rhr_v))
+
+
+def test_window_readings_boundary_inclusive_of_d(session: Session) -> None:
+    # D = 2026-06-30; window is [2026-06-01, 2026-06-30] (30 calendar days incl. D).
+    _dm(session, "2026-05-31", hrv=40.0, rhr_v=50.0)  # D-30 → OUT
+    _dm(session, "2026-06-01", hrv=41.0, rhr_v=51.0)  # D-29 → IN
+    _dm(session, "2026-06-15", hrv=45.0, rhr_v=55.0)  # mid → IN
+    _dm(session, "2026-06-30", hrv=49.0, rhr_v=59.0)  # D → IN
+    _dm(session, "2026-07-01", hrv=99.0, rhr_v=99.0)  # D+1 → OUT
+    session.commit()
+    hrv_vals, rhr_vals = window_readings(session, date(2026, 6, 30))
+    assert sorted(hrv_vals) == [41.0, 45.0, 49.0]  # D-29, mid, D — not D-30 or D+1
+    assert sorted(rhr_vals) == [51.0, 55.0, 59.0]
+
+
+def test_window_readings_filters_nulls_independently(session: Session) -> None:
+    _dm(session, "2026-06-28", hrv=42.0, rhr_v=None)  # HRV only
+    _dm(session, "2026-06-29", hrv=None, rhr_v=52.0)  # RHR only
+    _dm(session, "2026-06-30", hrv=44.0, rhr_v=54.0)  # both
+    session.commit()
+    hrv_vals, rhr_vals = window_readings(session, date(2026, 6, 30))
+    assert sorted(hrv_vals) == [42.0, 44.0]  # the null-hrv day excluded from HRV
+    assert sorted(rhr_vals) == [52.0, 54.0]  # the null-rhr day excluded from RHR
+
+
+def test_hrv_baseline_population_sd_above_threshold() -> None:
+    values = [40.0, 42.0, 44.0, 46.0, 48.0, 50.0, 52.0, 54.0, 56.0, 58.0]  # exactly 10
+    assert len(values) == MIN_BASELINE_SAMPLES
+    mean, sd = hrv_baseline(values)
+    assert mean == pytest.approx(statistics.fmean(values))
+    assert sd == pytest.approx(statistics.pstdev(values))  # population (÷N)
+    assert sd != pytest.approx(statistics.stdev(values))  # NOT sample (÷N-1)
+
+
+def test_hrv_baseline_below_threshold_is_none_none() -> None:
+    values = [40.0] * (MIN_BASELINE_SAMPLES - 1)  # one short
+    assert hrv_baseline(values) == (None, None)  # mean and SD both null, gated together
+
+
+# ---------------------------------------------------------------------------
+# E6·P2 TASK-002 — RHR mean + baselines folded into recompute_day + cascade.
+# ---------------------------------------------------------------------------
+def test_rhr_baseline_mean_and_no_sd() -> None:
+    vals = [50.0 + i for i in range(MIN_BASELINE_SAMPLES)]
+    assert rhr_baseline(vals) == pytest.approx(statistics.fmean(vals))
+    assert rhr_baseline([50.0] * (MIN_BASELINE_SAMPLES - 1)) is None  # below threshold → None
+
+
+def _seed_prior_dm(session: Session, d: date, n: int, *, hrv=None, rhr_v=None) -> None:
+    """Seed `n` materialized daily_metrics rows ending at d-1 (the days before d)."""
+    for i in range(n):
+        day = (d - timedelta(days=n - i)).isoformat()
+        h = hrv[i] if isinstance(hrv, list) else hrv
+        r = rhr_v[i] if isinstance(rhr_v, list) else rhr_v
+        _dm(session, day, hrv=h, rhr_v=r)
+    session.commit()
+
+
+def test_recompute_writes_three_baselines_over_full_window(session: Session) -> None:
+    d = date(2026, 6, 30)
+    hrv_seed = [40.0 + i for i in range(29)]
+    rhr_seed = [50.0 + (i % 5) for i in range(29)]
+    _seed_prior_dm(session, d, 29, hrv=hrv_seed, rhr_v=rhr_seed)  # [D-29 .. D-1]
+    _seed(  # D's own source HRV/RHR
+        session,
+        _rec("heart_rate_variability_sdnn", "2026-06-30T06:30:00+03:00", value=70.0),
+        _rec("resting_heart_rate", "2026-06-30T06:30:00+03:00", value=56.0),
+    )
+    recompute_day(session, d, profile=PROFILE)
+    session.commit()
+    row = _row(session, "2026-06-30")
+    all_hrv = hrv_seed + [70.0]  # D's reading included
+    all_rhr = rhr_seed + [56.0]
+    assert row["hrv_30d_mean"] == pytest.approx(statistics.fmean(all_hrv))
+    assert row["hrv_30d_sd"] == pytest.approx(statistics.pstdev(all_hrv))
+    assert row["rhr_30d_mean"] == pytest.approx(statistics.fmean(all_rhr))
+
+
+def test_window_includes_ds_own_reading_counted_once(session: Session) -> None:
+    d = date(2026, 6, 30)
+    _seed_prior_dm(session, d, MIN_BASELINE_SAMPLES - 1, hrv=50.0, rhr_v=55.0)  # 9 prior
+    _seed(
+        session,
+        _rec("heart_rate_variability_sdnn", "2026-06-30T06:30:00+03:00", value=50.0),
+        _rec("resting_heart_rate", "2026-06-30T06:30:00+03:00", value=55.0),
+    )
+    recompute_day(session, d, profile=PROFILE)  # 9 prior + D = 10 = threshold → SET
+    session.commit()
+    assert _row(session, "2026-06-30")["hrv_30d_mean"] == pytest.approx(50.0)
+    # Re-run: D counted once (its row updated, not duplicated) → still set, one row for D.
+    recompute_day(session, d, profile=PROFILE)
+    session.commit()
+    assert _row(session, "2026-06-30")["hrv_30d_mean"] == pytest.approx(50.0)
+    assert _count(session) == MIN_BASELINE_SAMPLES  # 9 prior + D, no extra
+
+
+def test_sparse_window_nulls_baseline_per_metric_independently(session: Session) -> None:
+    d = date(2026, 6, 30)
+    # 10 RHR readings (dense) but only 8 HRV (sparse) in the window; D adds neither.
+    for i in range(10):
+        day = (d - timedelta(days=10 - i)).isoformat()
+        _dm(session, day, hrv=(50.0 if i < 8 else None), rhr_v=55.0)
+    session.commit()
+    recompute_day(session, d, profile=PROFILE)  # D has no source records → adds nothing
+    session.commit()
+    row = _row(session, "2026-06-30")
+    assert row["hrv_30d_mean"] is None  # 8 < 10
+    assert row["hrv_30d_sd"] is None
+    assert row["rhr_30d_mean"] == pytest.approx(55.0)  # 10 >= 10 → set (independent)
+
+
+def test_null_readings_skipped_not_zeroed(session: Session) -> None:
+    d = date(2026, 6, 30)
+    vals = [60.0] * 10 + [None] * 2  # 10 non-null + 2 null in the window
+    for i, v in enumerate(vals):
+        _dm(session, (d - timedelta(days=len(vals) - i)).isoformat(), hrv=v)
+    session.commit()
+    recompute_day(session, d, profile=PROFILE)
+    session.commit()
+    row = _row(session, "2026-06-30")
+    assert row["hrv_30d_mean"] == pytest.approx(60.0)  # mean over 10 non-null, NOT zero-padded
+    assert row["hrv_30d_sd"] == pytest.approx(0.0)  # all 60 → 0 spread, not inflated by zeros
+
+
+def test_baseline_recompute_is_idempotent(session: Session) -> None:
+    d = date(2026, 6, 30)
+    _seed_prior_dm(session, d, 15, hrv=[50.0 + i * 0.5 for i in range(15)], rhr_v=55.0)
+    recompute_day(session, d, profile=PROFILE)
+    session.commit()
+    first = _row(session, "2026-06-30")
+    recompute_day(session, d, profile=PROFILE)
+    session.commit()
+    second = _row(session, "2026-06-30")
+    assert first["hrv_30d_mean"] == second["hrv_30d_mean"]
+    assert first["hrv_30d_sd"] == second["hrv_30d_sd"]
+    assert first["rhr_30d_mean"] == second["rhr_30d_mean"]
+    assert second["computed_at"] >= first["computed_at"]
+    assert _count(session) == 16  # 15 prior + D, no duplicate
+
+
+def test_forward_window_cascade_via_source_records(engine_db: str) -> None:
+    # Build a dense materialized series over SEEDED SOURCE records, correct D's HRV at the
+    # SOURCE record, and assert D + the forward rows [D+1, D+29] refresh while D+30 (whose
+    # window can't contain D) is unchanged — the cascade fires for every recomputed day.
+    d = date(2026, 6, 30)
+    all_days = {d + timedelta(days=off) for off in range(-29, 31)}  # D-29 .. D+30
+    seed = SessionLocal()
+    try:
+        for day in all_days:
+            seed.add(_rec("heart_rate_variability_sdnn", f"{day.isoformat()}T06:30:00+03:00",
+                          value=50.0, origin="sync"))
+        seed.commit()
+    finally:
+        seed.close()
+    DailyMetricsEngine()(all_days)  # materialize the whole series (mean 50.0 where dense)
+
+    def mean_of(day: date) -> float:
+        s = SessionLocal()
+        try:
+            return s.execute(
+                text("SELECT hrv_30d_mean FROM daily_metrics WHERE date = :d"),
+                {"d": day.isoformat()},
+            ).scalar_one()
+        finally:
+            s.close()
+
+    assert mean_of(d) == pytest.approx(50.0)  # baseline before the correction
+    assert mean_of(d + timedelta(days=30)) == pytest.approx(50.0)
+
+    # Correct D's HRV at the SOURCE record (NOT the derived daily_metrics column).
+    fix = SessionLocal()
+    try:
+        fix.execute(
+            text(
+                "UPDATE records SET value = 80.0 WHERE type = 'heart_rate_variability_sdnn' "
+                "AND start_date LIKE '2026-06-30%'"
+            )
+        )
+        fix.commit()
+    finally:
+        fix.close()
+
+    DailyMetricsEngine()({d})  # cascade: recompute D + existing rows in [D+1, D+29]
+
+    # D's window: 29 others (50) + D (80) → 51.0; forward rows containing D → 51.0.
+    assert mean_of(d) == pytest.approx(51.0)
+    assert mean_of(d + timedelta(days=1)) == pytest.approx(51.0)
+    assert mean_of(d + timedelta(days=29)) == pytest.approx(51.0)
+    # D+30's window is [D+1, D+30] — excludes D — and it is NOT in the cascade → unchanged.
+    assert mean_of(d + timedelta(days=30)) == pytest.approx(50.0)

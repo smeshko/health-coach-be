@@ -24,6 +24,7 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 from __future__ import annotations
 
 import re
+import statistics
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time, timedelta
 
@@ -51,18 +52,20 @@ NUTRITION_COLUMNS: tuple[str, ...] = (
 # The five HR zone-minute columns (filled by TASK-002).
 ZONE_COLUMNS: tuple[str, ...] = ("z1_min", "z2_min", "z3_min", "z4_min", "z5_min")
 
-# Columns a P1 recompute MUST NOT touch: the 30-day baselines (E6·P2) and the
-# readiness verdict (E8/E11). They are never put in the upsert `values`, so they
-# stay null on a first insert and survive every re-run (the `set_` is built from
-# the computed `values`, so it can never reference these). Named here purely as
-# the documented contract / a place a boundary test can assert against.
-PRESERVED_COLUMNS: tuple[str, ...] = (
-    "hrv_30d_mean",
-    "hrv_30d_sd",
-    "rhr_30d_mean",
-    "readiness_score",
-    "band",
-)
+# The three rolling 30-day readiness-baseline columns (E6·P2 writes these now —
+# they were excluded from P1's upsert and are folded into `recompute_day`'s `set_`).
+BASELINE_COLUMNS: tuple[str, ...] = ("hrv_30d_mean", "hrv_30d_sd", "rhr_30d_mean")
+
+# Columns a recompute MUST NOT touch: the readiness verdict (E8/E11). They are never
+# put in the upsert `values`, so they stay null on a first insert and survive every
+# re-run (the `set_` is built from the computed `values`). E6·P2 moved the three 30-day
+# baselines OUT of this set — they now update on every recompute (DECISIONS round-1 #4).
+PRESERVED_COLUMNS: tuple[str, ...] = ("readiness_score", "band")
+
+# The minimum non-null readings in the trailing-30-day window for a usable baseline;
+# below this the baseline column(s) are None (a 30-day SD off 1-2 points is noise) —
+# DECISIONS Decision 3. Checked per metric independently.
+MIN_BASELINE_SAMPLES = 10
 
 
 # Category sleep-stage values (stored in `value_text`) that count as ASLEEP — the
@@ -559,6 +562,87 @@ def expand_affected_dates(session: Session, dates: set[date]) -> set[date]:
     return expanded
 
 
+def _expand_forward_window(session: Session, days: set[date], *, span: int = 29) -> set[date]:
+    """Add the existing `daily_metrics` rows in `[d + 1, d + span]` for each day `d`.
+
+    Editing day `d`'s `hrv_sdnn`/`rhr` changes the rolling baseline of every day whose
+    trailing-30-day window now contains `d` — i.e. `[d, d + 29]` — so the engine must
+    refresh those forward rows or the canonical series goes stale (E6·P2; round-1 #2).
+    **Unconditional, not change-gated** (round-2 #1): the seam hands only a `set[date]`
+    and `recompute_day` returns `None`, so there is no cheap old-vs-new signal — and none
+    is needed, because recompute is idempotent and cheap (a non-changed day recomputes to
+    the same baseline, only `computed_at` advances; ≤`span` indexed single-row recomputes
+    per day, single-user). Bounded to **existing** rows (a row at `d + 30` can't contain
+    `d`); the engine owns its work-set, E5·P3's `affected_dates` is unchanged.
+    """
+    expanded = set(days)
+    for d in days:
+        start = (d + timedelta(days=1)).isoformat()
+        end = (d + timedelta(days=span)).isoformat()
+        forward = session.execute(
+            select(DailyMetrics.date).where(DailyMetrics.date.between(start, end))
+        ).scalars().all()
+        expanded.update(date.fromisoformat(s) for s in forward)
+    return expanded
+
+
+# ---------------------------------------------------------------------------
+# Rolling 30-day readiness baselines (E6·P2) — a windowed reduction over the
+# MATERIALIZED per-day `hrv_sdnn`/`rhr` columns P1 wrote (DB.md §2 "single source …
+# windowed sums"), NOT a re-read of raw `records`. The readiness baseline is the
+# rolling daily series, never the monthly `profile.yaml` anchor (DB.md §5 ¹).
+# ---------------------------------------------------------------------------
+def window_readings(
+    session: Session, day: date, *, days: int = 30
+) -> tuple[list[float], list[float]]:
+    """The non-null `hrv_sdnn` and `rhr` values of the `daily_metrics` rows in the
+    trailing calendar window **inclusive of D**: `[day - (days-1), day]`.
+
+    The `date` PK is already a Sofia `YYYY-MM-DD` string, so a lexical `BETWEEN` over
+    it **is** the calendar range — no `parse_ts`/tz math (P1 attributed each sample to
+    its Sofia date). The two metrics are filtered **independently** (`IS NOT NULL`), so
+    a day with HRV but no RHR contributes to the HRV list only, and absence never
+    enters the mean/SD as a fabricated 0 (DECISIONS null-vs-zero). `days` is keyword-only
+    (default 30) so a test can shrink the window for a small fixture.
+    """
+    start = (day - timedelta(days=days - 1)).isoformat()
+    end = day.isoformat()
+    hrv = session.execute(
+        select(DailyMetrics.hrv_sdnn).where(
+            DailyMetrics.date.between(start, end), DailyMetrics.hrv_sdnn.is_not(None)
+        )
+    ).scalars().all()
+    rhr_vals = session.execute(
+        select(DailyMetrics.rhr).where(
+            DailyMetrics.date.between(start, end), DailyMetrics.rhr.is_not(None)
+        )
+    ).scalars().all()
+    return list(hrv), list(rhr_vals)
+
+
+def hrv_baseline(hrv_values: list[float]) -> tuple[float | None, float | None]:
+    """The rolling HRV baseline `(mean, population SD)` over the window's non-null
+    `hrv_sdnn`, or `(None, None)` when fewer than `MIN_BASELINE_SAMPLES` readings.
+
+    **Population** SD (`statistics.pstdev`, ÷N — DECISIONS Decision 1), not sample SD:
+    §6.1 uses it as a "1 SD below my own 30-day spread" distance, and it is defined at
+    N=1 (→0); the min-sample floor keeps N well above that for any used baseline. Mean
+    and SD reduce over the SAME list and are gated together — never one-set-one-null.
+    """
+    if len(hrv_values) >= MIN_BASELINE_SAMPLES:
+        return statistics.fmean(hrv_values), statistics.pstdev(hrv_values)
+    return None, None
+
+
+def rhr_baseline(rhr_values: list[float]) -> float | None:
+    """The rolling RHR baseline **mean** over the window's non-null `rhr`, or `None`
+    below `MIN_BASELINE_SAMPLES`. **No SD** — DB.md §2 has only `rhr_30d_mean` (RHR's
+    §6.1 penalty is an absolute "+5-7 bpm" band, not an SD distance)."""
+    if len(rhr_values) >= MIN_BASELINE_SAMPLES:
+        return statistics.fmean(rhr_values)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Per-day assembly + idempotent upsert.
 # ---------------------------------------------------------------------------
@@ -583,24 +667,46 @@ def _compute_day_values(session: Session, day: date, *, profile: Profile) -> dic
     return values
 
 
-def recompute_day(session: Session, day: date, *, profile: Profile) -> None:
-    """Rebuild one Sofia day's `daily_metrics` row and idempotently upsert it.
-
-    The row is a pure function of `day`'s stored rows (recompute-from-source), so a
-    re-run rewrites the same computed columns with a fresh `computed_at`. The
-    `ON CONFLICT(date) DO UPDATE` `set_` rewrites every computed column plus
-    `computed_at` and **excludes** the five `PRESERVED_COLUMNS` (built from
-    `values`, which never contains them). No commit — the engine entry point owns
-    the transaction.
-    """
-    values = _compute_day_values(session, day, profile=profile)
-    values["date"] = day.isoformat()
-    values["computed_at"] = now_sofia().isoformat()
-
+def _upsert_daily_metrics(session: Session, values: dict[str, object]) -> None:
+    """Idempotent `INSERT … ON CONFLICT(date) DO UPDATE` over the `date` PK. The `set_`
+    rewrites every key except `date`; columns absent from `values` (notably the
+    `PRESERVED_COLUMNS` readiness verdict) are never referenced, so they survive."""
     stmt = insert(DailyMetrics).values(**values)
     update_set = {col: stmt.excluded[col] for col in values if col != "date"}
     stmt = stmt.on_conflict_do_update(index_elements=["date"], set_=update_set)
     session.execute(stmt)
+
+
+def recompute_day(session: Session, day: date, *, profile: Profile) -> None:
+    """Rebuild one Sofia day's `daily_metrics` row and idempotently upsert it.
+
+    The row is a pure function of `day`'s stored rows (recompute-from-source), so a
+    re-run rewrites the same computed columns with a fresh `computed_at`. Two passes
+    over the `date` PK: (1) write D's per-day P1 columns, then **flush** so the
+    rolling-baseline read sees D's own fresh `hrv_sdnn`/`rhr` (the trailing window is
+    inclusive of D — DECISIONS 2); (2) reduce the trailing-30-day window into
+    `hrv_30d_mean`/`hrv_30d_sd`/`rhr_30d_mean` and write them. Neither pass touches
+    `PRESERVED_COLUMNS` (`readiness_score`/`band`, E8/E11), so they survive. No commit —
+    the engine entry point owns the transaction.
+    """
+    values = _compute_day_values(session, day, profile=profile)
+    values["date"] = day.isoformat()
+    values["computed_at"] = now_sofia().isoformat()
+    _upsert_daily_metrics(session, values)
+    session.flush()  # make D's fresh hrv_sdnn/rhr visible to the inclusive window read
+
+    hrv_vals, rhr_vals = window_readings(session, day)
+    hrv_30d_mean, hrv_30d_sd = hrv_baseline(hrv_vals)
+    rhr_30d_mean = rhr_baseline(rhr_vals)
+    _upsert_daily_metrics(
+        session,
+        {
+            "date": day.isoformat(),
+            "hrv_30d_mean": hrv_30d_mean,
+            "hrv_30d_sd": hrv_30d_sd,
+            "rhr_30d_mean": rhr_30d_mean,
+        },
+    )
 
 
 class DailyMetricsEngine:
@@ -620,7 +726,8 @@ class DailyMetricsEngine:
         session = SessionLocal()
         try:
             profile = load_profile()
-            for day in sorted(expand_affected_dates(session, dates)):
+            work_set = _expand_forward_window(session, expand_affected_dates(session, dates))
+            for day in sorted(work_set):  # chronological: a day's window sees earlier rows
                 recompute_day(session, day, profile=profile)
             session.commit()
         finally:
