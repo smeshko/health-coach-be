@@ -184,3 +184,38 @@ def test_planned_pick_accepts_camel_input():
     assert pick.card is WorkoutCard.vo2
     assert pick.suggested_day is Weekday.fri
     assert pick.duration_min_low == 30
+
+
+def test_planned_session_accepts_omitted_and_null_optionals():
+    """Optional `PlannedSession` fields default to `None` — a compact payload that
+    omits `suggestedDay`/`zoneTarget`/`durationMin*` (e.g. an undated strength
+    session) and one with explicit nulls **both** validate (CamelModel "Nulls vs
+    absent": optional wire fields are `T | None = None`)."""
+    omitted = PlannedSession.model_validate(
+        {
+            "card": "strength_full",
+            "tier": "core",
+            "intensity": "quality",
+            "isHardDay": True,
+            "flags": ["strength"],
+        }
+    )
+    assert omitted.suggested_day is None
+    assert omitted.zone_target is None
+    assert omitted.duration_min_low is None
+    assert omitted.duration_min_high is None
+
+    explicit_null = PlannedSession.model_validate(
+        {
+            "card": "strength_full",
+            "tier": "core",
+            "intensity": "quality",
+            "isHardDay": True,
+            "suggestedDay": None,
+            "zoneTarget": None,
+            "durationMinLow": None,
+            "durationMinHigh": None,
+            "flags": ["strength"],
+        }
+    )
+    assert explicit_null == omitted

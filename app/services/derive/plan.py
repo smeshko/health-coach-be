@@ -58,10 +58,10 @@ class PlannedSession(CamelModel):
     tier: Tier
     intensity: Intensity
     is_hard_day: bool
-    suggested_day: Weekday | None
-    zone_target: Zone | None
-    duration_min_low: int | None
-    duration_min_high: int | None
+    suggested_day: Weekday | None = None
+    zone_target: Zone | None = None
+    duration_min_low: int | None = None
+    duration_min_high: int | None = None
     flags: list[str]
 
 

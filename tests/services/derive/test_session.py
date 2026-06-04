@@ -168,3 +168,36 @@ def test_session_pick_accepts_camel_input():
     assert pick.card is WorkoutCard.easy_run
     assert pick.duration_min_low == 30
     assert pick.duration_min_high == 40
+
+
+def test_session_block_accepts_omitted_and_null_optionals():
+    """Optional `SessionBlock` fields default to `None` — a compact payload that
+    omits `zoneTarget`/`hrCapBpm`/`cadenceSpm` (e.g. a strength/rest block) and one
+    with explicit nulls **both** validate (CamelModel "Nulls vs absent": optional
+    wire fields are `T | None = None`, accepting omission AND explicit null)."""
+    omitted = SessionBlock.model_validate(
+        {
+            "card": "strength_push",
+            "intensity": "quality",
+            "durationMinLow": 40,
+            "durationMinHigh": 60,
+            "flags": ["strength", "upper"],
+        }
+    )
+    assert omitted.zone_target is None
+    assert omitted.hr_cap_bpm is None
+    assert omitted.cadence_spm is None
+
+    explicit_null = SessionBlock.model_validate(
+        {
+            "card": "strength_push",
+            "intensity": "quality",
+            "zoneTarget": None,
+            "durationMinLow": 40,
+            "durationMinHigh": 60,
+            "hrCapBpm": None,
+            "cadenceSpm": None,
+            "flags": ["strength", "upper"],
+        }
+    )
+    assert explicit_null == omitted

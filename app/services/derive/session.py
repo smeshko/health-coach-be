@@ -47,11 +47,11 @@ class SessionBlock(CamelModel):
 
     card: WorkoutCard
     intensity: Intensity
-    zone_target: Zone | None
+    zone_target: Zone | None = None
     duration_min_low: int
     duration_min_high: int
-    hr_cap_bpm: int | None
-    cadence_spm: int | None
+    hr_cap_bpm: int | None = None
+    cadence_spm: int | None = None
     flags: list[str]
 
 
