@@ -59,3 +59,29 @@ def derive_constants() -> ModuleType:
 def compute_zones_mod() -> ModuleType:
     """The `scripts/compute_zones.py` module (scripts/ is on sys.path)."""
     return importlib.import_module("compute_zones")
+
+
+@pytest.fixture(scope="session")
+def seed_app_db() -> ModuleType:
+    """The `scripts/seed_app_db.py` module (scripts/ is on sys.path)."""
+    return importlib.import_module("seed_app_db")
+
+
+@pytest.fixture(scope="session")
+def reconcile_seed_mod() -> ModuleType:
+    """The `scripts/reconcile_seed.py` module (scripts/ is on sys.path)."""
+    return importlib.import_module("reconcile_seed")
+
+
+@pytest.fixture
+def migrated_app_db(tmp_path) -> Path:
+    """A temp app.db with the E2·P2 ingest schema applied via the real migration."""
+    from alembic import command
+    from alembic.config import Config
+
+    db_path = tmp_path / "app.db"
+    cfg = Config()
+    cfg.set_main_option("script_location", "alembic")
+    cfg.attributes["test_db_url"] = f"sqlite:///{db_path}"
+    command.upgrade(cfg, "head")
+    return db_path
