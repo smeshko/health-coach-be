@@ -11,9 +11,12 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 
 from app.api.app import create_app
+from app.api.routes.sync import get_recompute
+from app.api.schemas.sync import SyncRequest
 from app.core.settings import get_settings
 from app.core.time import get_clock
 from app.database.engine import get_engine
+from app.services.recompute import affected_dates
 
 VALID_TOKEN = "test-api-token-0123456789"
 AUTH = {"Authorization": f"Bearer {VALID_TOKEN}"}
@@ -180,4 +183,83 @@ def test_non_whitelisted_record_not_stored(ctx) -> None:
 def test_sync_does_not_touch_daily_metrics(ctx) -> None:
     client, _app, db_path = ctx
     client.post("/sync", json=BODY, headers=AUTH)
-    assert _table_count(db_path, "daily_metrics") == 0  # no recompute this phase
+    assert _table_count(db_path, "daily_metrics") == 0  # no recompute engine this phase
+
+
+# ---------------------------------------------------------------------------
+# E5·P3: check-in / strength-test persistence + recompute seam.
+# ---------------------------------------------------------------------------
+
+BODY_FULL = {
+    **BODY,
+    "checkin": {"date": "2026-06-01", "giSymptoms": True, "kneePain": 3, "illness": False},
+    "strengthTest": {"date": "2026-06-01", "maxPushups": 42, "maxPullups": 11},
+}
+
+
+class _RecomputeSpy:
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def __call__(self, dates) -> None:
+        self.calls.append(dates)
+
+
+def test_checkin_and_strength_saved_flags_and_rows(ctx) -> None:
+    client, _app, db_path = ctx
+    resp = client.post("/sync", json=BODY_FULL, headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["checkinSaved"] is True
+    assert body["strengthTestSaved"] is True
+    assert _table_count(db_path, "checkins") == 1
+    assert _table_count(db_path, "strength_tests") == 1
+    with sqlite3.connect(db_path) as raw:
+        iso_week = raw.execute("SELECT iso_week FROM strength_tests").fetchone()[0]
+    assert iso_week == "2026-W23"  # 2026-06-01 is a Monday in ISO week 23
+
+
+def test_absent_checkin_strength_flags_false(ctx) -> None:
+    client, _app, db_path = ctx
+    resp = client.post("/sync", json=BODY, headers=AUTH)  # no checkin/strengthTest
+    body = resp.json()
+    assert body["checkinSaved"] is False
+    assert body["strengthTestSaved"] is False
+    assert _table_count(db_path, "checkins") == 0
+    assert _table_count(db_path, "strength_tests") == 0
+
+
+def test_recompute_spy_called_once_with_affected_dates(ctx) -> None:
+    client, app, _db = ctx
+    spy = _RecomputeSpy()
+    app.dependency_overrides[get_recompute] = lambda: spy
+    resp = client.post("/sync", json=BODY_FULL, headers=AUTH)
+    assert resp.status_code == 200
+    assert len(spy.calls) == 1
+    assert spy.calls[0] == affected_dates(SyncRequest.model_validate(BODY_FULL))
+
+
+def test_recompute_called_with_empty_set_on_empty_body(ctx) -> None:
+    client, app, _db = ctx
+    spy = _RecomputeSpy()
+    app.dependency_overrides[get_recompute] = lambda: spy
+    resp = client.post("/sync", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert spy.calls == [set()]  # called once, with the empty affected set
+
+
+def test_default_noop_leaves_daily_metrics_empty(ctx) -> None:
+    client, _app, db_path = ctx
+    client.post("/sync", json=BODY_FULL, headers=AUTH)  # default noop_recompute
+    assert _table_count(db_path, "daily_metrics") == 0
+
+
+def test_replay_keeps_checkin_strength_one_row(ctx) -> None:
+    client, _app, db_path = ctx
+    client.post("/sync", json=BODY_FULL, headers=AUTH)
+    second = client.post("/sync", json=BODY_FULL, headers=AUTH)
+    body = second.json()
+    assert body["checkinSaved"] is True
+    assert body["strengthTestSaved"] is True
+    assert _table_count(db_path, "checkins") == 1  # upsert, not duplicate
+    assert _table_count(db_path, "strength_tests") == 1
