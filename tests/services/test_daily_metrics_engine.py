@@ -691,3 +691,37 @@ def test_hard_day_seed_workout_superseded_on_sync_covered_day(session: Session) 
                          duration=1800.0, unit="s", origin="seed"))
     session.commit()
     assert hard_day(session, D1) == 0  # seed boxing dropped on the covered day
+
+
+# ---------------------------------------------------------------------------
+# Review round-3 #1: a cross-midnight live sync interval must supersede seed rows on
+# the NEIGHBOUR day it reaches too — coverage is contribution-day aware (HR overlap,
+# sleep wake), not just the sync row's own start day.
+# ---------------------------------------------------------------------------
+def test_cross_midnight_sync_hr_supersedes_seed_on_neighbour_day(session: Session) -> None:
+    _seed(
+        session,
+        # live HR spanning D1->D2 (start-day D1, but contributes minutes to D2 too)
+        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00",
+             value=130.0, source="Apple Watch", origin="sync"),
+        # seeded HR fully within D2, same source — would double-count D2 without the fix
+        _rec("HKQuantityTypeIdentifierHeartRate", "2026-06-02T02:00:00+03:00",
+             end="2026-06-02T02:10:00+03:00", value=130.0, source="Apple Watch", origin="seed"),
+    )
+    # D2 is covered by the cross-midnight sync row → the D2 seed HR is superseded.
+    assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # not 20.0
+
+
+def test_cross_midnight_sync_sleep_supersedes_seed_on_wake_day(session: Session) -> None:
+    _seed(
+        session,
+        # live sleep waking on D2 (sync, 7.5h)
+        _rec("sleep_analysis", "2026-06-01T23:30:00+03:00", end="2026-06-02T07:00:00+03:00",
+             value_text="asleepCore", origin="sync"),
+        # seeded sleep also waking on D2 (HK form) — would double sleep_h without the fix
+        _rec("HKCategoryTypeIdentifierSleepAnalysis", "2026-06-01T23:00:00+03:00",
+             end="2026-06-02T06:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore",
+             origin="seed"),
+    )
+    # D2 (wake day) is covered by the sync sleep → the seed sleep is superseded.
+    assert sleep_h(session, D2) == pytest.approx(7.5)  # live only, not 14.5
