@@ -174,62 +174,73 @@ def _days_spanned(start_date: str, end_date: str) -> set[date]:
     return days
 
 
+def _hr_overlap_days(start_date: str, end_date: str) -> set[date]:
+    """Sofia days the HR interval `[start, end)` has POSITIVE overlap with (half-open, so
+    a sample ending exactly at midnight does NOT count toward the next day) — matches how
+    zone-minutes credit in-day overlap (review round-4 #1)."""
+    start, end = parse_ts(start_date), parse_ts(end_date)
+    if end <= start:
+        return {to_sofia(start).date()}
+    days: set[date] = set()
+    d = to_sofia(start).date()
+    last = to_sofia(end).date()
+    while d <= last:
+        day_start = datetime.combine(d, time.min, tzinfo=SOFIA)
+        day_end = day_start + timedelta(days=1)
+        if start < day_end and end > day_start:  # half-open overlap > 0
+            days.add(d)
+        d += timedelta(days=1)
+    return days
+
+
 def _contribution_days(type_: str | None, start_date: str, end_date: str | None) -> set[date]:
     """The Sofia day(s) a row contributes its metric to — exactly how the engine READS
-    it: a `heart_rate` interval overlaps every day it spans, `sleep_analysis` anchors to
-    its wake/end day, every other (instant) record / workout attributes to its start day.
-    Coverage/supersede use this so they stay consistent with cross-midnight attribution
-    (review round-3 #1)."""
+    it: a `heart_rate` interval to every day it positively overlaps (half-open),
+    `sleep_analysis` to its wake/end day, every other (instant) record / workout to its
+    start day. Coverage uses this so it stays consistent with cross-midnight attribution
+    (review round-3 #1, round-4 #1)."""
     canon = _canonical_record_type(type_)
     if end_date is not None:
         if canon == "heart_rate":
-            return _days_spanned(start_date, end_date)
+            return _hr_overlap_days(start_date, end_date)
         if canon == "sleep_analysis":
             return {to_sofia(parse_ts(end_date)).date()}
     return {to_sofia(parse_ts(start_date)).date()}
 
 
-def _covered_days(session: Session, day: date) -> set[date]:
-    """The Sofia days covered by ≥1 live `origin='sync'` row in the window — each sync
-    row contributes to every day it READS into (HR overlap, sleep wake, else start). A
-    covered day's seed rows are superseded (mirrors `reconcile_seed.py`'s "live sync is
-    authoritative", extended to cross-midnight attribution so a neighbour day a sync
-    interval reaches is covered too — review round-3 #1)."""
+def _day_is_sync_covered(session: Session, day: date) -> bool:
+    """True iff ≥1 live `origin='sync'` row contributes to Sofia `day` (HR overlap, sleep
+    wake, else start day). On such a "fully covered" day the seed estimate for the whole
+    day is superseded (mirrors `reconcile_seed.py`'s "live sync is authoritative"), so the
+    engine drops `day`'s seed rows at read time — matched to the day being recomputed, so a
+    sync interval that only reaches a *neighbour* day never supersedes seed data on a day it
+    does not actually cover (review round-3 #1 / round-4 #1)."""
     lo, hi = _window(day)
-    covered: set[date] = set()
     rec_rows = session.execute(
         select(Records.type, Records.start_date, Records.end_date)
         .where(Records.origin == "sync")
         .where(Records.start_date >= lo)
         .where(Records.start_date < hi)
     ).all()
-    for type_, sd, ed in rec_rows:
-        covered |= _contribution_days(type_, sd, ed)
+    if any(day in _contribution_days(type_, sd, ed) for type_, sd, ed in rec_rows):
+        return True
     wk_rows = session.execute(
         select(Workouts.activity_type, Workouts.start_date, Workouts.end_date)
         .where(Workouts.origin == "sync")
         .where(Workouts.start_date >= lo)
         .where(Workouts.start_date < hi)
     ).all()
-    for at, sd, ed in wk_rows:
-        covered |= _contribution_days(at, sd, ed)
-    return covered
+    return any(day in _contribution_days(at, sd, ed) for at, sd, ed in wk_rows)
 
 
-def _drop_superseded_seed(
-    rows: Sequence, covered: set[date], *, type_attr: str = "type"
-) -> list:
-    """Drop `origin='seed'` rows whose contribution day(s) intersect a sync-covered Sofia
-    day (mirrors `reconcile_seed.py`, extended to cross-midnight attribution — round-3 #1).
-    Works on `Records` (`type_attr="type"`) or `Workouts` (`type_attr="activity_type"`)."""
-    kept = []
-    for r in rows:
-        if r.origin == "seed":
-            contrib = _contribution_days(getattr(r, type_attr, None), r.start_date, r.end_date)
-            if contrib & covered:
-                continue
-        kept.append(r)
-    return kept
+def _drop_superseded_seed(rows: Sequence, *, covered: bool) -> list:
+    """When the recomputed day is sync-covered, drop ALL `origin='seed'` rows (live sync is
+    authoritative for the whole day); otherwise keep every row. Targeted at the day being
+    recomputed, so legitimately un-superseded seed data on an uncovered day is never erased
+    (review round-4 #1). Works on `Records` or `Workouts` rows."""
+    if not covered:
+        return list(rows)
+    return [r for r in rows if r.origin != "seed"]
 
 
 def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[Records]:
@@ -243,7 +254,7 @@ def _records_of_types(session: Session, day: date, types: set[str]) -> Sequence[
         .where(Records.start_date < hi)
     )
     rows = session.execute(stmt).scalars().all()
-    return _drop_superseded_seed(rows, _covered_days(session, day))
+    return _drop_superseded_seed(rows, covered=_day_is_sync_covered(session, day))
 
 
 def _instant_records(session: Session, day: date, types: set[str]) -> list[Records]:
@@ -505,9 +516,7 @@ def hard_day(session: Session, day: date) -> int:
     lo, hi = _window(day)
     stmt = select(Workouts).where(Workouts.start_date >= lo).where(Workouts.start_date < hi)
     workouts = _drop_superseded_seed(
-        session.execute(stmt).scalars().all(),
-        _covered_days(session, day),
-        type_attr="activity_type",
+        session.execute(stmt).scalars().all(), covered=_day_is_sync_covered(session, day)
     )
     for w in workouts:
         if to_sofia(parse_ts(w.start_date)).date() != day:

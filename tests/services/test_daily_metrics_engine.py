@@ -725,3 +725,37 @@ def test_cross_midnight_sync_sleep_supersedes_seed_on_wake_day(session: Session)
     )
     # D2 (wake day) is covered by the sync sleep → the seed sleep is superseded.
     assert sleep_h(session, D2) == pytest.approx(7.5)  # live only, not 14.5
+
+
+# ---------------------------------------------------------------------------
+# Review round-4 #1: the supersede is TARGET-DAY specific — a sync interval that only
+# reaches a neighbour day must not erase legitimate seed data on a day it doesn't cover;
+# and HR overlap is half-open so a sample ending exactly at midnight doesn't cover the
+# next day.
+# ---------------------------------------------------------------------------
+def test_uncovered_neighbour_day_keeps_cross_midnight_seed_hr(session: Session) -> None:
+    _seed(
+        session,
+        # seed HR spanning D1->D2 (contributes 10 min to each), origin=seed
+        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00",
+             value=130.0, source="Apple Watch", origin="seed"),
+        # live sync covers ONLY D1 (an instant step), NOT D2
+        _rec("step_count", "2026-06-01T12:00:00+03:00", value=8000.0, origin="sync"),
+    )
+    # D2 is NOT covered → the seed HR's D2 minutes are legitimate and kept (not erased).
+    assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)
+    # D1 IS covered (the sync step) → its seed HR is superseded; no sync HR → None.
+    assert zone_minutes(session, D1, profile=PROFILE)["z2_min"] is None
+
+
+def test_sync_hr_ending_exactly_at_midnight_does_not_cover_next_day(session: Session) -> None:
+    _seed(
+        session,
+        # sync HR ending exactly at D2 00:00 — half-open, so it contributes to D1 only
+        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:00:00+03:00",
+             value=130.0, source="Apple Watch", origin="sync"),
+        # seed HR on D2 — must NOT be superseded (D2 is uncovered)
+        _rec("heart_rate", "2026-06-02T08:00:00+03:00", end="2026-06-02T08:10:00+03:00",
+             value=130.0, source="Apple Watch", origin="seed"),
+    )
+    assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # seed kept
