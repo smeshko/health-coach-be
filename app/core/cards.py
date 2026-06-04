@@ -453,3 +453,115 @@ if set(_CARD_META) != set(WorkoutCard):
 
 #: The canonical workout-pool table, exposed read-only (mutation raises).
 CARD_META: Mapping[WorkoutCard, CardMeta] = MappingProxyType(_CARD_META)
+
+
+@dataclass(frozen=True)
+class Downgrade:
+    """The AMBER/RED auto-regulation substitutes for a planned card (CARDS.md §3).
+
+    ``amber`` and ``red`` are **tuples** because several §3 rows list alternatives
+    ("X or Y"); an empty ``amber`` (the ``strength_*`` rows) means "same card,
+    reduced dose", not a swap.
+    """
+
+    amber: tuple[WorkoutCard, ...]
+    red: tuple[WorkoutCard, ...]
+
+
+# The CARDS.md §3 auto-regulation downgrade map, one entry per mapped row
+# (DECISIONS.md Decision 3). Ordered to match the §3 table.
+#
+# NOT in the map: the §3 "any `impact` card with `knee_pain > 3`" row — that is a
+# runtime **safety gate** keyed on the `Flag.impact` flag (E7·P3 tests
+# `Flag.impact in meta.flags`), NOT the `impact` column, and not a static
+# planned-card → substitute mapping. Its absence here is intentional.
+_DOWNGRADE_MAP: dict[WorkoutCard, Downgrade] = {
+    WorkoutCard.vo2: Downgrade(
+        amber=(WorkoutCard.easy_run, WorkoutCard.steady_cardio),
+        red=(WorkoutCard.active_recovery, WorkoutCard.mobility, WorkoutCard.rest),
+    ),
+    WorkoutCard.threshold: Downgrade(
+        amber=(WorkoutCard.easy_run, WorkoutCard.steady_cardio),
+        red=(WorkoutCard.active_recovery, WorkoutCard.mobility, WorkoutCard.rest),
+    ),
+    WorkoutCard.progression_run: Downgrade(
+        amber=(WorkoutCard.easy_run, WorkoutCard.steady_cardio),
+        red=(WorkoutCard.active_recovery, WorkoutCard.mobility, WorkoutCard.rest),
+    ),
+    WorkoutCard.hiit: Downgrade(
+        amber=(WorkoutCard.steady_cardio,),
+        red=(WorkoutCard.active_recovery, WorkoutCard.mobility),
+    ),
+    WorkoutCard.boxing: Downgrade(
+        amber=(WorkoutCard.boxing_technique,),
+        red=(WorkoutCard.rest, WorkoutCard.mobility),
+    ),
+    WorkoutCard.long_run: Downgrade(
+        amber=(WorkoutCard.easy_run,),
+        red=(WorkoutCard.active_recovery, WorkoutCard.rest),
+    ),
+    WorkoutCard.easy_run: Downgrade(
+        amber=(WorkoutCard.steady_cardio,),
+        red=(WorkoutCard.active_recovery, WorkoutCard.mobility),
+    ),
+    WorkoutCard.jump_rope: Downgrade(
+        amber=(WorkoutCard.steady_cardio,),
+        red=(WorkoutCard.rest,),
+    ),
+    # strength_* → AMBER empty (same card, reduced dose); RED → mobility/rest.
+    WorkoutCard.strength_push: Downgrade(
+        amber=(), red=(WorkoutCard.mobility, WorkoutCard.rest)
+    ),
+    WorkoutCard.strength_pull: Downgrade(
+        amber=(), red=(WorkoutCard.mobility, WorkoutCard.rest)
+    ),
+    WorkoutCard.strength_lower: Downgrade(
+        amber=(), red=(WorkoutCard.mobility, WorkoutCard.rest)
+    ),
+    WorkoutCard.strength_full: Downgrade(
+        amber=(), red=(WorkoutCard.mobility, WorkoutCard.rest)
+    ),
+}
+
+#: The AMBER/RED downgrade map, exposed read-only.
+DOWNGRADE_MAP: Mapping[WorkoutCard, Downgrade] = MappingProxyType(_DOWNGRADE_MAP)
+
+
+# --------------------------------------------------------------------------
+# Lookup / accessor API — pure reads over the constants. No derivation, no
+# validation logic (that is E7·P2 / E7·P3).
+# --------------------------------------------------------------------------
+def get_card(card: WorkoutCard) -> CardMeta:
+    """Return the ``CardMeta`` for ``card``.
+
+    Raises ``KeyError`` on an unknown card — but the table is complete over
+    ``WorkoutCard``, so every enum member resolves.
+    """
+    return CARD_META[card]
+
+
+def is_hard_card(card: WorkoutCard) -> bool:
+    """The training-load axis: does this card consume a hard-day budget slot?"""
+    return CARD_META[card].is_hard
+
+
+def floors_day_type_hard(card: WorkoutCard) -> bool:
+    """The CARDS.md §0/§4 **fuel-floor** predicate: a card with ``is_hard`` *or*
+    the ``long``/``long_run`` condition floors ``dayType`` at ``hard``.
+
+    Expressed once here so E7·P2 (the ``dayType`` default) and E7·P3 (the floor
+    enforcement) can't drift. This is a pure read; the **enforcement** is E7·P3.
+    """
+    meta = CARD_META[card]
+    return meta.is_hard or Flag.long in meta.flags
+
+
+def downgrade_for(card: WorkoutCard) -> Downgrade | None:
+    """Return the AMBER/RED ``Downgrade`` for ``card``, or ``None`` if the card
+    has no §3 auto-regulation entry."""
+    return DOWNGRADE_MAP.get(card)
+
+
+def all_cards() -> tuple[CardMeta, ...]:
+    """Every ``CardMeta`` in a **stable** order (for prompt rendering)."""
+    return tuple(_CARD_META.values())

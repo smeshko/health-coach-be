@@ -13,9 +13,16 @@ import pytest
 
 from app.core.cards import (
     CARD_META,
+    DOWNGRADE_MAP,
     CardMeta,
+    Downgrade,
     Flag,
     Impact,
+    all_cards,
+    downgrade_for,
+    floors_day_type_hard,
+    get_card,
+    is_hard_card,
 )
 from app.core.enums import DayType, Intensity, WorkoutCard, Zone
 
@@ -393,3 +400,140 @@ def test_card_meta_mapping_is_read_only():
 
 def test_card_meta_is_a_card_meta_instance():
     assert isinstance(CARD_META[C.vo2], CardMeta)
+
+
+# ==========================================================================
+# TASK-003: DOWNGRADE_MAP, the knee-gate set, the fuel-floor predicate, and
+# the lookup API.
+# ==========================================================================
+
+# The CARDS.md §3 rows, pinned per DECISIONS.md Decision 3:
+# (planned_card, expected_amber_tuple, expected_red_tuple)
+EXPECTED_DOWNGRADES = [
+    (C.vo2, (C.easy_run, C.steady_cardio), (C.active_recovery, C.mobility, C.rest)),
+    (C.threshold, (C.easy_run, C.steady_cardio), (C.active_recovery, C.mobility, C.rest)),
+    (C.progression_run, (C.easy_run, C.steady_cardio), (C.active_recovery, C.mobility, C.rest)),
+    (C.hiit, (C.steady_cardio,), (C.active_recovery, C.mobility)),
+    (C.boxing, (C.boxing_technique,), (C.rest, C.mobility)),
+    (C.long_run, (C.easy_run,), (C.active_recovery, C.rest)),
+    (C.easy_run, (C.steady_cardio,), (C.active_recovery, C.mobility)),
+    (C.jump_rope, (C.steady_cardio,), (C.rest,)),
+    (C.strength_push, (), (C.mobility, C.rest)),
+    (C.strength_pull, (), (C.mobility, C.rest)),
+    (C.strength_lower, (), (C.mobility, C.rest)),
+    (C.strength_full, (), (C.mobility, C.rest)),
+]
+
+# The knee-gate set — pinned independently from CARDS.md §1 (NOT derived from
+# CARD_META, which would be circular: a wrong Flag.impact would define and pass
+# its own expectation — round-2 #1).
+EXPECTED_IMPACT_FLAG_CARDS = {
+    C.easy_run,
+    C.long_run,
+    C.progression_run,
+    C.threshold,
+    C.vo2,
+    C.strides,
+    C.jump_rope,
+}
+
+
+@pytest.mark.parametrize("card,amber,red", EXPECTED_DOWNGRADES)
+def test_downgrade_map_rows_match_cards_md(card, amber, red):
+    dg = DOWNGRADE_MAP[card]
+    assert dg.amber == amber
+    assert dg.red == red
+
+
+def test_downgrade_map_has_exactly_the_expected_keys():
+    assert set(DOWNGRADE_MAP) == {card for card, _, _ in EXPECTED_DOWNGRADES}
+
+
+def test_strength_amber_is_empty_tuple():
+    # "light" version = a dose reduction, not a card swap.
+    for card in (C.strength_push, C.strength_pull, C.strength_lower, C.strength_full):
+        assert DOWNGRADE_MAP[card].amber == ()
+
+
+def test_downgrade_substitutes_are_valid_workout_cards():
+    for dg in DOWNGRADE_MAP.values():
+        for sub in (*dg.amber, *dg.red):
+            assert isinstance(sub, WorkoutCard)
+            assert sub in CARD_META
+
+
+def test_knee_pain_safety_gate_row_is_not_in_the_map():
+    # The "any impact card with knee_pain > 3" row is a runtime predicate keyed
+    # on Flag.impact (E7·P3), deliberately not a static map entry.
+    assert C.foot_prehab not in DOWNGRADE_MAP  # sanity: not every card is a key
+    # No key represents the gate; the map only holds per-planned-card swaps.
+    assert set(DOWNGRADE_MAP) == {card for card, _, _ in EXPECTED_DOWNGRADES}
+
+
+def test_knee_gate_set_keys_on_flag_impact_against_pinned_literal():
+    # Compute the actual gated set from the table; assert it equals the
+    # independently-pinned CARDS.md literal (not the other way round).
+    actual = {c for c in WorkoutCard if Flag.impact in CARD_META[c].flags}
+    assert actual == EXPECTED_IMPACT_FLAG_CARDS
+
+
+@pytest.mark.parametrize("card", [C.boxing, C.strength_lower, C.hiit])
+def test_low_or_conditional_impact_card_without_flag_is_not_gated(card):
+    # These carry no Flag.impact even though some are Impact.low/conditional.
+    assert Flag.impact not in CARD_META[card].flags
+    assert card not in EXPECTED_IMPACT_FLAG_CARDS
+
+
+# --------------------------------------------------------------------------
+# Fuel-floor predicate
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "card", [C.vo2, C.long_run, C.boxing, C.threshold, C.progression_run, C.hiit]
+)
+def test_floors_day_type_hard_true(card):
+    assert floors_day_type_hard(card) is True
+
+
+@pytest.mark.parametrize("card", [C.easy_run, C.rest, C.strength_push, C.active_recovery])
+def test_floors_day_type_hard_false(card):
+    assert floors_day_type_hard(card) is False
+
+
+def test_floors_day_type_hard_long_run_is_floored_despite_not_is_hard():
+    # long_run is is_hard=False but floors dayType at hard via the `long` flag.
+    assert is_hard_card(C.long_run) is False
+    assert floors_day_type_hard(C.long_run) is True
+
+
+# --------------------------------------------------------------------------
+# Lookup API
+# --------------------------------------------------------------------------
+def test_get_card_returns_the_card_meta():
+    assert get_card(C.vo2) is CARD_META[C.vo2]
+    assert isinstance(get_card(C.vo2), CardMeta)
+
+
+def test_is_hard_card():
+    assert is_hard_card(C.vo2) is True
+    assert is_hard_card(C.easy_run) is False
+
+
+def test_downgrade_for():
+    assert downgrade_for(C.boxing).amber == (C.boxing_technique,)
+    assert isinstance(downgrade_for(C.boxing), Downgrade)
+    assert downgrade_for(C.mobility) is None
+
+
+def test_all_cards_returns_20_in_stable_order():
+    cards1 = all_cards()
+    cards2 = all_cards()
+    assert len(cards1) == 20
+    assert all(isinstance(m, CardMeta) for m in cards1)
+    # Stable order across calls.
+    assert [m.card for m in cards1] == [m.card for m in cards2]
+
+
+def test_downgrade_is_frozen():
+    dg = DOWNGRADE_MAP[C.boxing]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        dg.amber = ()  # type: ignore[misc]
