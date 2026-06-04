@@ -515,3 +515,53 @@ def test_nutrition_and_body_mass_attributed_to_sofia_date(session: Session) -> N
     assert nutrition_intake(session, d3)["kcal_in"] == 2100.0
     assert body_weight(session, D2) is None  # not the wire-offset date
     assert nutrition_intake(session, D2)["kcal_in"] is None
+
+
+# ---------------------------------------------------------------------------
+# Integration: seed through E5·P2's real upsert_records write path (which stores
+# r.type.value snake_case) and recompute — proves the engine matches records.type
+# on the stored snake_case RecordType value, not the HK…Identifier (round-3 #2).
+# ---------------------------------------------------------------------------
+def test_recompute_matches_stored_type_form_via_upsert_records(session: Session) -> None:
+    from app.api.schemas.sync import HealthRecord, RecordType
+    from app.services.record_upsert import upsert_records
+
+    records = [
+        HealthRecord(
+            uuid="s1",
+            type=RecordType.STEP_COUNT,
+            start=datetime.fromisoformat("2026-06-01T10:00:00+03:00"),
+            end=datetime.fromisoformat("2026-06-01T10:00:00+03:00"),
+            value=8000.0,
+            unit="count",
+            source="Apple Watch",
+        ),
+        HealthRecord(
+            uuid="h1",
+            type=RecordType.HEART_RATE_VARIABILITY_SDNN,
+            start=datetime.fromisoformat("2026-06-01T06:30:00+03:00"),
+            end=datetime.fromisoformat("2026-06-01T06:30:00+03:00"),
+            value=46.0,
+            unit="ms",
+            source="Apple Watch",
+        ),
+        HealthRecord(
+            uuid="k1",
+            type=RecordType.DIETARY_ENERGY_CONSUMED,
+            start=datetime.fromisoformat("2026-06-01T12:00:00+03:00"),
+            end=datetime.fromisoformat("2026-06-01T12:00:00+03:00"),
+            value=2100.0,
+            unit="kcal",
+            source="MacroFactor",
+        ),
+    ]
+    upsert_records(session, records)
+    session.commit()
+
+    recompute_day(session, D1, profile=PROFILE)
+    session.commit()
+    row = _row(session, "2026-06-01")
+    # Non-null only if the engine matched the stored snake_case types.
+    assert row["steps"] == 8000
+    assert row["hrv_sdnn"] == 46.0
+    assert row["kcal_in"] == 2100.0
