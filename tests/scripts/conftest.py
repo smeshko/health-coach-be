@@ -7,15 +7,24 @@ rather than as an installed package.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BUILD_DB_PATH = REPO_ROOT / "scripts" / "build_db.py"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+BUILD_DB_PATH = SCRIPTS_DIR / "build_db.py"
 FIXTURE_XML = REPO_ROOT / "tests" / "fixtures" / "health_export_small.xml"
+
+# Put scripts/ on the import path so offline scripts that import a sibling module
+# (e.g. derive_constants importing compute_zones) resolve under pytest, the same
+# way Python adds the script dir to sys.path when run as `python scripts/...`.
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 @pytest.fixture(scope="session")
@@ -38,3 +47,15 @@ def fixture_xml() -> Path:
 def build_db_source() -> str:
     """Raw source text of `scripts/build_db.py` for structural assertions."""
     return BUILD_DB_PATH.read_text()
+
+
+@pytest.fixture(scope="session")
+def derive_constants() -> ModuleType:
+    """The `scripts/derive_constants.py` module (scripts/ is on sys.path)."""
+    return importlib.import_module("derive_constants")
+
+
+@pytest.fixture(scope="session")
+def compute_zones_mod() -> ModuleType:
+    """The `scripts/compute_zones.py` module (scripts/ is on sys.path)."""
+    return importlib.import_module("compute_zones")
