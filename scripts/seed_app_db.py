@@ -28,7 +28,6 @@ import sys
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from app.core.healthkit import is_whitelisted
 from app.core.time import SOFIA, period_date, period_date_of
@@ -222,7 +221,7 @@ def _parse_now(value: str | None) -> datetime:
         return datetime.now(SOFIA)
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo("Europe/Sofia"))
+        dt = dt.replace(tzinfo=SOFIA)
     return dt
 
 
