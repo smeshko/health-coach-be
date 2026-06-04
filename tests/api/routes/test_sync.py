@@ -180,10 +180,44 @@ def test_non_whitelisted_record_not_stored(ctx) -> None:
     assert "drop" not in uuids
 
 
-def test_sync_does_not_touch_daily_metrics(ctx) -> None:
+def test_sync_real_engine_persists_daily_metrics_row(ctx) -> None:
+    # E6·P1 swapped the recompute provider to the real engine: a sync now persists a
+    # daily_metrics row for the affected Sofia day, with readiness left null (E8/E11).
     client, _app, db_path = ctx
-    client.post("/sync", json=BODY, headers=AUTH)
-    assert _table_count(db_path, "daily_metrics") == 0  # no recompute engine this phase
+    resp = client.post("/sync", json=BODY, headers=AUTH)
+    assert resp.status_code == 200
+    with sqlite3.connect(db_path) as raw:
+        rows = raw.execute(
+            "SELECT date, readiness_score, band FROM daily_metrics"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "2026-06-01"  # the single affected Sofia day
+    assert rows[0][1] is None  # readiness_score null this phase
+    assert rows[0][2] is None  # band null this phase
+
+
+def test_sync_cross_midnight_sample_refreshes_both_sofia_days(ctx) -> None:
+    # A single HR sample spanning the Sofia midnight: E5·P3 fans out only its start
+    # day, but the engine expands its work-set to recompute BOTH Sofia days from one
+    # sync (round-2 #1), so neither neighbour daily_metrics row is left stale.
+    client, _app, db_path = ctx
+    body = {
+        "records": [
+            {
+                "uuid": "hr-cross",
+                "type": "heart_rate",
+                "start": "2026-06-01T23:50:00+03:00",
+                "end": "2026-06-02T00:10:00+03:00",
+                "value": 130.0,
+                "unit": "count/min",
+            }
+        ]
+    }
+    resp = client.post("/sync", json=body, headers=AUTH)
+    assert resp.status_code == 200
+    with sqlite3.connect(db_path) as raw:
+        dates = {r[0] for r in raw.execute("SELECT date FROM daily_metrics").fetchall()}
+    assert dates == {"2026-06-01", "2026-06-02"}  # both rows refreshed from one sync
 
 
 # ---------------------------------------------------------------------------
@@ -248,9 +282,38 @@ def test_recompute_called_with_empty_set_on_empty_body(ctx) -> None:
     assert spy.calls == [set()]  # called once, with the empty affected set
 
 
-def test_default_noop_leaves_daily_metrics_empty(ctx) -> None:
+def test_sync_empty_body_writes_no_daily_metrics(ctx) -> None:
+    # An empty body fans out to an empty affected set, so the real engine returns
+    # before any DB work — no daily_metrics row is written.
     client, _app, db_path = ctx
-    client.post("/sync", json=BODY_FULL, headers=AUTH)  # default noop_recompute
+    resp = client.post("/sync", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert _table_count(db_path, "daily_metrics") == 0
+
+
+def test_sync_recompute_failure_returns_5xx_but_keeps_ingest_durable(ctx) -> None:
+    # The recompute seam fires AFTER /sync's commit. If the engine raises, the
+    # exception is NOT swallowed — /sync surfaces a 5xx — but the already-committed
+    # ingest stays durable and the day's daily_metrics is absent until the next sync
+    # re-derives it (round-2 #4).
+    client, app, db_path = ctx
+
+    def failing_recompute():
+        def _raise(_dates) -> None:
+            raise RuntimeError("recompute boom")
+
+        return _raise
+
+    app.dependency_overrides[get_recompute] = failing_recompute
+    # raise_server_exceptions=False so we observe the 500 envelope, not a re-raise.
+    failing_client = TestClient(app, raise_server_exceptions=False)
+    resp = failing_client.post("/sync", json=BODY, headers=AUTH)
+
+    assert resp.status_code == 500
+    # Ingest committed before recompute fired → durable.
+    assert _table_count(db_path, "records") == 2
+    assert _table_count(db_path, "workouts") == 1
+    # The recompute never completed → no daily_metrics row.
     assert _table_count(db_path, "daily_metrics") == 0
 
 
