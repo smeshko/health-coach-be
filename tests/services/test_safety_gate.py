@@ -403,9 +403,12 @@ def test_evaluate_overrideto_always_in_the_card_universe_or_none():
 
 
 def test_override_for_unknown_reason_fails_closed_to_rest():
-    # A non-empty reasons list with only an unrecognized key (schema drift / typo /
-    # future reason) must fall to the MOST-restrictive card, never mobility (review #1).
+    # A non-empty reasons list with an unrecognized key (schema drift / typo / future
+    # reason) must fall to the MOST-restrictive card, never mobility (review #1/#3) —
+    # including when MIXED with a known key that would otherwise map to a milder card.
     assert override_for(["some_future_reason"]) == WorkoutCard.rest
+    assert override_for(["some_future_reason", GI_FLARE]) == WorkoutCard.rest
+    assert override_for(["some_future_reason", KNEE_PAIN_HIGH]) == WorkoutCard.rest
 
 
 def test_override_for_gi_flare_alone_is_mobility_explicit():

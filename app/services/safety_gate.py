@@ -175,21 +175,24 @@ def override_for(reasons: Sequence[str]) -> WorkoutCard | None:
     - else ``gi_flare`` (§6.2 → "no hard training; easy/mobility only") ⇒ ``mobility``
       (the least-restrictive of the three forced cards).
 
-    **Fail closed (review #1):** a non-empty ``reasons`` containing only unrecognized keys
-    (schema drift, a typo, or a future reason this map hasn't learned) returns the
-    **most-restrictive** ``rest`` — never the least-restrictive ``mobility`` — so an
-    unknown trigger can never silently downgrade the override. The ``gi_flare`` branch is
-    explicit, not a catch-all.
+    **Fail closed (review #1/#3):** if ``reasons`` contains **any** key outside the closed
+    ``REASON_KEYS`` set — even mixed with a known one (schema drift, a typo, or a future
+    reason this map hasn't learned) — the function returns the **most-restrictive** ``rest``
+    *before* the precedence checks, so an unknown trigger can never silently downgrade the
+    override (e.g. ``["future_reason", gi_flare]`` ⇒ ``rest``, not ``mobility``). Within a
+    constructed ``SafetyGate`` this is unreachable (``__post_init__`` rejects unknown keys),
+    but ``override_for`` is a public helper and stays fail-closed for standalone callers.
     """
     if not reasons:
         return None
+    if not set(reasons) <= REASON_KEYS:
+        return WorkoutCard.rest
     if ILLNESS in reasons or SLEEP_BELOW_4H in reasons:
         return WorkoutCard.rest
     if KNEE_PAIN_HIGH in reasons or RHR_SPIKE in reasons or HRV_CRASH in reasons:
         return WorkoutCard.active_recovery
-    if GI_FLARE in reasons:
-        return WorkoutCard.mobility
-    return WorkoutCard.rest
+    # Only gi_flare can remain — the closed REASON_KEYS set is fully covered above.
+    return WorkoutCard.mobility
 
 
 @dataclass(frozen=True)
