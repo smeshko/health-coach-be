@@ -23,6 +23,7 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections.abc import Callable, Iterable, Sequence
@@ -510,22 +511,25 @@ def current_body_weight(session: Session, anchor: date) -> float | None:
     lexical `<=` + `ORDER BY date DESC` selects the chronologically latest reading on/before the
     anchor.
 
-    Only **positive** weights qualify (`body_weight > 0`): a materialised `0`/negative from bad
-    HealthKit `body_mass` is garbage, not a usable weight, so it is **skipped** — the walk-back
-    continues to the latest valid reading rather than letting a non-positive value reach the
-    macro engine's positive-weight guard (which would 5xx the brief — review). (`> 0` also
-    excludes NULL and NaN.) Returns `None` when no positive reading exists at/before the anchor
-    (caller falls back to `goal_weight_kg`).
+    Only **finite positive** weights qualify: a materialised `0`/negative/NaN/`±inf` from bad
+    HealthKit `body_mass` (the sync `value` is an unconstrained float) is garbage, not a usable
+    weight, so it is **skipped** — the walk-back continues to the latest valid reading rather
+    than letting a bad value reach the macro engine, which would 5xx the brief (a non-positive
+    trips the positive-weight guard; `+inf` passes `> 0` and the guard, then `_round_half_up`
+    raises `OverflowError` — review rounds 1-2). The SQL `> 0` excludes NULL/NaN/zero/negative;
+    `+inf` is a positive REAL in SQLite, so the `math.isfinite` filter drops it in Python.
+    Returns `None` when no finite-positive reading exists at/before the anchor (caller falls
+    back to `goal_weight_kg`).
     """
-    return session.scalars(
+    candidates = session.scalars(
         select(DailyMetrics.body_weight)
         .where(
             DailyMetrics.body_weight > 0,
             DailyMetrics.date <= anchor.isoformat(),
         )
         .order_by(DailyMetrics.date.desc())
-        .limit(1)
-    ).first()
+    ).all()
+    return next((w for w in candidates if math.isfinite(w)), None)
 
 
 def _duration_minutes(w: Workouts) -> float:

@@ -511,6 +511,18 @@ def test_current_body_weight_skips_non_positive_garbage(session: Session) -> Non
     assert current_body_weight(session, bad_only_anchor) is None
 
 
+def test_current_body_weight_skips_non_finite(session: Session) -> None:
+    """A materialised +inf body_weight (sync value is an unconstrained float) is a positive
+    REAL in SQLite, so `> 0` alone would return it — and inf reaches `_round_half_up` →
+    OverflowError → 5xx. The reader's `math.isfinite` filter skips it and walks back to the
+    latest finite weight (review #1 round-2)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), 79.0)
+    _seed_weight(session, anchor, float("inf"))  # garbage → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 79.0
+
+
 @pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])
 def test_hard_day_per_hard_activity_type(session: Session, activity: str) -> None:
     _seed(session, _workout(activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
