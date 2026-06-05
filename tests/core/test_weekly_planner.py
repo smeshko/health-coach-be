@@ -24,6 +24,7 @@ from app.core.profile import load_profile
 from app.core.task_context import TaskContext
 from app.core.agent_node import BriefGenerationError
 from app.core.constraints import WeeklyBudgets
+from app.core.weekly_agent import GeneratePlanNode
 from app.core.weekly_planner import (
     ComputeBudgetsNode,
     ComputeNutritionNode,
@@ -34,6 +35,7 @@ from app.core.weekly_planner import (
     RecomputeConstants,
     RecomputeConstantsOutput,
     ValidatePlanNode,
+    WeeklyPlanner,
     WeeklyPlannerEvent,
     is_recompute_due,
 )
@@ -114,12 +116,18 @@ def _ctx(session, **nodes) -> TaskContext:
     return ctx
 
 
-def _clean_llm_output() -> WeeklyPlanLLMOutput:
-    """A within-budget weekly plan (2 hard days, 2 strength, spaced)."""
+def _clean_llm_output(quality_card: WorkoutCard = WorkoutCard.vo2) -> WeeklyPlanLLMOutput:
+    """A within-budget weekly plan (2 hard days, 2 strength, spaced).
+
+    ``quality_card`` is the single quality run (``vo2``/``threshold``) — on a due-recompute
+    run the code-decided ``quality_run_pick`` (``next_quality_focus(None) → threshold``)
+    must match, so the due-recompute tests pass ``threshold``.
+    """
+    dose = (30, 40) if quality_card is WorkoutCard.vo2 else (30, 50)
     return WeeklyPlanLLMOutput(
         core=[
             PlannedPick(card=WorkoutCard.boxing, suggested_day=Weekday.tue, duration_min_low=60, duration_min_high=90),
-            PlannedPick(card=WorkoutCard.vo2, suggested_day=Weekday.fri, duration_min_low=30, duration_min_high=40),
+            PlannedPick(card=quality_card, suggested_day=Weekday.fri, duration_min_low=dose[0], duration_min_high=dose[1]),
             PlannedPick(card=WorkoutCard.strength_pull, suggested_day=Weekday.mon, duration_min_low=30, duration_min_high=45),
         ],
         extras=[
@@ -487,3 +495,157 @@ def test_persist_does_not_write_profile_when_not_due(session, profile_path, monk
     )
     asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
     assert session.execute(select(Plans)).scalars().all()
+
+
+# --------------------------------------------------------------------------- #
+# TASK-004: the assembled WeeklyPlanner workflow (node order + end-to-end).
+# --------------------------------------------------------------------------- #
+_EXPECTED_ORDER = [
+    "LoadAggregatesNode",
+    "RecomputeConstants",
+    "ComputeBudgetsNode",
+    "GeneratePlanNode",
+    "DeriveSessionsNode",
+    "ComputeTargetsNode",
+    "ComputeNutritionNode",
+    "ValidatePlanNode",
+    "PersistPlanNode",
+]
+
+
+def test_node_order_is_exactly_architecture_section_5():
+    schema = WeeklyPlanner.workflow_schema
+    assert schema.start.__name__ == "LoadAggregatesNode"
+    names = [nc.node.__name__ for nc in schema.nodes]
+    assert names == _EXPECTED_ORDER
+    # Each edge points to its successor; the last is terminal.
+    for nc, expected_next in zip(schema.nodes, _EXPECTED_ORDER[1:] + [None]):
+        targets = [c.__name__ for c in nc.connections]
+        assert targets == ([expected_next] if expected_next else [])
+
+
+def test_weekly_planner_constructs_without_error():
+    # The E1·P3 WorkflowValidator accepts the linear chain (unique/declared/cycle-free).
+    assert WeeklyPlanner() is not None
+
+
+def test_no_router_on_the_weekly_path():
+    schema = WeeklyPlanner.workflow_schema
+    assert not any(nc.is_router for nc in schema.nodes)
+
+
+def _mock_generate_plan(monkeypatch, llm_output: WeeklyPlanLLMOutput) -> None:
+    """Substitute the AgentNode's process with a stand-in (no LLM/network/key)."""
+
+    async def _stand_in(self, task_context):
+        self.save_output(llm_output)
+        return task_context
+
+    monkeypatch.setattr(GeneratePlanNode, "process", _stand_in, raising=True)
+
+
+def test_end_to_end_happy_path_via_run_async_context(session, tmp_path, monkeypatch):
+    # A not-due week (recompute False) — the full deterministic graph runs end-to-end.
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
+    seed_window(session, ANCHOR)
+    _mock_generate_plan(monkeypatch, _clean_llm_output())
+
+    ctx = TaskContext(
+        event=WeeklyPlannerEvent(anchor=ANCHOR, iso_week=ISO_WEEK, week_start=WEEK_START),
+        metadata={"session": session},
+    )
+    out_ctx = asyncio.run(WeeklyPlanner().run_async(context=ctx))
+
+    # Every node's output is present.
+    for name in _EXPECTED_ORDER:
+        assert name in out_ctx.nodes, f"{name} output missing"
+    # core/extras are code-expanded PlannedSession[] (card-derived fields filled).
+    derived = out_ctx.nodes["DeriveSessionsNode"]
+    assert derived.core[1].card == WorkoutCard.vo2
+    assert derived.core[1].zone_target.value == "z5"  # from CARD_META
+    assert out_ctx.nodes["ComputeBudgetsNode"].budgets.strength_sessions == 2
+    assert out_ctx.nodes["ComputeTargetsNode"].targets.hard_days == 2
+    assert len(out_ctx.nodes["ComputeNutritionNode"].nutrition.day_type_pattern) == 5
+    # Exactly one Plans row with the key columns set.
+    rows = session.execute(select(Plans)).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.payload and row.inputs_snapshot and row.model and row.constitution_version
+
+
+def test_monthly_recompute_branch_due_rewrites_profile(session, tmp_path, monkeypatch):
+    path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_window(session, ANCHOR)
+    seed_strength_tests(session)
+    # On a due recompute next_quality_focus(None) → THRESHOLD; the plan must match it.
+    _mock_generate_plan(monkeypatch, _clean_llm_output(quality_card=WorkoutCard.threshold))
+    before = path.read_text(encoding="utf-8")
+
+    ctx = TaskContext(
+        event=WeeklyPlannerEvent(anchor=ANCHOR, iso_week=ISO_WEEK, week_start=WEEK_START),
+        metadata={"session": session},
+    )
+    out_ctx = asyncio.run(WeeklyPlanner().run_async(context=ctx))
+
+    assert out_ctx.nodes["RecomputeConstants"].constants_recomputed is True
+    row = session.execute(select(Plans)).scalars().one()
+    assert json.loads(row.payload)["constantsRecomputed"] is True
+    # profile.yaml rewritten (at PersistPlanNode) with the merged stamp.
+    assert path.read_text(encoding="utf-8") != before
+    assert load_profile(path).meta.constants_recomputed_week == ISO_WEEK
+
+
+def test_monthly_recompute_branch_adjacent_week_no_write(session, tmp_path, monkeypatch):
+    path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
+    seed_window(session, ANCHOR)
+    _mock_generate_plan(monkeypatch, _clean_llm_output())
+    before = path.read_text(encoding="utf-8")
+
+    ctx = TaskContext(
+        event=WeeklyPlannerEvent(anchor=ANCHOR, iso_week=ISO_WEEK, week_start=WEEK_START),
+        metadata={"session": session},
+    )
+    out_ctx = asyncio.run(WeeklyPlanner().run_async(context=ctx))
+
+    assert out_ctx.nodes["RecomputeConstants"].constants_recomputed is False
+    assert json.loads(session.execute(select(Plans)).scalars().one().payload)["constantsRecomputed"] is False
+    assert path.read_text(encoding="utf-8") == before  # no file write on an adjacent week
+
+
+def test_failed_brief_never_advances_profile_or_writes_row(session, tmp_path, monkeypatch):
+    # A due-recompute event whose agent RAISES: profile.yaml unchanged, no Plans row.
+    path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_window(session, ANCHOR)
+    seed_strength_tests(session)
+    before = path.read_text(encoding="utf-8")
+
+    async def _boom(self, task_context):
+        raise BriefGenerationError(code="upstream_timeout")
+
+    monkeypatch.setattr(GeneratePlanNode, "process", _boom, raising=True)
+
+    ctx = TaskContext(
+        event=WeeklyPlannerEvent(anchor=ANCHOR, iso_week=ISO_WEEK, week_start=WEEK_START),
+        metadata={"session": session},
+    )
+    with pytest.raises(BriefGenerationError):
+        asyncio.run(WeeklyPlanner().run_async(context=ctx))
+
+    assert path.read_text(encoding="utf-8") == before  # never advanced
+    assert not session.execute(select(Plans)).scalars().all()  # no row
+    # The next run still sees the week as due (the stamp never advanced).
+    assert load_profile(path).meta.constants_recomputed_week == "2026-W19"
+
+
+def test_constraint_breaking_plan_never_reaches_the_cache(session, profile_path, monkeypatch):
+    seed_window(session, ANCHOR)
+    _mock_generate_plan(monkeypatch, _breaking_llm_output())
+
+    ctx = TaskContext(
+        event=WeeklyPlannerEvent(anchor=ANCHOR, iso_week=ISO_WEEK, week_start=WEEK_START),
+        metadata={"session": session},
+    )
+    with pytest.raises(BriefGenerationError) as exc:
+        asyncio.run(WeeklyPlanner().run_async(context=ctx))
+    assert exc.value.code == "brief_generation_failed"
+    assert not session.execute(select(Plans)).scalars().all()  # no row written

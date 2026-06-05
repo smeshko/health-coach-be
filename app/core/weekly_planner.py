@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from datetime import date, timedelta
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, insert, select
@@ -52,6 +53,8 @@ from app.core.nodes import Node
 from app.core.profile import Profile, load_profile, write_profile
 from app.core.task_context import TaskContext
 from app.core.time import now_sofia
+from app.core.weekly_agent import GeneratePlanNode
+from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
 from app.database.models import DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
@@ -541,8 +544,13 @@ class ValidatePlanNode(Node):
     It does **not** ``ModelRetry`` and does **not** re-run the agent: the ``ModelRetry ≤2``
     budget was already spent **inside** ``GeneratePlanNode``'s ``@agent.output_validator``
     (E9·P2). This is the second, deterministic layer of LLM.md §4's "two layers, one
-    source of truth". A clean plan (``[]`` or only ``soft``) falls through unchanged.
+    source of truth". A clean plan (``[]`` or only ``soft``) falls through and
+    ``save_output``s a ``passed`` marker (the soft-violation list rides along for E10·P3).
     """
+
+    class OutputType(BaseModel):
+        passed: bool
+        soft_violations: list[str] = []
 
     async def process(self, task_context: TaskContext) -> TaskContext:
         out = _llm_output(task_context)
@@ -554,6 +562,9 @@ class ValidatePlanNode(Node):
         violations = validate_weekly(out, ctx)
         if any(v.severity is Severity.hard for v in violations):
             raise BriefGenerationError(code="brief_generation_failed")
+        self.save_output(
+            self.OutputType(passed=True, soft_violations=[v.rule for v in violations])
+        )
         return task_context
 
 
@@ -658,3 +669,44 @@ def _agent_model_id() -> str:
     from app.core.settings import Settings
 
     return Settings.model_fields["model_id"].default
+
+
+# ---------------------------------------------------------------------------
+# The assembled WEEKLY_PLANNER workflow (ARCHITECTURE §5 — strictly linear).
+# ---------------------------------------------------------------------------
+class WeeklyPlanner(Workflow):
+    """The ``WEEKLY_PLANNER`` workflow — the nine ARCHITECTURE §5 nodes, linear (E10·P2).
+
+    A **strictly linear** chain (no router — that is ``DAILY_ADJUSTER``'s
+    ``SafetyGateRouter``):
+
+        LoadAggregatesNode → RecomputeConstants → ComputeBudgetsNode → GeneratePlanNode
+        → DeriveSessionsNode → ComputeTargetsNode → ComputeNutritionNode
+        → ValidatePlanNode → PersistPlanNode
+
+    ``GeneratePlanNode`` (E10·P1) is the only ``AgentNode`` — wired as the 4th node; it
+    reads this phase's ``ComputeBudgetsNode``/``LoadAggregatesNode``/``RecomputeConstants``
+    outputs from the shared ``TaskContext``. ``PersistPlanNode`` is terminal
+    (``connections=[]``). Construction runs ``WorkflowValidator`` (E1·P3) — a mis-wired /
+    missing / duplicate node fails **here**, not mid-run. The endpoint (E10·P3) runs
+    ``WeeklyPlanner().run_async(context=TaskContext(event=…, metadata={"session": session}))``
+    and commits; tests mock ``GeneratePlanNode`` (a stand-in ``Node``) so the deterministic
+    graph runs with no LLM/network/key.
+    """
+
+    workflow_schema: ClassVar[WorkflowSchema] = WorkflowSchema(
+        event_schema=WeeklyPlannerEvent,
+        start=LoadAggregatesNode,
+        nodes=[
+            NodeConfig(node=LoadAggregatesNode, connections=[RecomputeConstants]),
+            NodeConfig(node=RecomputeConstants, connections=[ComputeBudgetsNode]),
+            NodeConfig(node=ComputeBudgetsNode, connections=[GeneratePlanNode]),
+            NodeConfig(node=GeneratePlanNode, connections=[DeriveSessionsNode]),
+            NodeConfig(node=DeriveSessionsNode, connections=[ComputeTargetsNode]),
+            NodeConfig(node=ComputeTargetsNode, connections=[ComputeNutritionNode]),
+            NodeConfig(node=ComputeNutritionNode, connections=[ValidatePlanNode]),
+            NodeConfig(node=ValidatePlanNode, connections=[PersistPlanNode]),
+            NodeConfig(node=PersistPlanNode, connections=[]),
+        ],
+        description="WEEKLY_PLANNER — the weekly tiered-plan brain (ARCHITECTURE §5).",
+    )
