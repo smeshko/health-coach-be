@@ -272,3 +272,105 @@ def test_node_bodies_reimplement_no_kernel():
     src = pathlib.Path("app/core/daily_adjuster.py").read_text(encoding="utf-8")
     # No readiness/gate/macro arithmetic inlined in the nodes (the math is E8·P1/P2/P3).
     assert not re.search(r"def bmr\(|def tdee\(|knee_pain >\s*3|score\s*=\s*100\s*-", src)
+
+
+# --------------------------------------------------------------------------- #
+# TASK-002: resolve_day_type + derive_intake_summary + DeriveSessionNode.
+# --------------------------------------------------------------------------- #
+def test_resolve_day_type_default_floor_and_passthrough():
+    from app.core.daily_adjuster import resolve_day_type
+
+    # hard/long card → floored at hard regardless of the LLM's pick (or absence).
+    assert resolve_day_type(DayType.moderate, WorkoutCard.vo2) is DayType.hard
+    assert resolve_day_type(None, WorkoutCard.vo2) is DayType.hard
+    assert resolve_day_type(DayType.rest, WorkoutCard.long_run) is DayType.hard
+    # easy card → the LLM's pick passes through; absent → the card default.
+    assert resolve_day_type(DayType.moderate, WorkoutCard.easy_run) is DayType.moderate
+    assert resolve_day_type(None, WorkoutCard.easy_run) is DayType.moderate
+
+
+def test_derive_intake_summary_matches_models_worked_example():
+    from app.core.daily_adjuster import derive_intake_summary
+    from app.services.macros import MacroFocus
+
+    target = MacroFocus(
+        day_type=DayType.moderate,
+        calories_kcal=2510,
+        protein_g=140,
+        carbs_g=250,
+        fat_g_low=70,
+        fat_g_high=90,
+        hydration_l_low=2.5,
+        hydration_l_high=3.5,
+    )
+    row = DailyMetrics(
+        date=YESTERDAY.isoformat(),
+        kcal_in=2610.0,
+        protein_in_g=138.0,
+        carbs_in_g=250.0,
+        fat_in_g=82.0,
+        fiber_in_g=21.0,
+        water_in_l=2.4,
+    )
+    summary = derive_intake_summary(row, target)
+    assert summary is not None
+    assert summary.vs_target.calories_pct == 1.04  # 2610 / 2510
+    assert summary.vs_target.protein_hit is False  # 138 < 140
+    assert summary.calories_kcal == 2610
+    assert summary.date == YESTERDAY
+
+
+def test_derive_intake_summary_none_when_nothing_logged():
+    from app.core.daily_adjuster import derive_intake_summary
+    from app.services.macros import MacroFocus
+
+    target = MacroFocus(
+        day_type=DayType.rest,
+        calories_kcal=2000,
+        protein_g=140,
+        carbs_g=150,
+        fat_g_low=70,
+        fat_g_high=90,
+        hydration_l_low=2.5,
+        hydration_l_high=3.5,
+    )
+    assert derive_intake_summary(None, target) is None
+    empty = DailyMetrics(date=YESTERDAY.isoformat())  # all nutrition columns null
+    assert derive_intake_summary(empty, target) is None
+
+
+def test_derive_session_node_expands_and_resolves(session, profile_path):
+    from app.core.daily_adjuster import DeriveSessionNode
+
+    seed_metrics(
+        session,
+        yesterday_kwargs=dict(kcal_in=2400.0, protein_in_g=150.0, carbs_in_g=240.0),
+    )
+    ctx = _ctx(session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="hard"))
+    asyncio.run(DeriveSessionNode(task_context=ctx).process(ctx))
+
+    out = ctx.nodes["DeriveSessionNode"]
+    # The session is a code-expanded SessionBlock (card-derived fields from CARD_META).
+    assert out.session.card is WorkoutCard.vo2
+    assert out.session.zone_target.value == "z5"
+    assert out.session.intensity.value == "quality"
+    assert out.session.duration_min_low == 30  # dose copied verbatim
+    assert len(out.alternatives) == 1 and out.alternatives[0].card is WorkoutCard.easy_run
+    # MacroFocus grams come from the resolved dayType (hard).
+    assert out.macro_focus.day_type is DayType.hard
+    assert out.macro_focus.calories_kcal > 0
+    # Yesterday's intake is derived.
+    assert out.intake_yesterday is not None
+    assert out.intake_yesterday.calories_kcal == 2400
+
+
+def test_derive_session_node_floors_day_type_for_hard_card(session, profile_path):
+    from app.core.daily_adjuster import DeriveSessionNode
+
+    seed_metrics(session)
+    # The LLM emitted dayType=moderate on a hard vo2 card → floored to hard for macros.
+    ctx = _ctx(
+        session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="moderate")
+    )
+    asyncio.run(DeriveSessionNode(task_context=ctx).process(ctx))
+    assert ctx.nodes["DeriveSessionNode"].macro_focus.day_type is DayType.hard

@@ -40,9 +40,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, select, update
 from sqlalchemy.orm import Session
 
-from app.api.schemas.daily import IntakeSummary
+from app.api.schemas.daily import IntakeSummary, IntakeVsTarget
 from app.api.schemas.narrative import NarrativeSection
-from app.core.cards import CARD_META, all_cards
+from app.core.cards import CARD_META, all_cards, floors_day_type_hard
 from app.core.daily_agent import TuneSessionNode
 from app.core.enums import DayType, NarrativeType, WorkoutCard
 from app.core.nodes import BaseRouter, Node, RouterNode
@@ -472,3 +472,129 @@ def _persist_brief(
         .values(readiness_score=readiness.score, band=readiness.band.value)
     )
     return brief
+
+
+# --------------------------------------------------------------------------- #
+# DeriveSessionNode — expand picks, resolve the dayType, macros, intake (E7·P2/E8·P3).
+# --------------------------------------------------------------------------- #
+def resolve_day_type(out_day_type: DayType | None, card: WorkoutCard) -> DayType:
+    """The guarded daily ``dayType`` (CARDS §0; LLM §1.1) fed to the macros.
+
+    Defaults to the card's ``CARD_META[card].day_type`` when the LLM omitted one, then
+    **floors at ``hard``** for a card that ``floors_day_type_hard`` (a hard/long card —
+    the LLM may fuel *up* but never *under-fuel*). The floor predicate is **E7·P1's**,
+    never re-derived. ``ValidateSessionNode`` re-checks the floor over the LLM's raw
+    ``dayType`` (the two agree because both use ``floors_day_type_hard``). Pure, total.
+    """
+    day_type = out_day_type or CARD_META[card].day_type
+    if floors_day_type_hard(card) and day_type is not DayType.hard:
+        return DayType.hard
+    return day_type
+
+
+def derive_intake_summary(
+    yesterday_row: DailyMetrics | None, target: MacroFocus
+) -> IntakeSummary | None:
+    """Yesterday's logged intake vs the day's target (MODELS ``IntakeSummary``; epic R4).
+
+    From yesterday's ``daily_metrics`` nutrition columns build an ``IntakeSummary`` with
+    ``vsTarget`` = ``{ caloriesPct = kcal_in ÷ target.caloriesKcal, proteinHit =
+    protein_in_g ≥ target.proteinG }``. Returns ``None`` when nothing was logged (the row
+    absent or every nutrition column null). Pure.
+    """
+    if yesterday_row is None:
+        return None
+    kcal = yesterday_row.kcal_in
+    protein = yesterday_row.protein_in_g
+    carbs = yesterday_row.carbs_in_g
+    fat = yesterday_row.fat_in_g
+    fiber = yesterday_row.fiber_in_g
+    water = yesterday_row.water_in_l
+    if all(v is None for v in (kcal, protein, carbs, fat, fiber, water)):
+        return None
+
+    calories_pct = (
+        round(kcal / target.calories_kcal, 2)
+        if kcal is not None and target.calories_kcal
+        else 0.0
+    )
+    protein_hit = protein is not None and protein >= target.protein_g
+    return IntakeSummary(
+        date=date.fromisoformat(yesterday_row.date),
+        calories_kcal=round(kcal) if kcal is not None else None,
+        protein_g=round(protein) if protein is not None else None,
+        carbs_g=round(carbs) if carbs is not None else None,
+        fat_g=round(fat) if fat is not None else None,
+        fiber_g=round(fiber) if fiber is not None else None,
+        water_l=water,
+        vs_target=IntakeVsTarget(calories_pct=calories_pct, protein_hit=protein_hit),
+    )
+
+
+def _llm_output(task_context: TaskContext):
+    """The ``DailyBriefLLMOutput`` the AgentNode (``TuneSessionNode``) saved.
+
+    Read by class name so a test can seed ``ctx.nodes["TuneSessionNode"]`` directly with
+    a hand-built output (no agent).
+    """
+    output = task_context.nodes.get(TuneSessionNode.__name__)
+    if output is None:
+        raise ValueError("TuneSessionNode output missing — node order is wrong")
+    return output
+
+
+class DeriveSessionNode(Node):
+    """Expand the LLM picks → ``SessionBlock``s + resolve macros + yesterday's intake.
+
+    The derive-don't-emit node on the **clean** LLM path: reads the ``DailyBriefLLMOutput``
+    (``TuneSessionNode``) + the live ``Profile`` + the open session, (1) expands ``session``
+    and each ``alternatives`` pick via ``expand_session`` (E7·P2 — every card-derived field
+    from ``CARD_META``), (2) resolves the guarded ``dayType`` (``resolve_day_type`` — default
+    + fuel-floor), (3) computes the ``MacroFocus`` grams from it (``compute_macro_focus``,
+    E8·P3), and (4) derives yesterday's ``IntakeSummary`` from ``daily_metrics`` — and
+    ``save_output``s the same shape ``SafetyRestNode`` produces, so the persist node reads
+    one shape on both paths. Runs **only** on the clean path (the gated path persists in
+    ``SafetyRestNode``). Computes nothing by hand beyond the two thin helpers above.
+    """
+
+    class OutputType(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        session: SessionBlock
+        alternatives: list[SessionBlock]
+        skip_ok: bool
+        day_type: DayType
+        macro_focus: MacroFocus
+        narrative: list[NarrativeSection]
+        intake_yesterday: IntakeSummary | None = None
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        session = _session_of(task_context)
+        event: DailyAdjusterEvent = task_context.event
+        out = _llm_output(task_context)
+        profile = load_profile()
+
+        session_block = expand_session(out.session, profile)
+        alternatives = [expand_session(pick, profile) for pick in out.alternatives]
+        day_type = resolve_day_type(out.day_type, out.session.card)
+        macro_focus = compute_macro_focus(
+            day_type=day_type,
+            weight_kg=_live_weight(_metrics_row(session, event.date), profile),
+            nutrition=profile.nutrition,
+            athlete=profile.athlete,
+        )
+        intake_yesterday = derive_intake_summary(
+            _metrics_row(session, event.date - timedelta(days=1)), macro_focus
+        )
+        self.save_output(
+            self.OutputType(
+                session=session_block,
+                alternatives=alternatives,
+                skip_ok=out.skip_ok,
+                day_type=day_type,
+                macro_focus=macro_focus,
+                narrative=list(out.narrative),
+                intake_yesterday=intake_yesterday,
+            )
+        )
+        return task_context
