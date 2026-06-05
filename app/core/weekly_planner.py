@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 from datetime import date, timedelta
 from typing import ClassVar
 
@@ -58,6 +59,7 @@ from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
 from app.database.models import DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
+from app.services.daily_metrics_engine import current_body_weight
 from app.services.derive.plan import PlannedSession, expand_plan
 from app.services.macros import (
     LastWeekNutrition,
@@ -74,6 +76,8 @@ from app.services.recompute import (
     smooth_strength_trend,
 )
 from app.services.targets import WeeklyTargets, compute_targets
+
+logger = logging.getLogger(__name__)
 
 # §5.1/§9 deload cadence — the 4-week block ``compute_budgets`` reads via its 0-based
 # ``iso_week_index`` (``(idx + 1) % 4 == 0`` → the 4th week deloads). Pinned here so the
@@ -135,6 +139,24 @@ def _fresh_profile(task_context: TaskContext) -> Profile:
     return load_profile()
 
 
+def _nutrition_weight(
+    session: Session, anchor: date, goal_weight_kg: float
+) -> tuple[float, bool]:
+    """The weight basis for the weekly nutrition + adherence target (E13·P3).
+
+    Returns ``(weight_kg, used_fallback)``: the athlete's current/live weight
+    (``current_body_weight`` — the latest materialised ``daily_metrics.body_weight`` ≤ anchor)
+    when one exists, else ``goal_weight_kg`` with ``used_fallback=True``. Resolved by **both**
+    ``LoadAggregatesNode`` (the adherence target) and ``ComputeNutritionNode`` (the displayed
+    macros) so the comparison target stays equal to the displayed target (lock-step — DECISIONS
+    Decision 3); the fallback note is logged once, at the display node.
+    """
+    current = current_body_weight(session, anchor)
+    if current is not None:
+        return current, False
+    return goal_weight_kg, True
+
+
 # ---------------------------------------------------------------------------
 # LoadAggregatesNode — the 7/28-day rollups (E6·P3).
 # ---------------------------------------------------------------------------
@@ -154,19 +176,25 @@ class LoadAggregatesNode(Node):
 
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
+        anchor = task_context.event.anchor
         # Build the per-day nutrition target from the node-1 profile (this node runs before
         # RecomputeConstants, so `load_profile()` carries last-week's constants — DECISIONS
         # Decision 2) and inject it as the 7-day adherence target, so the `lastWeek` vs-target
-        # counts populate (E13·P2). Only the 7d window gets a target; the 28d stays target-less.
+        # counts populate (E13·P2). The weight basis is the athlete's current/live weight
+        # (E13·P3) — the SAME basis ComputeNutritionNode uses for the displayed macros, so the
+        # adherence denominator equals the displayed target (lock-step — DECISIONS Decision 3).
+        # Resolve silently here; the no-history fallback note is logged once at the display node.
         profile = load_profile()
+        weight_kg, _used_fallback = _nutrition_weight(
+            session, anchor, profile.athlete.goal_weight_kg
+        )
         target_7d = per_day_nutrition_target(
-            weight_kg=profile.athlete.goal_weight_kg,
+            weight_kg=weight_kg,
             nutrition=profile.nutrition,
             athlete=profile.athlete,
         )
-        aggregates = load_aggregates(
-            session, task_context.event.anchor, nutrition_target_7d=target_7d
-        )
+        # Only the 7d window gets a target; the 28d stays target-less.
+        aggregates = load_aggregates(session, anchor, nutrition_target_7d=target_7d)
         self.save_output(self.OutputType(aggregates=aggregates))
         return task_context
 
@@ -515,6 +543,21 @@ class ComputeNutritionNode(Node):
         profile = _fresh_profile(task_context)
         aggregates = _aggregates_of(task_context)
 
+        # The weekly macros track the athlete's current/live weight (E13·P3) — the latest
+        # materialised daily_metrics.body_weight ≤ anchor — falling back to goal_weight_kg only
+        # when no scale reading exists (the brief must not fail on a missing weigh-in). This is
+        # the same basis LoadAggregatesNode used for the adherence target (lock-step). Log the
+        # fallback note once, here at the display node (DECISIONS Decisions 2 & 3).
+        anchor = task_context.event.anchor
+        weight_kg, used_fallback = _nutrition_weight(
+            _session_of(task_context), anchor, profile.athlete.goal_weight_kg
+        )
+        if used_fallback:
+            logger.warning(
+                "weekly nutrition: no body_weight on/before %s; falling back to goal_weight_kg",
+                anchor,
+            )
+
         picks = [
             (
                 s.suggested_day.value if s.suggested_day is not None else "",
@@ -524,7 +567,7 @@ class ComputeNutritionNode(Node):
         ]
         nutrition = compute_weekly_nutrition(
             picks=picks,
-            weight_kg=profile.athlete.goal_weight_kg,
+            weight_kg=weight_kg,
             nutrition=profile.nutrition,
             athlete=profile.athlete,
             last_week=_last_week_adherence(aggregates),
