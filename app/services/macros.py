@@ -30,7 +30,6 @@ it, E7's validator floors it).
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
 from pydantic import field_validator, model_validator
 
@@ -38,8 +37,10 @@ from app.api.schemas.base import CamelModel
 from app.core.enums import DayType
 from app.core.profile import Athlete, CarbsPerKg, Nutrition
 
-if TYPE_CHECKING:  # type-only — no import-time coupling (no macros↔aggregates cycle)
-    from app.services.aggregates import NutritionAdherence
+# One-way edge macros → aggregates (aggregates imports nothing from macros → no cycle,
+# verified). E13·P1 added `NutritionAdherence` (the `from_adherence` source); E13·P2 adds
+# `NutritionTarget` (constructed at runtime by `per_day_nutrition_target`).
+from app.services.aggregates import NutritionAdherence, NutritionTarget
 
 # --- Pinned constants, transcribed verbatim from CONSTITUTION §7 (single source) ---
 
@@ -469,4 +470,33 @@ def compute_weekly_nutrition(
             picks, weight_kg=weight_kg, nutrition=nutrition, athlete=athlete
         ),
         last_week=last_week,
+    )
+
+
+def per_day_nutrition_target(
+    *,
+    weight_kg: float,
+    nutrition: Nutrition,
+    athlete: Athlete,
+) -> NutritionTarget:
+    """The per-day `NutritionTarget` the weekly `lastWeek` adherence compares against (E13·P2).
+
+    Reuses the **same** §7.1 chain `compute_weekly_nutrition` uses for the *displayed* targets
+    — `bmr → tdee → deficit_target` for the week-average daily calorie target, and `protein_g`
+    for the protein floor — so the adherence denominator is numerically identical to the
+    shown `avgCaloriesKcal`/`proteinG` (DECISIONS Decision 1). The `kcal` is the **unrounded**
+    `deficit_target` (the adherence math in `nutrition_adherence` compares against raw floats).
+    Only `kcal`/`protein_g` are set; `carbs_g`/fat/water stay `None` — they are not part of the
+    `lastWeek` vs-target contract (`NutritionTarget` fields are individually optional). The
+    weight basis is `goal_weight_kg` for now; E13·P3 swaps it (and the displayed weight) to the
+    current/live weight in lock-step.
+    """
+    _require_positive_weight(weight_kg)
+    t = tdee(
+        bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex),
+        nutrition.activity_factor,
+    )
+    return NutritionTarget(
+        kcal=deficit_target(t, nutrition.deficit_pct),
+        protein_g=protein_g(weight_kg, nutrition.protein_g_per_kg),
     )
