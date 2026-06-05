@@ -15,6 +15,8 @@ baselines, per-day sleep/zone-minutes/readiness — live in `daily_metrics`
 The example file and accessors land in TASK-003.
 """
 
+import os
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -235,6 +237,10 @@ class Meta(BaseModel):
     derived_from: str
     computed_at: date
     constitution_version: str
+    # The ISO week (`YYYY-Www`) the §10 monthly constants recompute last fired (E10·P2).
+    # Nullable so a fresh profile that never recomputed is **due** on its first weekly
+    # brief; `RecomputeConstants` stamps it on a due run and `is_recompute_due` reads it.
+    constants_recomputed_week: str | None = None
 
 
 class Profile(BaseModel):
@@ -296,3 +302,35 @@ def load_profile(path: Path | None = None) -> Profile:
     if not isinstance(data, dict):
         raise ValueError(f"profile.yaml at {resolved} must be a YAML mapping, got {type(data).__name__}")
     return Profile(**data)
+
+
+def write_profile(profile: Profile, *, path: Path | None = None) -> None:
+    """Atomically (re)write `profile.yaml` from a validated `Profile` (E10·P2; §10).
+
+    The single `profile.yaml` **writer** in the repo (E8·P5 deferred it to E10). Resolves
+    `path` via the same `_default_profile_path()` (`PROFILE_PATH` override) `load_profile`
+    uses, serialises `profile` back to the §5 mapping (`model_dump(mode="json")` — `date`
+    fields ISO-stamped, enums as wire strings), `yaml.safe_dump`s to a **temp file in the
+    same directory**, `flush`+`fsync`, then `os.replace(tmp, target)` (atomic rename — a
+    concurrent `load_profile` never sees a torn file). On any dump/write error the temp
+    file is removed and the error re-raised, leaving the original `profile.yaml` intact.
+
+    Round-trips: `load_profile(path)` after `write_profile(p, path=path)` re-reads an
+    **equal** `Profile`. The caller (`PersistPlanNode`) holds a `Profile` already rebuilt
+    via `Profile.model_validate(...)` (re-validated), so a §10 helper can never persist an
+    invalid file.
+    """
+    target = Path(path) if path is not None else _default_profile_path()
+    data = profile.model_dump(mode="json")
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".profile-", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, target)
+    except BaseException:
+        # Leave the original file untouched on any failure; clean up the temp file.
+        tmp_path.unlink(missing_ok=True)
+        raise

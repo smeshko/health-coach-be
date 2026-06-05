@@ -25,6 +25,7 @@ from app.core.profile import (
     Thresholds,
     Zones,
     load_profile,
+    write_profile,
 )
 
 # The DB.md §5 example block, as a plain dict — the known-valid baseline every
@@ -168,7 +169,13 @@ EXPECTED_KEYS = {
         "fiber_g_high",
     },
     CarbsPerKg: {"hard_low", "hard_high", "moderate", "rest_low", "rest_high"},
-    Meta: {"derived_from", "computed_at", "constitution_version"},
+    Meta: {
+        "derived_from",
+        "computed_at",
+        "constitution_version",
+        # E10·P2: the §10 monthly-recompute stamp (nullable, defaults None) — DECISIONS D1.
+        "constants_recomputed_week",
+    },
 }
 
 # Names of live/derived values that must NEVER be modelled here — they live in
@@ -557,3 +564,64 @@ def test_z5_high_must_equal_max_hr(tmp_path):
     # max_hr changed (190) but z5 high stays 192 -> the ceilings disagree.
     with pytest.raises(pydantic.ValidationError):
         load_profile(write_yaml(tmp_path, {"thresholds": {"max_hr": 190}}))
+
+
+# --- E10·P2: write_profile (the atomic §10 writer E8·P5 deferred) ---
+
+
+def test_constants_recomputed_week_defaults_to_none():
+    p = Profile(**valid_profile_dict())
+    assert p.meta.constants_recomputed_week is None
+
+
+def test_constants_recomputed_week_round_trips():
+    d = valid_profile_dict()
+    d["meta"]["constants_recomputed_week"] = "2026-W23"
+    p = Profile(**d)
+    assert p.meta.constants_recomputed_week == "2026-W23"
+
+
+def test_write_profile_round_trip_equals_loaded(tmp_path):
+    # write_profile then load_profile re-reads an EQUAL Profile (every constant + stamp).
+    d = valid_profile_dict()
+    d["meta"]["constants_recomputed_week"] = "2026-W19"
+    original = Profile(**d)
+    target = tmp_path / "profile.yaml"
+    write_profile(original, path=target)
+    reloaded = load_profile(target)
+    assert reloaded == original
+    assert reloaded.thresholds.cadence_current_spm == original.thresholds.cadence_current_spm
+    assert reloaded.meta.constants_recomputed_week == "2026-W19"
+
+
+def test_write_profile_atomicity_safe_dump_failure_leaves_original_intact(tmp_path, monkeypatch):
+    # An existing file must survive a mid-dump failure (temp-then-os.replace): the temp
+    # file errors, the original is never touched, and no stray temp file is left behind.
+    target = tmp_path / "profile.yaml"
+    original = Profile(**valid_profile_dict())
+    write_profile(original, path=target)
+    before = target.read_text(encoding="utf-8")
+
+    import app.core.profile as profile_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("dump failed")
+
+    monkeypatch.setattr(profile_mod.yaml, "safe_dump", _boom)
+    changed = Profile(**{**valid_profile_dict(), "meta": {**valid_profile_dict()["meta"], "constitution_version": "v2"}})
+    with pytest.raises(RuntimeError, match="dump failed"):
+        write_profile(changed, path=target)
+
+    assert target.read_text(encoding="utf-8") == before  # untouched
+    assert load_profile(target).meta.constitution_version == "v1"
+    # No leftover temp file in the directory.
+    assert not list(tmp_path.glob(".profile-*.tmp"))
+
+
+def test_write_profile_default_path_honours_env_override(tmp_path, monkeypatch):
+    # No explicit path → resolve PROFILE_PATH (the deployment seam), like load_profile.
+    target = tmp_path / "deployed.yaml"
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    write_profile(Profile(**valid_profile_dict()))
+    assert target.is_file()
+    assert load_profile().meta.constitution_version == "v1"
