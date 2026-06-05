@@ -19,10 +19,12 @@ Pure: no FastAPI/HTTP imports, no DB persistence, no LLM, no `profile.yaml` writ
 
 from __future__ import annotations
 
+import math
+import statistics
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from app.api.schemas.sync import SyncRequest
 from app.core.healthkit import filter_whitelisted_records
@@ -148,3 +150,99 @@ def next_quality_focus(last_week: QualityFocus | None) -> QualityFocus:
     if last_week is QualityFocus.VO2:
         return QualityFocus.THRESHOLD
     return QualityFocus.THRESHOLD
+
+
+# --- Strength-test trend smoothing (constitution §9/§10 "trend-smoothed") ---
+# §10 is the **monthly** recompute over a **weekly** test → ~4 tests/window; the trailing
+# SMA over the last `span` present weeks is transparent + exactly reproducible (DECISIONS 2).
+STRENGTH_SMOOTH_SPAN = 4
+# A smoothed mean is a float; a sub-rep wobble (e.g. +0.25 rep) is noise, not a trend, so the
+# direction only fires `up`/`down` beyond a ±0.5-rep dead-band — else `flat` (DECISIONS 3).
+STRENGTH_FLAT_EPS = 0.5
+
+# The smoothed window mean is a float, so an exact ±eps boundary can land a hair off after
+# binary float arithmetic. The dead-band OWNS its edge (an exact ±eps delta is `flat`), so
+# `up`/`down` use STRICT tolerant comparisons — matching readiness.py/safety_gate.py/budgets.py.
+_BOUNDARY_REL_TOL = 1e-9
+_BOUNDARY_ABS_TOL = 1e-12
+
+
+def _at_boundary(value: float, boundary: float) -> bool:
+    """``value`` equals ``boundary`` within float noise."""
+    return math.isclose(value, boundary, rel_tol=_BOUNDARY_REL_TOL, abs_tol=_BOUNDARY_ABS_TOL)
+
+
+def _strictly_above(value: float, boundary: float) -> bool:
+    """``value > boundary``, but an exact boundary (within float noise) is **not** above."""
+    return value > boundary and not _at_boundary(value, boundary)
+
+
+def _strictly_below(value: float, boundary: float) -> bool:
+    """``value < boundary``, but an exact boundary (within float noise) is **not** below."""
+    return value < boundary and not _at_boundary(value, boundary)
+
+
+@dataclass(frozen=True)
+class StrengthPoint:
+    """One metric's weekly max for a single ISO week.
+
+    `value is None` = a missed test that week (`strength_tests.max_*` is nullable) — "no
+    data", dropped before smoothing, **never** read as 0 reps (DECISIONS 10).
+    """
+
+    iso_week: str
+    value: int | None
+
+
+@dataclass(frozen=True)
+class StrengthTrend:
+    """The smoothed trend for one metric: the smoothed latest level + a direction.
+
+    `smoothed`/`direction` are `None` and `n == 0` for an empty / all-missing series (the
+    function is total — no exception on no data; DECISIONS 10).
+    """
+
+    smoothed: float | None
+    direction: Literal["up", "flat", "down"] | None
+    n: int
+
+
+def smooth_strength_trend(
+    series: list[StrengthPoint], *, span: int = STRENGTH_SMOOTH_SPAN
+) -> StrengthTrend:
+    """Smooth one metric's noisy weekly max into a trend value + direction (§9/§10).
+
+    Orders by `iso_week`, **drops** missed (`None`) weeks (a missed test ≠ 0 reps —
+    DECISIONS 10), then takes a **trailing simple moving average** over the last `span`
+    present weeks as the smoothed level (DECISIONS 2). `direction` compares that window
+    against the prior `span`-week window with the `STRENGTH_FLAT_EPS` dead-band — `up`
+    beyond +eps, `down` beyond −eps, else `flat` (a sub-rep wobble is `flat`, not noise;
+    DECISIONS 3); with no prior window to compare → `flat`. An empty / all-`None` series →
+    a null trend `(None, None, 0)`. Operates on **one** metric; the E10 node runs it once
+    per metric (`max_pushups`, `max_pullups`).
+    """
+    present = [
+        point.value
+        for point in sorted(series, key=lambda p: p.iso_week)
+        if point.value is not None
+    ]
+    if not present:
+        return StrengthTrend(smoothed=None, direction=None, n=0)
+
+    window = present[-span:]
+    smoothed = statistics.mean(window)
+
+    prior = present[-2 * span : -span]
+    if prior:
+        delta = smoothed - statistics.mean(prior)
+        if _strictly_above(delta, STRENGTH_FLAT_EPS):
+            direction: Literal["up", "flat", "down"] = "up"
+        elif _strictly_below(delta, -STRENGTH_FLAT_EPS):
+            direction = "down"
+        else:
+            direction = "flat"
+    else:
+        # No prior window (only the current one) — nothing to trend against yet.
+        direction = "flat"
+
+    return StrengthTrend(smoothed=smoothed, direction=direction, n=len(present))

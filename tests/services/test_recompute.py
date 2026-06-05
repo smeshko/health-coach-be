@@ -16,13 +16,17 @@ from app.core.profile import Profile
 from app.services.recompute import (
     CADENCE_RAMP_MIN_WEEKS,
     CADENCE_STEP_SPM,
+    STRENGTH_SMOOTH_SPAN,
     CadenceRamp,
     QualityFocus,
+    StrengthPoint,
+    StrengthTrend,
     affected_dates,
     next_quality_focus,
     noop_recompute,
     ramp_cadence,
     ramp_cadence_for,
+    smooth_strength_trend,
 )
 
 
@@ -293,3 +297,84 @@ def test_next_quality_focus_is_an_involution() -> None:
 
 def test_quality_focus_universe_is_exactly_two_lowercase_values() -> None:
     assert {f.value for f in QualityFocus} == {"threshold", "vo2"}
+
+
+# --- TASK-003: strength-test trend smoothing (trailing SMA + flat dead-band) ---
+
+
+def _series(values: list[int | None], *, start_week: int = 1) -> list[StrengthPoint]:
+    """Build a weekly `StrengthPoint` series with ascending ISO-week keys."""
+    return [
+        StrengthPoint(iso_week=f"2026-W{start_week + i:02d}", value=v)
+        for i, v in enumerate(values)
+    ]
+
+
+def test_smooth_strength_trend_rising_series_trends_up() -> None:
+    result = smooth_strength_trend(_series([20, 22, 24, 26, 28, 30, 32, 34]))
+    assert result.direction == "up"
+    # Trailing-span mean of the last 4 present values: mean(28,30,32,34) = 31.0.
+    assert result.smoothed == 31.0
+    assert result.n == 8
+
+
+def test_smooth_strength_trend_falling_series_trends_down() -> None:
+    result = smooth_strength_trend(_series([34, 32, 30, 28, 26, 24, 22, 20]))
+    assert result.direction == "down"
+    assert result.smoothed == 23.0  # mean(26,24,22,20)
+
+
+def test_smooth_strength_trend_flat_series_is_flat() -> None:
+    result = smooth_strength_trend(_series([30, 30, 30, 30, 30, 30, 30, 30]))
+    assert result.direction == "flat"
+    assert result.smoothed == 30.0
+
+
+def test_smooth_strength_trend_sub_eps_wobble_is_flat() -> None:
+    # latest window mean(31,30,30,30)=30.25 vs prior mean(30,30,30,30)=30.0 → +0.25 ≤ eps.
+    result = smooth_strength_trend(_series([30, 30, 30, 30, 31, 30, 30, 30]))
+    assert result.direction == "flat"
+
+
+def test_smooth_strength_trend_drops_missed_week_not_zeroed() -> None:
+    # An interior None week == omitting that week (a missed test is "no data", not 0 reps).
+    with_gap = smooth_strength_trend(_series([20, 22, None, 24, 26, 28, 30, 32]))
+    without = smooth_strength_trend(_series([20, 22, 24, 26, 28, 30, 32]))
+    assert with_gap == without
+    # And it never craters as if the None were a 0.
+    assert with_gap.direction == "up"
+
+
+def test_smooth_strength_trend_empty_series_is_null_trend() -> None:
+    assert smooth_strength_trend([]) == StrengthTrend(smoothed=None, direction=None, n=0)
+
+
+def test_smooth_strength_trend_all_none_series_is_null_trend() -> None:
+    result = smooth_strength_trend(_series([None, None, None]))
+    assert result == StrengthTrend(smoothed=None, direction=None, n=0)
+
+
+def test_smooth_strength_trend_smoothed_equals_hand_computed_mean() -> None:
+    # Fewer than `span` present weeks → trailing window is the whole present series.
+    result = smooth_strength_trend(_series([40, 44, 48]))
+    assert STRENGTH_SMOOTH_SPAN == 4
+    assert result.smoothed == 44.0  # mean(40,44,48) — only 3 present, span caps at all
+    assert result.n == 3
+
+
+def test_smooth_strength_trend_sorts_by_iso_week() -> None:
+    # Out-of-order input is ordered by iso_week before windowing (deterministic).
+    ordered = smooth_strength_trend(_series([20, 22, 24, 26, 28, 30, 32, 34]))
+    shuffled = smooth_strength_trend(
+        [
+            StrengthPoint(iso_week="2026-W08", value=34),
+            StrengthPoint(iso_week="2026-W01", value=20),
+            StrengthPoint(iso_week="2026-W05", value=28),
+            StrengthPoint(iso_week="2026-W03", value=24),
+            StrengthPoint(iso_week="2026-W02", value=22),
+            StrengthPoint(iso_week="2026-W07", value=32),
+            StrengthPoint(iso_week="2026-W04", value=26),
+            StrengthPoint(iso_week="2026-W06", value=30),
+        ]
+    )
+    assert shuffled == ordered
