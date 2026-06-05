@@ -1,0 +1,24 @@
+# litestream — continuously replicate app.db's WAL to object storage (E12·P3; ARCHITECTURE §1 Backup).
+#
+# Litestream is a SIDECAR process run ALONGSIDE the single `uvicorn` process (NOT a thread
+# inside the app — ARCHITECTURE §1 "no background workers/scheduler"). It watches the SQLite
+# WAL (the runtime keeps WAL mode on — engine.py) and streams frames to the replica, so the
+# one durable file survives disk loss.
+#
+#   Replicate (run next to the container):   litestream replicate -config litestream.yml
+#   Restore   (on a fresh disk, pre-boot):   litestream restore  -config litestream.yml "$APP_DB_PATH"
+#
+# Every bucket/endpoint/credential is ENV-DRIVEN (litestream expands ${VARS} here) — NEVER a
+# committed secret. S3 credentials come from the standard AWS env vars
+# (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY) or an instance role, not this file.
+
+dbs:
+  # The ONE runtime durable file — the same path `settings.app_db_path` / the E12·P2 `/data`
+  # volume points at. NEVER `baseline.db` (a read-only build input never opened at runtime).
+  - path: ${APP_DB_PATH}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}      # the object-storage bucket
+        path: ${LITESTREAM_PATH}          # key prefix within the bucket (e.g. coach-app/app.db)
+        endpoint: ${LITESTREAM_ENDPOINT}  # S3-compatible endpoint (omit/empty for AWS S3)
+        region: ${LITESTREAM_REGION}      # e.g. eu-central-1
