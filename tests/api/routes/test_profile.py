@@ -61,7 +61,9 @@ def test_profile_returns_camel_constants():
     assert thresholds["cadenceCurrentSpm"] == profile.thresholds.cadence_current_spm
 
     assert body["meta"]["constitutionVersion"] == profile.meta.constitution_version
-    assert "constantsRecomputedWeek" in body["meta"]
+    # Pin the optional field's value (not just presence) so a null/omit regression is caught —
+    # serialises the loaded value, which may be a `YYYY-Www` string or null.
+    assert body["meta"]["constantsRecomputedWeek"] == profile.meta.constants_recomputed_week
 
 
 def test_profile_zone_ranges_low_high():
