@@ -18,8 +18,9 @@ E11 / E12 — this module stays **generic over the OutputType** and FastAPI-free
 """
 
 import asyncio
-from abc import abstractmethod
-from typing import Generic, Literal, TypeVar
+import json
+from enum import Enum
+from typing import Any, Generic, Literal, TypeVar
 
 import anthropic
 import httpx
@@ -32,7 +33,9 @@ from pydantic_ai import (
 )
 from pydantic_ai.settings import ModelSettings
 
+from app.core.constitution import constitution_version, render_constitution
 from app.core.nodes import AgentConfig, AgentNode
+from app.core.profile import Profile
 from app.core.task_context import TaskContext
 
 # The stable machine codes MODELS "Errors" lists for the LLM failure path (LLM §5).
@@ -70,6 +73,78 @@ LOW_TEMPERATURE: float = 0.1
 MAX_RETRIES: int = 2
 # Per-call request timeout so a hung upstream surfaces as `upstream_timeout` (LLM §5).
 CALL_TIMEOUT_S: float = 60.0
+
+# The two agent shapes the one builder serves — "same shape for both agents, only
+# the context payload and the OutputType differ" (LLM §2). Weekly adds `budgets`;
+# daily adds the active `weekPlan` + `MacroFocus`.
+ModeT = Literal["weekly", "daily"]
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerce `value` to a JSON-serialisable form for the USER message.
+
+    Pydantic `BaseModel`s → `model_dump(mode="json")` (enums become their wire
+    string, dates ISO-format); `Enum`s → their `.value`; everything else passes
+    through `json.dumps`'s native handling. Used as `json.dumps(..., default=…)`
+    so any nested computed value (an E6/E8 result model, a card enum) serialises
+    deterministically without this builder knowing its concrete type.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
+
+
+def build_user_context(profile: Profile, *, computed: Any, mode: ModeT) -> dict:
+    """Assemble the per-period computed USER context as a JSON-able dict (LLM §2).
+
+    This is the "USER computed context for THIS period" the model picks *within*
+    (derive-don't-emit): it **collects + serialises** values the E6/E8 engines
+    already computed (read off `computed`) and stamps `constitution_version` — it
+    computes **no** numbers itself. The single `mode`-parameterised builder serves
+    **both** agents ("same shape for both agents — only the context payload
+    differs", LLM §2), so the shared harness stays brief-agnostic.
+
+    `computed` is the period bundle the node assembled off the `TaskContext`
+    (forward dep — E6 7/28-day rollups, E8 `compute_readiness`/`compute_budgets`/
+    `compute_macros`); it is read **structurally** via `_get` (a key on a dict or
+    an attribute on an object) so this module binds no concrete E6/E8 type.
+
+    Common fields (both modes): `constitution_version`, `live_weight_kg`,
+    `readiness`/`band`/`safetyGate`, `aggregates` (7/28-day training **and**
+    nutrition intake), `flags` (knee, gi), `constants`. `mode="weekly"` adds
+    `budgets` (E8 `WeeklyBudgets`) + last-week nutrition adherence; `mode="daily"`
+    adds the active `weekPlan`, the `safetyGate` result, and `MacroFocus` +
+    yesterday's `IntakeSummary`.
+
+    The live weight is a **user-context** field (`live_weight_kg`), never baked
+    into the system prompt (LLM §2 "live weight is fed in the user context").
+    """
+
+    def _get(key: str, default: Any = None) -> Any:
+        if isinstance(computed, dict):
+            return computed.get(key, default)
+        return getattr(computed, key, default)
+
+    context: dict[str, Any] = {
+        "constitution_version": constitution_version(profile),
+        "live_weight_kg": _get("live_weight_kg"),
+        "readiness": _get("readiness"),
+        "band": _get("band"),
+        "safetyGate": _get("safety_gate"),
+        "aggregates": _get("aggregates"),
+        "flags": _get("flags"),
+        "constants": _get("constants"),
+    }
+    if mode == "weekly":
+        context["budgets"] = _get("budgets")
+        context["nutritionAdherence"] = _get("nutrition_adherence")
+    else:
+        context["weekPlan"] = _get("week_plan")
+        context["macroFocus"] = _get("macro_focus")
+        context["intakeSummary"] = _get("intake_summary")
+    return context
 
 
 def build_agent(
@@ -156,20 +231,70 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     WeeklyDeps, WeeklyOut]): ...`` — keeping this base brief-agnostic (it imports neither
     concrete output type).
 
-    Two seams the **context assembly (E9·P2)** fills are left abstract:
-    `build_system_prompt` (the rendered constitution — a default may delegate to E3's
-    `render_constitution`) and `build_run_input` (the computed-context user message — a
-    stub here; the real per-period JSON builder is E9·P2). No `@agent.output_validator`
-    is registered here; the `deps_type` + `retries` budget are the seams E9·P2 consumes.
+    E9·P2 fills the two context seams `build_system_prompt` (the rendered
+    constitution for the live period) and `build_run_input` (the computed-context
+    USER JSON via `build_user_context`), reading the live `Profile` + the computed
+    bundle off the `TaskContext` through the `_profile`/`_computed` extraction
+    seams E10/E11 specialise. The `mode` (`"weekly"`/`"daily"`) parameterises the
+    one builder so it serves both agents. The `@agent.output_validator` wiring +
+    the pre-persist re-check are E9·P2 (below); the `deps_type` + `retries` budget
+    are the E9·P1 seams that wiring consumes.
     """
 
-    @abstractmethod
-    def build_system_prompt(self, task_context: TaskContext) -> str:
-        """Return the rendered-constitution system prompt (E3; the live wiring is E9·P2)."""
+    #: The agent shape ("weekly"/"daily") the one `build_user_context` builder
+    #: serves; E10/E11 pin it on their concrete node so the harness stays
+    #: brief-agnostic (LLM §2 "same shape for both agents").
+    mode: ModeT = "weekly"
 
-    @abstractmethod
+    def _profile(self, task_context: TaskContext) -> Profile:
+        """The live per-period `Profile` (constants) the workflow loaded.
+
+        Read off `task_context.metadata["profile"]` by default — the seam the
+        workflow populates; E10/E11 may override to source it differently. Used by
+        both `build_system_prompt` (the rendered constitution) and
+        `build_user_context` (the `constitution_version` stamp).
+        """
+        profile = task_context.metadata.get("profile")
+        if not isinstance(profile, Profile):
+            raise ValueError(
+                "task_context.metadata['profile'] must be a Profile for the agent call"
+            )
+        return profile
+
+    def _computed(self, task_context: TaskContext) -> Any:
+        """The per-period computed bundle (E6/E8 numbers) the USER context carries.
+
+        Read off `task_context.metadata["computed"]` by default; E10/E11 specialise
+        where their period's computed values live. `build_user_context` reads it
+        structurally (dict key or attribute) so this base binds no concrete E6/E8
+        type. Defaults to an empty dict so a missing bundle yields null fields
+        rather than raising.
+        """
+        return task_context.metadata.get("computed", {})
+
+    def build_system_prompt(self, task_context: TaskContext) -> str:
+        """Return the rendered-constitution system prompt for the live `Profile` (E3).
+
+        Calls `render_constitution(profile)` **fresh** each `process()` — caching is
+        off (LLM §2/§5; E3 "no cache"), so nothing memoizes the prompt. Takes only
+        the `Profile` (constants); the live weight enters via the USER context, not
+        the prompt (LLM §2).
+        """
+        return render_constitution(self._profile(task_context))
+
     def build_run_input(self, task_context: TaskContext) -> str:
-        """Return the computed-context user message (a stub in P1; the JSON builder is E9·P2)."""
+        """Serialise the per-period USER context to the deterministic JSON USER message.
+
+        Assembles `build_user_context(profile, computed=…, mode=self.mode)` and
+        dumps it with `sort_keys=True` so traces and tests are stable across runs.
+        Nested computed `BaseModel`/`Enum` values serialise via `_jsonable`.
+        """
+        context = build_user_context(
+            self._profile(task_context),
+            computed=self._computed(task_context),
+            mode=self.mode,
+        )
+        return json.dumps(context, sort_keys=True, default=_jsonable)
 
     def build_deps(self, task_context: TaskContext) -> DepsTypeT:
         """Build the `RunContext` deps for the run; default is a bare `DepsType` (E9·P2 enriches)."""

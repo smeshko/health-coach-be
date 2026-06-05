@@ -573,3 +573,219 @@ def test_build_agent_has_no_fallback_model(_no_anthropic_key):
     # The model is a plain deferred string — never wrapped in a FallbackModel (LLM §2
     # "Fallback: none"). A future regression that introduces a fallback wrapper fails here.
     assert not isinstance(agent.model, FallbackModel)
+
+
+# --------------------------------------------------------------------------- #
+# E9·P2 — context payload builder (TASK-001): SYSTEM = rendered constitution +
+# USER = computed-context JSON (readiness/budgets/aggregates/flags/constants).
+# Model-mocked; a real `Profile` (from `profile.yaml`) + a known `computed` bundle.
+# --------------------------------------------------------------------------- #
+
+# A distinctive live weight that is NOT one of the profile's rendered constants, so
+# its presence/absence in the system prompt vs the user context is unambiguous.
+_LIVE_WEIGHT_KG = 987.654
+
+
+@pytest.fixture
+def _profile():
+    """The real, validated `Profile` loaded from the repo-root `profile.yaml`."""
+    from app.core.profile import load_profile
+
+    return load_profile()
+
+
+def _computed_bundle() -> dict:
+    """A per-period computed bundle of KNOWN values (standing in for E6/E8).
+
+    Read structurally by `build_user_context` — every value is a plain, JSON-able
+    Python primitive so the builder is exercised without importing any concrete
+    E6/E8/`*LLMOutput` type.
+    """
+    return {
+        "live_weight_kg": _LIVE_WEIGHT_KG,
+        "readiness": 72,
+        "band": "amber",
+        "safety_gate": False,
+        "aggregates": {
+            "training": {"7d_load": 310, "28d_load": 1180},
+            "nutrition": {"7d_kcal": 16800, "28d_kcal": 67200},
+        },
+        "flags": {"knee": 1, "gi": 0},
+        "constants": {"activity_factor": 1.5},
+        # weekly-only
+        "budgets": {"hard_days": 2, "strength_sessions": 2, "long_run_km": 18.0, "deload": False},
+        "nutrition_adherence": {"last_week_pct": 0.86},
+        # daily-only
+        "week_plan": {"cards": ["easy_run", "threshold", "strength_lower"]},
+        "macro_focus": {"carbs_g": 420, "protein_g": 150},
+        "intake_summary": {"yesterday_kcal": 2400},
+    }
+
+
+def _ctx_with(profile, computed: dict) -> TaskContext:
+    """A `TaskContext` carrying the live `Profile` + computed bundle on `metadata`."""
+    return TaskContext(
+        event=None, metadata={"profile": profile, "computed": computed}
+    )
+
+
+_COMMON_USER_FIELDS = (
+    "constitution_version",
+    "live_weight_kg",
+    "readiness",
+    "band",
+    "safetyGate",
+    "aggregates",
+    "flags",
+    "constants",
+)
+
+
+def test_build_user_context_common_fields_present_both_modes(_profile):
+    from app.core.agent_node import build_user_context
+
+    for mode in ("weekly", "daily"):
+        ctx = build_user_context(_profile, computed=_computed_bundle(), mode=mode)
+        for field in _COMMON_USER_FIELDS:
+            assert field in ctx, f"{field!r} missing in mode={mode}"
+        # The aggregates carry BOTH training and nutrition intake (LLM §2).
+        assert "training" in ctx["aggregates"]
+        assert "nutrition" in ctx["aggregates"]
+
+
+def test_build_user_context_weekly_adds_budgets_not_weekplan(_profile):
+    from app.core.agent_node import build_user_context
+
+    ctx = build_user_context(_profile, computed=_computed_bundle(), mode="weekly")
+    assert "budgets" in ctx
+    assert ctx["budgets"]["hard_days"] == 2
+    assert "weekPlan" not in ctx
+    assert "macroFocus" not in ctx
+
+
+def test_build_user_context_daily_adds_weekplan_and_macrofocus_not_budgets(_profile):
+    from app.core.agent_node import build_user_context
+
+    ctx = build_user_context(_profile, computed=_computed_bundle(), mode="daily")
+    assert "weekPlan" in ctx
+    assert "macroFocus" in ctx
+    assert "budgets" not in ctx
+
+
+def test_build_user_context_stamps_constitution_version(_profile):
+    from app.core.agent_node import build_user_context
+    from app.core.constitution import constitution_version
+
+    ctx = build_user_context(_profile, computed=_computed_bundle(), mode="weekly")
+    assert ctx["constitution_version"] == constitution_version(_profile)
+
+
+def test_build_user_context_carries_live_weight(_profile):
+    from app.core.agent_node import build_user_context
+
+    ctx = build_user_context(_profile, computed=_computed_bundle(), mode="daily")
+    assert ctx["live_weight_kg"] == _LIVE_WEIGHT_KG
+
+
+def _e9p2_node_cls(mode: str = "weekly", *, out_type: type[BaseModel] = _ToyOut):
+    """A concrete `PydanticAgentNode` that uses the REAL E9·P2 context seams.
+
+    Unlike `_toy_agent_node_cls`, this does NOT override `build_system_prompt`/
+    `build_run_input` — it exercises the filled seams (reading `Profile`/`computed`
+    off the `TaskContext.metadata`).
+    """
+    from app.core.agent_node import PydanticAgentNode
+
+    class _E9P2Node(PydanticAgentNode[_ToyDeps, out_type]):  # type: ignore[valid-type]
+        OutputType = out_type
+        DepsType = _ToyDeps
+
+        def get_agent_config(self) -> AgentConfig:
+            return AgentConfig(model_id="claude-opus-4-8", output_type=out_type)
+
+    _E9P2Node.mode = mode  # type: ignore[assignment]
+    return _E9P2Node
+
+
+def test_build_system_prompt_is_rendered_constitution_without_live_weight(_profile):
+    from app.core.constitution import render_constitution
+
+    node_cls = _e9p2_node_cls()
+    ctx = _ctx_with(_profile, _computed_bundle())
+    node = node_cls(task_context=ctx)
+
+    prompt = node.build_system_prompt(ctx)
+    # SYSTEM == render_constitution(profile) for the live Profile.
+    assert prompt == render_constitution(_profile)
+    # Live weight is NOT baked into the system prompt (LLM §2).
+    assert str(_LIVE_WEIGHT_KG) not in prompt
+
+
+def test_build_system_prompt_is_rendered_fresh_each_call(_profile, monkeypatch):
+    import app.core.agent_node as agent_node_mod
+
+    calls = {"n": 0}
+    real_render = agent_node_mod.render_constitution
+
+    def _counting_render(profile):
+        calls["n"] += 1
+        return real_render(profile)
+
+    monkeypatch.setattr(agent_node_mod, "render_constitution", _counting_render)
+
+    node_cls = _e9p2_node_cls()
+    ctx = _ctx_with(_profile, _computed_bundle())
+    node = node_cls(task_context=ctx)
+
+    node.build_system_prompt(ctx)
+    node.build_system_prompt(ctx)
+    # No memoization: each call re-renders (caching off, LLM §2/§5).
+    assert calls["n"] == 2
+
+
+def test_build_run_input_is_deterministic_json(_profile):
+    import json
+
+    node_cls = _e9p2_node_cls(mode="weekly")
+    ctx = _ctx_with(_profile, _computed_bundle())
+    node = node_cls(task_context=ctx)
+
+    first = node.build_run_input(ctx)
+    second = node.build_run_input(ctx)
+    # Stable key order so traces/tests are reproducible (sort_keys=True).
+    assert first == second
+    parsed = json.loads(first)
+    assert parsed["live_weight_kg"] == _LIVE_WEIGHT_KG
+    assert parsed["budgets"]["hard_days"] == 2
+
+
+def test_build_run_input_live_weight_in_user_context_not_system_prompt(_profile):
+    import json
+
+    node_cls = _e9p2_node_cls(mode="daily")
+    ctx = _ctx_with(_profile, _computed_bundle())
+    node = node_cls(task_context=ctx)
+
+    user_msg = json.loads(node.build_run_input(ctx))
+    assert user_msg["live_weight_kg"] == _LIVE_WEIGHT_KG
+    assert str(_LIVE_WEIGHT_KG) not in node.build_system_prompt(ctx)
+
+
+def test_build_user_context_serialises_pydantic_and_enum_values(_profile):
+    """The builder serialises nested BaseModel/Enum computed values JSON-ably."""
+    import json
+
+    from app.core.agent_node import _jsonable, build_user_context
+    from app.core.enums import ReadinessBand
+
+    class _ComputedModel(BaseModel):
+        live_weight_kg: float = _LIVE_WEIGHT_KG
+        band: ReadinessBand = ReadinessBand.amber
+
+    ctx = build_user_context(_profile, computed=_ComputedModel(), mode="weekly")
+    # Read structurally off an OBJECT (not a dict) too.
+    assert ctx["live_weight_kg"] == _LIVE_WEIGHT_KG
+    assert ctx["band"] is ReadinessBand.amber
+    # And it round-trips through json.dumps via the _jsonable default.
+    dumped = json.dumps(ctx, sort_keys=True, default=_jsonable)
+    assert json.loads(dumped)["band"] == "amber"
