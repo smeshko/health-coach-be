@@ -523,3 +523,53 @@ def test_no_synthetic_fallback_return_inside_except():
             assert not stripped.startswith("return "), (
                 f"synthetic fallback return inside except: {stripped!r}"
             )
+
+
+# --- Review #1: the COMMON Anthropic timeout shape maps to upstream_timeout ---
+
+
+def test_wrapped_anthropic_timeout_maps_to_upstream_timeout(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    # The real provider timeout: the Anthropic SDK raises APITimeoutError (a subclass of
+    # APIConnectionError — NOT httpx.TimeoutException, NOT a status error), which PydanticAI
+    # re-wraps into a ModelAPIError (an AgentRunError, no status_code). The timeout only
+    # survives on the chained __cause__ — _is_timeout must still map it to upstream_timeout
+    # (review #1: the bare-TimeoutError FunctionModel stub did not reflect this real path).
+    import httpx
+    from pydantic_ai import ModelAPIError
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    import anthropic
+    from app.core.agent_node import BriefGenerationError
+
+    def _raise_wrapped_timeout(messages, info: AgentInfo) -> ModelResponse:
+        cause = anthropic.APITimeoutError(
+            request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        )
+        raise ModelAPIError("m", "request timed out") from cause
+
+    _patch_build_agent(monkeypatch, FunctionModel(_raise_wrapped_timeout))
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "upstream_timeout"
+    assert node.node_name not in ctx.nodes
+
+
+# --- Review #3: lock "Fallback: none" (LLM §2) against a future regression ---
+
+
+def test_build_agent_has_no_fallback_model(_no_anthropic_key):
+    from pydantic_ai.models.fallback import FallbackModel
+
+    agent = _build_toy_agent()
+    # The model is a plain deferred string — never wrapped in a FallbackModel (LLM §2
+    # "Fallback: none"). A future regression that introduces a fallback wrapper fails here.
+    assert not isinstance(agent.model, FallbackModel)

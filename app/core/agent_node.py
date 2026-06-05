@@ -21,6 +21,7 @@ import asyncio
 from abc import abstractmethod
 from typing import Generic, Literal, TypeVar
 
+import anthropic
 import httpx
 from pydantic import BaseModel
 from pydantic_ai import (
@@ -40,6 +41,18 @@ ErrorCodeT = Literal["brief_generation_failed", "upstream_timeout"]
 # HTTP statuses that mean the upstream timed out (request timeout / gateway timeout),
 # so a timeout-flavoured ModelHTTPError maps to upstream_timeout, not the generic code.
 _TIMEOUT_STATUS_CODES = frozenset({408, 504})
+
+# Concrete timeout exception types. `anthropic.APITimeoutError` is the COMMON real
+# timeout: the Anthropic SDK raises it (a subclass of APIConnectionError — NOT an
+# httpx.TimeoutException, NOT an APIStatusError), and PydanticAI's `_map_api_errors`
+# re-wraps it into a `ModelAPIError` (no status_code). So the timeout only survives on
+# the chained __cause__ — `_is_timeout` walks the cause chain to catch it (review #1).
+_TIMEOUT_TYPES: tuple[type[BaseException], ...] = (
+    TimeoutError,
+    asyncio.TimeoutError,
+    httpx.TimeoutException,
+    anthropic.APITimeoutError,
+)
 
 # Real type parameters so a concrete weekly/daily node specialises the base with its
 # own deps + `*LLMOutput` (E10/E11) — the brief-agnostic-but-type-safe contract the
@@ -113,11 +126,22 @@ class BriefGenerationError(Exception):
 
 
 def _is_timeout(exc: Exception) -> bool:
-    """True if `exc` is an upstream timeout (vs a generic LLM failure)."""
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException)):
-        return True
+    """True if `exc` is an upstream timeout (vs a generic LLM failure).
+
+    Matches a direct timeout type, a timeout-flavoured `ModelHTTPError` (408/504), **and**
+    a timeout carried on the chained cause — PydanticAI wraps the provider SDK's timeout
+    (`anthropic.APITimeoutError`) into a `ModelAPIError`, so the common real timeout only
+    appears as `exc.__cause__` (review #1). The chain walk is bounded + cycle-safe.
+    """
     if isinstance(exc, ModelHTTPError) and exc.status_code in _TIMEOUT_STATUS_CODES:
         return True
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, _TIMEOUT_TYPES):
+            return True
+        current = current.__cause__ or current.__context__
     return False
 
 
