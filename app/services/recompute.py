@@ -30,6 +30,7 @@ from app.api.schemas.sync import SyncRequest
 from app.core.healthkit import filter_whitelisted_records
 from app.core.profile import Profile
 from app.core.time import to_sofia
+from scripts.compute_zones import compute_zones
 
 
 @runtime_checkable
@@ -246,3 +247,53 @@ def smooth_strength_trend(
         direction = "flat"
 
     return StrengthTrend(smoothed=smoothed, direction=direction, n=len(present))
+
+
+# --- TASK-004: zone re-derivation on anchor move (reuses the E4·P2 kernel) ---
+
+#: An anchor "moved" when it shifts by ≥ this many bpm (CONSTITUTION §10 recompute;
+#: avoids rewriting identical git-diffable zones — DECISIONS 5).
+ANCHOR_MIN_DELTA_BPM = 1
+
+
+@dataclass(frozen=True)
+class ZoneRederivation:
+    """The zone-recompute result the E10·P2 node merges into the loaded ``Profile``.
+
+    ``changed`` is ``True`` iff an anchor moved ≥ ``ANCHOR_MIN_DELTA_BPM``; ``zones`` is
+    the new ``compute_zones`` output (``{"z1": (lo, hi), …}``) when ``changed``, else
+    ``None`` (no-op — don't rewrite identical zones). ``new_max_hr``/``new_rhr`` echo the
+    candidate anchors so the node has them in one place.
+    """
+
+    changed: bool
+    zones: dict[str, tuple[int, int]] | None
+    new_max_hr: int
+    new_rhr: int
+
+
+def rederive_zones(
+    *, current_max_hr: int, current_rhr: int, new_max_hr: int, new_rhr: int
+) -> ZoneRederivation:
+    """Re-derive the HR zones **only when the max-HR/RHR anchors moved** (§10).
+
+    Returns a no-op ``ZoneRederivation(False, None, …)`` when neither anchor shifted by
+    ≥ ``ANCHOR_MIN_DELTA_BPM`` bpm; otherwise re-runs the **E4·P2 ``compute_zones`` kernel**
+    (reused, never re-implemented — so the result "matches ``compute_zones``" by
+    construction and passes the E3·P1 ``Zones``/``Profile`` validators). **HRV is not a
+    parameter** (not a ``compute_zones`` input), so an HRV-only change cannot trigger this.
+    This helper only **returns** the new zones; the atomic ``profile.yaml`` write is the
+    E10·P2 node's (DECISIONS 4).
+    """
+    moved = (
+        abs(new_max_hr - current_max_hr) >= ANCHOR_MIN_DELTA_BPM
+        or abs(new_rhr - current_rhr) >= ANCHOR_MIN_DELTA_BPM
+    )
+    if not moved:
+        return ZoneRederivation(changed=False, zones=None, new_max_hr=new_max_hr, new_rhr=new_rhr)
+    return ZoneRederivation(
+        changed=True,
+        zones=compute_zones(new_max_hr, new_rhr),
+        new_max_hr=new_max_hr,
+        new_rhr=new_rhr,
+    )

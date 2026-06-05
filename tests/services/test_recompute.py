@@ -8,11 +8,14 @@ re-derivation). The seam tests above are preserved; the helper tests follow.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 
 from app.api.schemas.sync import SyncRequest
 from app.core.profile import Profile
+from scripts.compute_zones import compute_zones
+
 from app.services.recompute import (
     CADENCE_RAMP_MIN_WEEKS,
     CADENCE_STEP_SPM,
@@ -21,11 +24,13 @@ from app.services.recompute import (
     QualityFocus,
     StrengthPoint,
     StrengthTrend,
+    ZoneRederivation,
     affected_dates,
     next_quality_focus,
     noop_recompute,
     ramp_cadence,
     ramp_cadence_for,
+    rederive_zones,
     smooth_strength_trend,
 )
 
@@ -378,3 +383,91 @@ def test_smooth_strength_trend_sorts_by_iso_week() -> None:
         ]
     )
     assert shuffled == ordered
+
+
+# --- TASK-004: zone re-derivation on anchor move (reuses compute_zones) ---
+
+
+def _profile_with_rederived(*, max_hr: int, zones: dict[str, tuple[int, int]]) -> Profile:
+    """A valid `Profile` carrying re-derived zones + the new max-HR anchor — so the
+    E3·P1 `Zones`/`Profile` validators (`z5.high == max_hr`, contiguity) run for real.
+    """
+    return Profile(
+        athlete={"age": 34, "sex": "male", "height_cm": 174, "goal_weight_kg": 75},
+        thresholds={
+            "max_hr": max_hr,
+            "rhr_baseline": 58,
+            "hrv_baseline_ms": 38,
+            "easy_hr_cap": 146,
+            "cadence_target_spm": 172,
+            "cadence_current_spm": 160,
+        },
+        zones=zones,
+        nutrition={
+            "activity_factor": 1.50,
+            "deficit_pct": 0.12,
+            "protein_g_per_kg": 1.8,
+            "fat_g_per_kg_low": 0.8,
+            "fat_g_per_kg_high": 1.0,
+            "carbs_g_per_kg": {
+                "hard_low": 4,
+                "hard_high": 5,
+                "moderate": 3,
+                "rest_low": 2,
+                "rest_high": 2.5,
+            },
+            "hydration_l_low": 3.0,
+            "hydration_l_high": 3.5,
+            "fiber_g_low": 25,
+            "fiber_g_high": 35,
+        },
+        meta={
+            "derived_from": "baseline.db",
+            "computed_at": "2026-06-02",
+            "constitution_version": "v1",
+        },
+    )
+
+
+def test_rederive_zones_noop_on_unchanged_anchors() -> None:
+    # No anchor moved → no-op (don't rewrite identical zones — DECISIONS 5).
+    result = rederive_zones(current_max_hr=192, current_rhr=58, new_max_hr=192, new_rhr=58)
+    assert result == ZoneRederivation(changed=False, zones=None, new_max_hr=192, new_rhr=58)
+
+
+def test_rederive_zones_max_hr_move_matches_compute_zones() -> None:
+    # A max-HR move re-derives, equal to a direct compute_zones call (the real contract).
+    result = rederive_zones(current_max_hr=192, current_rhr=58, new_max_hr=195, new_rhr=58)
+    assert result.changed is True
+    assert result.zones == compute_zones(195, 58)
+
+
+def test_rederive_zones_rhr_move_triggers_but_bands_are_max_hr_only() -> None:
+    # An RHR move ≥1 bpm triggers; compute_zones uses %max-HR only, so the re-derived bands
+    # equal compute_zones(192, new_rhr) — which equals the prior zones (rhr doesn't shift them).
+    result = rederive_zones(current_max_hr=192, current_rhr=58, new_max_hr=192, new_rhr=64)
+    assert result.changed is True
+    assert result.zones == compute_zones(192, 64)
+    assert result.zones == compute_zones(192, 58)  # rhr does not move the %max cutpoints
+
+
+def test_rederive_zones_hrv_only_change_does_not_trigger() -> None:
+    # There is no HRV parameter — only max_hr/rhr move zones; an HRV-only recompute is a no-op.
+    result = rederive_zones(current_max_hr=192, current_rhr=58, new_max_hr=192, new_rhr=58)
+    assert result.changed is False
+
+
+def test_rederive_zones_build_valid_profile() -> None:
+    # The re-derived zones + new max-HR satisfy the E3·P1 Zones/Profile validators.
+    result = rederive_zones(current_max_hr=192, current_rhr=58, new_max_hr=195, new_rhr=58)
+    assert result.zones is not None
+    profile = _profile_with_rederived(max_hr=result.new_max_hr, zones=result.zones)
+    assert profile.thresholds.max_hr == 195
+    assert profile.zones.z5[1] == 195  # z5.high == max_hr (contiguity holds by construction)
+
+
+def test_rederive_zones_reimplements_no_band_math() -> None:
+    # The helper DELEGATES to compute_zones — it must not copy the %max-HR band edges.
+    src = (Path(__file__).resolve().parents[2] / "app" / "services" / "recompute.py").read_text()
+    for edge in ("0.65", "0.78", "0.87", "0.92"):
+        assert edge not in src, f"zone-edge literal {edge} leaked into recompute.py"
