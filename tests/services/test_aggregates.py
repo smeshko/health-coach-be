@@ -244,6 +244,30 @@ def test_nutrition_adherence_partial_logging_counts_only_logged(session: Session
     assert a.protein_hit_days == 0  # 120 < 150
 
 
+def test_per_day_target_intake_at_displayed_kcal_not_counted_over(session: Session) -> None:
+    """E13·P2 review #2: an intake logged at EXACTLY the displayed calorie target is not counted
+    as over — `per_day_nutrition_target` rounds kcal to the same integer shown as
+    `avgCaloriesKcal`, so the strict `>` threshold compares against the number the user sees,
+    not the sub-kcal `deficit_target` remainder."""
+    from app.core.profile import load_profile
+    from app.services.macros import per_day_nutrition_target
+
+    profile = load_profile()
+    target = per_day_nutrition_target(
+        weight_kg=profile.athlete.goal_weight_kg,
+        nutrition=profile.nutrition,
+        athlete=profile.athlete,
+    )
+    assert target.kcal is not None
+    assert target.kcal == float(int(target.kcal))  # integral — the displayed avgCaloriesKcal
+    _dm(session, D, kcal_in=target.kcal, protein_in_g=target.protein_g)
+    session.commit()
+    a = nutrition_adherence(session, D, 7, target=target)
+    assert a.days_over_target == 0  # equal to the displayed target → not over (strict >)
+    assert a.days_under_target == 0  # equal → not under either
+    assert a.protein_hit_days == 1  # protein == floor → >= hits
+
+
 # ---------------------------------------------------------------------------
 # load_aggregates + Aggregates.to_dict (TASK-003)
 # ---------------------------------------------------------------------------

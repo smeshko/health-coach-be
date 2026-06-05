@@ -44,6 +44,7 @@ from app.services.macros import (
     deficit_target,
     fat_g_range,
     hydration_l_range,
+    per_day_nutrition_target,
     protein_g,
     tdee,
 )
@@ -621,6 +622,46 @@ def test_weekly_nutrition_last_week_passes_through():
         picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
     )
     assert weekly_none.last_week is None  # default → None
+
+
+# --- E13·P2: per_day_nutrition_target reuses the displayed §7.1 chain ---
+
+
+def test_per_day_nutrition_target_matches_displayed_targets():
+    """The adherence denominator equals the *displayed* targets: kcal is the unrounded
+    week-average target `compute_weekly_nutrition` rounds into avgCaloriesKcal, and protein_g
+    is the displayed proteinG floor — same weight basis."""
+    target = per_day_nutrition_target(weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE)
+    raw_kcal = deficit_target(
+        tdee(
+            bmr(weight_kg=_W, height_cm=_ATHLETE.height_cm, age=_ATHLETE.age, sex=_ATHLETE.sex),
+            _NUTRITION.activity_factor,
+        ),
+        _NUTRITION.deficit_pct,
+    )
+    assert target.kcal == _round_half_up(raw_kcal)  # rounded to the displayed integer (review #2)
+    assert target.protein_g == protein_g(_W, _NUTRITION.protein_g_per_kg)
+    # The adherence target is exactly the displayed avgCaloriesKcal/proteinG the user sees —
+    # so strict >/< comparisons measure against the shown number, not a sub-kcal remainder.
+    displayed = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    assert target.kcal == displayed.avg_calories_kcal
+    assert target.protein_g == displayed.protein_g
+
+
+def test_per_day_nutrition_target_leaves_other_fields_none():
+    target = per_day_nutrition_target(weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE)
+    assert target.carbs_g is None
+    assert target.fat_g_low is None
+    assert target.fat_g_high is None
+    assert target.water_l_low is None
+    assert target.water_l_high is None
+
+
+def test_per_day_nutrition_target_rejects_non_positive_weight():
+    with pytest.raises(ValueError, match="weight_kg"):
+        per_day_nutrition_target(weight_kg=0.0, nutrition=_NUTRITION, athlete=_ATHLETE)
 
 
 # --- DayType is an input, never chosen/floored; the accepted value set is the three ---

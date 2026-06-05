@@ -59,7 +59,12 @@ from app.database.models import DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
 from app.services.derive.plan import PlannedSession, expand_plan
-from app.services.macros import LastWeekNutrition, WeeklyNutrition, compute_weekly_nutrition
+from app.services.macros import (
+    LastWeekNutrition,
+    WeeklyNutrition,
+    compute_weekly_nutrition,
+    per_day_nutrition_target,
+)
 from app.services.recompute import (
     QualityFocus,
     StrengthPoint,
@@ -149,7 +154,19 @@ class LoadAggregatesNode(Node):
 
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
-        aggregates = load_aggregates(session, task_context.event.anchor)
+        # Build the per-day nutrition target from the node-1 profile (this node runs before
+        # RecomputeConstants, so `load_profile()` carries last-week's constants — DECISIONS
+        # Decision 2) and inject it as the 7-day adherence target, so the `lastWeek` vs-target
+        # counts populate (E13·P2). Only the 7d window gets a target; the 28d stays target-less.
+        profile = load_profile()
+        target_7d = per_day_nutrition_target(
+            weight_kg=profile.athlete.goal_weight_kg,
+            nutrition=profile.nutrition,
+            athlete=profile.athlete,
+        )
+        aggregates = load_aggregates(
+            session, task_context.event.anchor, nutrition_target_7d=target_7d
+        )
         self.save_output(self.OutputType(aggregates=aggregates))
         return task_context
 
