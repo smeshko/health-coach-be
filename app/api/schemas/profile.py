@@ -8,9 +8,9 @@ exposed fields in ``CamelModel`` sub-models (populated via ``model_validate`` /
 ``from_attributes``), which is what produces the documented camelCase response (DECISIONS
 Decision 4).
 
-Deliberately **excluded** (DECISIONS Decisions 2 & 3): the nutrition factors
-(``activity_factor``/``deficit_pct``/``protein_g_per_kg``/…) — neither §4.2 nor §7.7 needs them
-— and current weight, which is a ``daily_metrics`` value (including it would make the endpoint
+Deliberately **excluded** (DECISIONS Decisions 2 & 3): the §5 nutrition tuning factors (the
+activity / deficit / protein-per-kg constants) — neither §4.2 nor §7.7 needs them — and the
+athlete's live weight, which is a ``daily_metrics`` value (exposing it would make the endpoint
 read the DB, breaking the pure-``load_profile()`` contract; it belongs to a future daily/trends
 endpoint).
 """
