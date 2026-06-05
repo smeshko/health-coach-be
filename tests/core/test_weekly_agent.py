@@ -505,3 +505,20 @@ def test_deps_carry_budgets_and_quality_pick_as_enum():
     assert isinstance(deps.budgets, WeeklyBudgets)
     assert deps.budgets.hard_days == 2
     assert deps.quality_run_pick is WorkoutCard.vo2
+
+
+def test_quality_run_pick_reads_value_across_enum_flavors():
+    """`_quality_run_pick` maps the quality_focus cue to a WorkoutCard regardless of
+    enum flavour — a plain string, the StrEnum `next_quality_focus` output, AND a
+    `str, Enum` member (the latter is the review fix: `str(member)` would yield
+    "ClassName.member" and silently skip the threshold↔VO₂ check)."""
+    from app.services.recompute import QualityFocus
+    from app.core.weekly_agent import GeneratePlanNode
+
+    qp = GeneratePlanNode._quality_run_pick
+    assert qp({"quality_focus": "vo2"}) is WorkoutCard.vo2
+    assert qp({"quality_focus": "threshold"}) is WorkoutCard.threshold
+    assert qp({"quality_focus": QualityFocus.VO2}) is WorkoutCard.vo2  # StrEnum
+    assert qp({"quality_focus": WorkoutCard.threshold}) is WorkoutCard.threshold  # str,Enum
+    assert qp({"quality_focus": None}) is None
+    assert qp({"quality_focus": "easy_run"}) is None  # not a quality card

@@ -184,7 +184,11 @@ class GeneratePlanNode(PydanticAgentNode[WeeklyDeps, WeeklyPlanLLMOutput]):
             focus = getattr(constants, "quality_focus", None)
         if focus is None:
             return None
-        focus = str(focus)
+        # Read the wire value off any enum flavour (StrEnum's `next_quality_focus`
+        # output, or a plain `str, Enum` member) and pass a plain string through —
+        # `str(enum)` would yield "ClassName.member" for a `str, Enum` and silently
+        # skip the threshold↔VO₂ check (review).
+        focus = getattr(focus, "value", focus)
         if focus in (WorkoutCard.threshold.value, WorkoutCard.vo2.value):
             return WorkoutCard(focus)
         return None
