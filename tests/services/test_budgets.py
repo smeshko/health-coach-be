@@ -11,18 +11,35 @@ no LLM here (epic R6).
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
+
+from app.core.constraints import WeeklyBudgets as ValidatorWeeklyBudgets
 from app.services.budgets import (
     BASE_HARD_DAYS,
+    DELOAD_EVERY_N_WEEKS,
     DELOAD_HARD_DAYS,
     DELOAD_VOLUME_FACTOR,
     HARD3_SLEEP_MIN_H,
     MAX_HARD_DAYS,
     RAMP_CAP,
     STRENGTH_SESSIONS,
+    UNDERRECOVERY_HRV_SD_BELOW,
+    UNDERRECOVERY_MIN_SIGNALS,
+    UNDERRECOVERY_RHR_DELTA_BPM,
+    UNDERRECOVERY_SLEEP_MAX_H,
+    WeeklyBudgets,
+    compute_budgets,
     hard_day_budget,
+    is_deload_week,
     long_run_cap_km,
     strength_sessions,
 )
+from app.api.schemas.base import CamelModel
+
+# Subjective self-report parameters that must NEVER appear on the budget signature
+# (objective-only discipline, parity with readiness/§11 data-contract).
+_SUBJECTIVE_PARAMS = {"energy", "soreness", "motivation", "mood", "stress", "rpe"}
 
 
 # --------------------------------------------------------------------------
@@ -186,3 +203,233 @@ def test_long_run_cap_deload_down_ramps_40_percent():
 def test_long_run_cap_deload_none_history_is_none():
     # No history → still None on a deload, no fabricated cap (Decision 5).
     assert long_run_cap_km(None, deload=True) is None
+
+
+# --------------------------------------------------------------------------
+# TASK-003 — is_deload_week + compute_budgets + the WeeklyBudgets result.
+# --------------------------------------------------------------------------
+def test_deload_constants_match_constitution():
+    assert DELOAD_EVERY_N_WEEKS == 4  # §5.1/§9 "every 4th week"
+    assert UNDERRECOVERY_SLEEP_MAX_H == 5.5  # §8.4 "7-day sleep <5.5 h"
+    assert UNDERRECOVERY_RHR_DELTA_BPM == 7  # §8.4 "RHR >+7 bpm"
+    assert UNDERRECOVERY_HRV_SD_BELOW == 1.0  # §8.4 "HRV >1 SD below baseline"
+    assert UNDERRECOVERY_MIN_SIGNALS == 2  # §8.4 "any two"
+
+
+def _calm_deload_kwargs(**overrides):
+    """A non-firing baseline for is_deload_week — no cadence/GI/under-recovery signal."""
+    base = dict(
+        iso_week_index=0,
+        sleep_avg_7d_h=8.0,
+        hrv_avg_7d=60.0,
+        hrv_30d_mean=60.0,
+        hrv_30d_sd=5.0,
+        rhr_avg_7d=50.0,
+        rhr_30d_mean=50.0,
+        gi_flare=False,
+        extra_underrecovery_signals=0,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_deload_cadence_fires_on_fourth_week_only():
+    # The 4th week of each 0-based block is index 3/7/11 — (index + 1) % 4 == 0
+    # (review round-1 #2 / Decision 8). It does NOT deload on week 1 (index 0).
+    for idx in (3, 7, 11):
+        assert is_deload_week(**_calm_deload_kwargs(iso_week_index=idx)) is True
+    for idx in (0, 1, 2, 4):
+        assert is_deload_week(**_calm_deload_kwargs(iso_week_index=idx)) is False
+
+
+def test_deload_fires_on_gi_flare_non_cadence_week():
+    # §5.3/§8.1 — any GI symptom logged → this is a deload week.
+    assert is_deload_week(**_calm_deload_kwargs(iso_week_index=1, gi_flare=True)) is True
+
+
+def test_deload_fires_on_any_two_underrecovery_signals():
+    # §8.4 "any two": 7-day sleep 5.0 (<5.5) AND 7-day RHR +8 (>+7) → deload.
+    two = _calm_deload_kwargs(
+        iso_week_index=1, sleep_avg_7d_h=5.0, rhr_avg_7d=58.0, rhr_30d_mean=50.0
+    )
+    assert is_deload_week(**two) is True
+
+
+def test_deload_does_not_fire_on_single_underrecovery_signal():
+    # Only one signal (sleep <5.5) → not a deload (§8.4 needs ≥2).
+    one = _calm_deload_kwargs(iso_week_index=1, sleep_avg_7d_h=5.0)
+    assert is_deload_week(**one) is False
+
+
+def test_deload_underrecovery_boundaries_are_strict():
+    # §8.4 thresholds are STRICT: sleep == 5.5 / RHR Δ == +7 / HRV z == 1 SD do NOT fire.
+    at_boundary = _calm_deload_kwargs(
+        iso_week_index=1,
+        sleep_avg_7d_h=5.5,  # not < 5.5
+        rhr_avg_7d=57.0,
+        rhr_30d_mean=50.0,  # Δ == +7, not > +7
+        hrv_avg_7d=55.0,
+        hrv_30d_mean=60.0,
+        hrv_30d_sd=5.0,  # z == 1.0, not > 1.0
+    )
+    assert is_deload_week(**at_boundary) is False
+
+
+def test_deload_hrv_signal_fires_when_strictly_more_than_one_sd_below():
+    # HRV z = (60 - 53)/5 = 1.4 SD below > 1.0 → 1 signal; plus RHR +8 → 2 → deload.
+    two = _calm_deload_kwargs(
+        iso_week_index=1,
+        hrv_avg_7d=53.0,
+        hrv_30d_mean=60.0,
+        hrv_30d_sd=5.0,
+        rhr_avg_7d=58.0,
+        rhr_30d_mean=50.0,
+    )
+    assert is_deload_week(**two) is True
+
+
+def test_deload_none_inputs_not_counted_as_signals():
+    # All under-recovery inputs None → no signal counted; not a deload (Decision 5).
+    sparse = _calm_deload_kwargs(
+        iso_week_index=1,
+        sleep_avg_7d_h=None,
+        hrv_avg_7d=None,
+        hrv_30d_mean=None,
+        hrv_30d_sd=None,
+        rhr_avg_7d=None,
+        rhr_30d_mean=None,
+    )
+    assert is_deload_week(**sparse) is False
+
+
+def test_deload_extra_signals_combine_with_computed():
+    # One computed signal (sleep <5.5) + one caller-supplied extra (soreness) → ≥2 → deload.
+    combined = _calm_deload_kwargs(
+        iso_week_index=1, sleep_avg_7d_h=5.0, extra_underrecovery_signals=1
+    )
+    assert is_deload_week(**combined) is True
+
+
+def test_deload_hrv_zero_sd_does_not_crash_or_fire():
+    # Degenerate baseline (sd <= 0) → no divide-by-zero, the HRV signal does not fire.
+    degenerate = _calm_deload_kwargs(
+        iso_week_index=1,
+        hrv_avg_7d=10.0,
+        hrv_30d_mean=60.0,
+        hrv_30d_sd=0.0,
+        sleep_avg_7d_h=5.0,  # one real signal — but HRV must not count → only 1 → no deload
+    )
+    assert is_deload_week(**degenerate) is False
+
+
+def _normal_budget_kwargs(**overrides):
+    base = dict(
+        iso_week_index=1,
+        sleep_avg_7d_h=7.0,
+        hrv_avg_7d=60.0,
+        hrv_30d_mean=60.0,
+        hrv_30d_sd=5.0,
+        rhr_avg_7d=50.0,
+        rhr_30d_mean=50.0,
+        gi_symptoms_this_week=False,
+        prior_week_long_run_km=10.0,
+        extra_underrecovery_signals=0,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_compute_budgets_default_two_worked_example():
+    # Normal week, HRV JUST BELOW baseline so the 3-day gate fails on one condition
+    # (review round-3 #1) → {2, 2, 11.0, False}.
+    out = compute_budgets(**_normal_budget_kwargs(hrv_avg_7d=59.0))
+    assert out == WeeklyBudgets(
+        hard_days=2, strength_sessions=2, long_run_km=11.0, deload=False
+    )
+
+
+def test_compute_budgets_three_gate_week():
+    # All three gate conditions hold (sleep ≥6.5 AND HRV ≥ baseline AND no GI),
+    # non-deload → hard_days == 3.
+    out = compute_budgets(**_normal_budget_kwargs(sleep_avg_7d_h=7.5, hrv_avg_7d=60.0))
+    assert out.hard_days == 3
+    assert out.deload is False
+
+
+def test_compute_budgets_deload_week_cadence():
+    # Cadence deload (index 3) → 1 hard day, long run down-ramped 10.0 → 6.0,
+    # deload True, strength still 2.
+    out = compute_budgets(**_normal_budget_kwargs(iso_week_index=3))
+    assert out == WeeklyBudgets(
+        hard_days=1, strength_sessions=2, long_run_km=6.0, deload=True
+    )
+
+
+def test_compute_budgets_gi_deload_keeps_strength_two():
+    # A GI flare forces a deload (1 hard day, down-ramped run) but strength STAYS 2
+    # — it is never reduced on any deload (review round-1 #1).
+    out = compute_budgets(**_normal_budget_kwargs(gi_symptoms_this_week=True))
+    assert out.deload is True
+    assert out.hard_days == 1
+    assert out.strength_sessions == 2
+    assert out.long_run_km == 6.0
+
+
+def test_compute_budgets_sparse_week_fails_closed():
+    # All aggregates None, no prior history, no GI/extra → the safe default, no exception.
+    out = compute_budgets(
+        iso_week_index=1,
+        sleep_avg_7d_h=None,
+        hrv_avg_7d=None,
+        hrv_30d_mean=None,
+        hrv_30d_sd=None,
+        rhr_avg_7d=None,
+        rhr_30d_mean=None,
+        gi_symptoms_this_week=False,
+        prior_week_long_run_km=None,
+    )
+    assert out == WeeklyBudgets(
+        hard_days=2, strength_sessions=2, long_run_km=None, deload=False
+    )
+
+
+def test_weekly_budgets_has_exactly_four_fields():
+    field_names = {f.name for f in dataclasses.fields(WeeklyBudgets)}
+    assert field_names == {"hard_days", "strength_sessions", "long_run_km", "deload"}
+    # No easyRatioTarget / cadence leak (those are WeeklyTargets'/E8·P5's).
+    assert "easy_ratio_target" not in field_names
+    assert not any("cadence" in n for n in field_names)
+
+
+def test_weekly_budgets_is_the_validator_type():
+    # The budget engine's output type IS the type the E7·P3 weekly validator reads
+    # (app.core.constraints.WeeklyBudgets) — one canonical type, not two.
+    assert WeeklyBudgets is ValidatorWeeklyBudgets
+
+
+def test_weekly_budgets_serializes_to_camel_wire_keys():
+    # The snake→camel mapping is REAL (three multi-word fields). Pin the wire keys via a
+    # CamelModel round-trip (review round-1 #3): exactly hardDays/strengthSessions/
+    # longRunKm/deload.
+    class _WeeklyBudgetsWire(CamelModel):
+        hard_days: int
+        strength_sessions: int
+        long_run_km: float | None
+        deload: bool
+
+    budgets = WeeklyBudgets(
+        hard_days=2, strength_sessions=2, long_run_km=11.0, deload=False
+    )
+    wire = _WeeklyBudgetsWire.model_validate(budgets).model_dump(mode="json")
+    assert set(wire) == {"hardDays", "strengthSessions", "longRunKm", "deload"}
+    assert wire == {
+        "hardDays": 2,
+        "strengthSessions": 2,
+        "longRunKm": 11.0,
+        "deload": False,
+    }
+
+
+def test_compute_budgets_signature_is_objective_only():
+    params = set(inspect.signature(compute_budgets).parameters)
+    assert params & _SUBJECTIVE_PARAMS == set()
