@@ -30,11 +30,16 @@ it, E7's validator floors it).
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING
+
+from pydantic import field_validator
 
 from app.api.schemas.base import CamelModel
 from app.core.enums import DayType
 from app.core.profile import Athlete, CarbsPerKg, Nutrition
+
+if TYPE_CHECKING:  # type-only — no import-time coupling (no macros↔aggregates cycle)
+    from app.services.aggregates import NutritionAdherence
 
 # --- Pinned constants, transcribed verbatim from CONSTITUTION §7 (single source) ---
 
@@ -218,15 +223,74 @@ class DayTypePatternEntry(CamelModel):
     carbs_g: int
 
 
+class LastWeekNutrition(CamelModel):
+    """The 7-day intake scorecard MODELS' ``WeeklyNutrition.lastWeek`` carries (E13·P1).
+
+    Exactly the five documented camelCase fields → wire keys ``avgCaloriesKcal``,
+    ``avgProteinG``, ``proteinHitDays``, ``daysOverTarget``, ``daysUnderTarget``. The two
+    averages are window means of logged intake (``None`` for a nutrient with no logged
+    day — never fabricated); the three counts are target-gated and stay ``None`` until
+    E13·P2 wires ``nutrition_target_7d``. Every field is ``int | None = None`` so the
+    object honestly represents partial coverage (calorie-only / protein-only weeks) and a
+    legacy cached payload with missing keys still validates (DECISIONS Decisions 2 & 5).
+
+    The ``mode="before"`` validator is the **single rounding site**: it rounds an incoming
+    ``float`` average to ``int`` via ``_round_half_up``, serving both the float means
+    ``from_adherence`` passes in **and** a legacy cached payload's raw fractional
+    ``avg_protein_g`` (which Pydantic v2 lax mode would otherwise reject for an ``int``
+    field — round-2 #1; DECISIONS Decision 4).
+    """
+
+    avg_calories_kcal: int | None = None
+    avg_protein_g: int | None = None
+    protein_hit_days: int | None = None
+    days_over_target: int | None = None
+    days_under_target: int | None = None
+
+    @field_validator("avg_calories_kcal", "avg_protein_g", mode="before")
+    @classmethod
+    def _round_float_average(cls, value: object) -> object:
+        """Round a ``float`` average half-up to ``int``; pass ``int``/``None`` through."""
+        return _round_half_up(value) if isinstance(value, float) else value
+
+    @classmethod
+    def from_adherence(cls, adherence: NutritionAdherence | None) -> LastWeekNutrition | None:
+        """Map an E6·P3 ``NutritionAdherence`` → the ``lastWeek`` scorecard.
+
+        Returns ``None`` (→ ``lastWeek: null``, the empty state) when ``adherence`` is
+        ``None`` **or** the window logged neither calories nor protein
+        (``kcal_in_n == 0 and protein_in_g_n == 0``; DECISIONS Decision 3) — so a non-null
+        object always carries ≥1 non-null average. The float averages are passed straight
+        in (the validator rounds them); the three target-gated counts pass through (``None``
+        until E13·P2).
+        """
+        if adherence is None:
+            return None
+        consumed = adherence.consumed
+        if consumed.kcal_in_n == 0 and consumed.protein_in_g_n == 0:
+            return None
+        # `model_validate` runs the `mode="before"` float→int rounding validator; the
+        # float averages are passed straight in (DECISIONS Decision 4).
+        return cls.model_validate(
+            {
+                "avg_calories_kcal": adherence.avg_kcal,
+                "avg_protein_g": adherence.avg_protein_g,
+                "protein_hit_days": adherence.protein_hit_days,
+                "days_over_target": adherence.days_over_target,
+                "days_under_target": adherence.days_under_target,
+            }
+        )
+
+
 class WeeklyNutrition(CamelModel):
     """The weekly brief's nutrition half (MODELS ``WeeklyNutrition``) — all code-derived.
 
     The constant targets (``proteinG``/``fatGLow/High``/``hydrationLLow/High``) + the
     week-average target (``avgCaloriesKcal`` = the §7.1 ``Target_avg``, the figure the
     per-day-type calories net to — Decision 5) + the ``dayTypePattern`` from the planned
-    picks. ``lastWeek`` (7-day intake adherence) is **passed through** as an
-    already-built value — its derivation from logged dietary intake is E6·P3/E10
-    (Decision 9), so it is left opaque here.
+    picks. ``lastWeek`` (7-day intake adherence) is a typed ``LastWeekNutrition`` (E13·P1)
+    or ``None`` (no logged dietary coverage); ``ComputeNutritionNode`` builds it via
+    ``LastWeekNutrition.from_adherence``.
     """
 
     protein_g: int
@@ -236,7 +300,7 @@ class WeeklyNutrition(CamelModel):
     hydration_l_high: float
     avg_calories_kcal: int
     day_type_pattern: list[DayTypePatternEntry]
-    last_week: Any | None = None
+    last_week: LastWeekNutrition | None = None
 
 
 def _require_positive_weight(weight_kg: float) -> None:
@@ -319,7 +383,7 @@ def compute_weekly_nutrition(
     weight_kg: float,
     nutrition: Nutrition,
     athlete: Athlete,
-    last_week: Any | None = None,
+    last_week: LastWeekNutrition | None = None,
     sweat_l: float = 0.0,
 ) -> WeeklyNutrition:
     """Build the weekly ``WeeklyNutrition`` (the entry E10 calls; CONSTITUTION §7).
