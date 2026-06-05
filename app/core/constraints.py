@@ -123,11 +123,14 @@ class WeeklyBudgets:
     (review #3): a weekly ``PlannedPick`` carries minutes, not distance, so the
     long-run ramp/distance cap has no code input here — it is a plan-generation /
     prompt-time concern (LLM.md), outside this phase's CARDS.md §4 invariant set.
+    It is ``float | None`` because the E8·P4 budget engine returns ``None`` when
+    there is no prior long-run history (week one / no prior long run) — MODELS
+    ``longRunKm`` is nullable.
     """
 
     hard_days: int
     strength_sessions: int
-    long_run_km: float
+    long_run_km: float | None
     deload: bool
 
 
