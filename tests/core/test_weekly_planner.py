@@ -464,8 +464,12 @@ def test_persist_does_not_commit_or_lookup(session, profile_path, monkeypatch):
     assert data["isoWeek"] == ISO_WEEK and "targets" in data
 
 
-def test_persist_writes_profile_after_row_on_due_recompute(session, tmp_path, monkeypatch):
-    # A due-recompute ctx: PersistPlanNode writes the row THEN rewrites profile.yaml.
+def test_persist_writes_row_then_stages_profile_on_due_recompute(session, tmp_path, monkeypatch):
+    # A due-recompute ctx: PersistPlanNode stages the row THEN STAGES the proposed
+    # profile.yaml write (it does NOT write the file — the endpoint applies it post-commit
+    # so a commit-only failure never advances the file for a rolled-back plan; review).
+    from app.core.weekly_planner import PENDING_PROFILE_WRITE_KEY
+
     path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
     seed_strength_tests(session)
     ctx = _ctx(session)
@@ -477,24 +481,24 @@ def test_persist_writes_profile_after_row_on_due_recompute(session, tmp_path, mo
     full_ctx = _seed_full_ctx_for_persist(session, recompute_output=recompute_out)
     asyncio.run(PersistPlanNode(task_context=full_ctx).process(full_ctx))
 
-    # Row written and profile.yaml rewritten with the merged stamp.
+    # Row staged; the proposed profile write is STAGED (not applied) and the file is untouched.
     assert session.execute(select(Plans)).scalars().all()
-    after = path.read_text(encoding="utf-8")
-    assert after != before
-    assert load_profile(path).meta.constants_recomputed_week == ISO_WEEK
+    staged = full_ctx.metadata.get(PENDING_PROFILE_WRITE_KEY)
+    assert staged is not None and staged.meta.constants_recomputed_week == ISO_WEEK
+    assert path.read_text(encoding="utf-8") == before  # node does NOT write the file
 
 
-def test_persist_does_not_write_profile_when_not_due(session, profile_path, monkeypatch):
-    # A not-due ctx (no RecomputeConstants proposing constants): no write_profile call.
-    import app.core.weekly_planner as wp
+def test_persist_does_not_stage_profile_when_not_due(session, profile_path, monkeypatch):
+    # A not-due ctx (no RecomputeConstants proposing constants): nothing staged for write.
+    from app.core.weekly_planner import PENDING_PROFILE_WRITE_KEY
 
-    monkeypatch.setattr(wp, "write_profile", lambda *a, **k: pytest.fail("write_profile called when not due"))
     ctx = _seed_full_ctx_for_persist(
         session,
         recompute_output=RecomputeConstantsOutput(constants_recomputed=False),
     )
     asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
     assert session.execute(select(Plans)).scalars().all()
+    assert PENDING_PROFILE_WRITE_KEY not in ctx.metadata
 
 
 # --------------------------------------------------------------------------- #
@@ -573,7 +577,9 @@ def test_end_to_end_happy_path_via_run_async_context(session, tmp_path, monkeypa
     assert row.payload and row.inputs_snapshot and row.model and row.constitution_version
 
 
-def test_monthly_recompute_branch_due_rewrites_profile(session, tmp_path, monkeypatch):
+def test_monthly_recompute_branch_due_stages_profile_write(session, tmp_path, monkeypatch):
+    from app.core.weekly_planner import PENDING_PROFILE_WRITE_KEY
+
     path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
     seed_window(session, ANCHOR)
     seed_strength_tests(session)
@@ -590,9 +596,11 @@ def test_monthly_recompute_branch_due_rewrites_profile(session, tmp_path, monkey
     assert out_ctx.nodes["RecomputeConstants"].constants_recomputed is True
     row = session.execute(select(Plans)).scalars().one()
     assert json.loads(row.payload)["constantsRecomputed"] is True
-    # profile.yaml rewritten (at PersistPlanNode) with the merged stamp.
-    assert path.read_text(encoding="utf-8") != before
-    assert load_profile(path).meta.constants_recomputed_week == ISO_WEEK
+    # The profile write is STAGED with the merged stamp; the file is NOT advanced by the
+    # workflow — the endpoint (E10·P3) applies it only after a successful commit (review).
+    staged = out_ctx.metadata.get(PENDING_PROFILE_WRITE_KEY)
+    assert staged is not None and staged.meta.constants_recomputed_week == ISO_WEEK
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_monthly_recompute_branch_adjacent_week_no_write(session, tmp_path, monkeypatch):

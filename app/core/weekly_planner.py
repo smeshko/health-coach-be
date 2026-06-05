@@ -50,7 +50,7 @@ from app.core.constraints import (
 )
 from app.core.enums import WorkoutCard
 from app.core.nodes import Node
-from app.core.profile import Profile, load_profile, write_profile
+from app.core.profile import Profile, load_profile
 from app.core.task_context import TaskContext
 from app.core.time import now_sofia
 from app.core.weekly_agent import GeneratePlanNode
@@ -78,6 +78,13 @@ _DELOAD_BLOCK_WEEKS = 4
 # §10 monthly constants recompute cadence (DECISIONS D1): ``RecomputeConstants`` fires
 # when the ISO-week distance since the last recompute is ≥ this (4 ≈ monthly), or never.
 RECOMPUTE_EVERY_N_WEEKS = 4
+
+# `PersistPlanNode` STAGES the proposed `profile.yaml` rewrite under this `TaskContext`
+# metadata key instead of writing it inside the node — the durable file write is a
+# non-transactional side effect, so it must happen ONLY **after** the endpoint's DB
+# `commit()` succeeds (E10·P3 applies it), or a commit-only failure would advance the file
+# for a plan whose row rolled back (review — realizes DECISIONS D3's "one fate" correctly).
+PENDING_PROFILE_WRITE_KEY = "pending_profile_write"
 
 
 class WeeklyPlannerEvent(BaseModel):
@@ -596,13 +603,17 @@ class PersistPlanNode(Node):
     LLM saw, for reproducibility); ``model`` (the agent ``model_id``);
     ``constitution_version``; ``created_at`` (``now_sofia()``).
 
-    **After** staging the row, if ``RecomputeConstants`` proposed fresh constants it calls
-    ``write_profile(<proposed Profile>)`` (atomic) — so the durable ``profile.yaml`` write
-    and the plan row land in the **same** uncommitted unit of work: a downstream failure
-    short-circuits before this node, so the file is never advanced for a brief that did not
-    persist (DECISIONS D3). It does **no** commit, no lookup-by-``iso_week``, no
-    ``?refresh`` delete, and builds no wire response (all E10·P3). ``save_output``s the
-    assembled structured ``data`` so E10·P3 wraps it into the ``WeeklyPlan`` response.
+    **After** staging the row, if ``RecomputeConstants`` proposed fresh constants it
+    **stages** the proposed ``Profile`` under ``PENDING_PROFILE_WRITE_KEY`` (it does **not**
+    write the file here). The durable ``profile.yaml`` rewrite is a non-transactional side
+    effect, so the endpoint (E10·P3) applies it via ``write_profile`` **only after** its DB
+    ``commit()`` succeeds — keeping the file write and the plan row on **one fate**: a
+    downstream node failure short-circuits before this node, and a commit-only failure
+    leaves the staged write un-applied, so the file is never advanced for a brief that did
+    not persist (DECISIONS D3; review). It does **no** commit, no lookup-by-``iso_week``, no
+    ``?refresh`` delete, no file write, and builds no wire response (all E10·P3).
+    ``save_output``s the assembled structured ``data`` so E10·P3 wraps it into the
+    ``WeeklyPlan`` response.
     """
 
     class OutputType(BaseModel):
@@ -650,10 +661,14 @@ class PersistPlanNode(Node):
             )
         )
 
-        # The atomic profile.yaml write happens ONLY AFTER the validated row is staged, and
-        # only on a due-recompute week — same uncommitted unit of work (DECISIONS D3).
+        # On a due-recompute week, STAGE the proposed profile.yaml rewrite for the endpoint
+        # to apply atomically ONLY AFTER a successful DB commit (E10·P3 reads
+        # PENDING_PROFILE_WRITE_KEY post-commit and calls write_profile). The durable file
+        # write is a non-transactional side effect, so writing it here — before the
+        # endpoint's commit — would advance the file for a plan whose row could still roll
+        # back at commit; staging keeps the file write and the plan row on one fate (D3).
         if recompute is not None and recompute.constants_recomputed and recompute.profile is not None:
-            write_profile(recompute.profile)
+            task_context.metadata[PENDING_PROFILE_WRITE_KEY] = recompute.profile
 
         self.save_output(self.OutputType(data=data))
         return task_context
