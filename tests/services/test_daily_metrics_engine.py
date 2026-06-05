@@ -34,6 +34,7 @@ from app.services.daily_metrics_engine import (
     DailyMetricsEngine,
     active_energy,
     body_weight,
+    current_body_weight,
     expand_affected_dates,
     hard_day,
     hrv_baseline,
@@ -447,6 +448,93 @@ def test_body_weight_latest_by_instant_not_lexical(session: Session) -> None:
     )
     assert body_weight(session, D1) == 80.0  # latest INSTANT, not first/avg/raw-text-last
     assert body_weight(session, D2) is None
+
+
+# ---------------------------------------------------------------------------
+# current_body_weight — the multi-day "latest materialised body_weight <= anchor" reader.
+# ---------------------------------------------------------------------------
+def _seed_weight(session: Session, day: date, weight: float | None) -> None:
+    session.add(DailyMetrics(date=day.isoformat(), body_weight=weight))
+
+
+def test_current_body_weight_latest_on_or_before_anchor(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=3), 80.0)
+    _seed_weight(session, anchor - timedelta(days=1), 79.5)
+    _seed_weight(session, anchor, 79.0)
+    session.commit()
+    assert current_body_weight(session, anchor) == 79.0  # the anchor-day reading
+
+
+def test_current_body_weight_walks_back_when_anchor_missing(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=2), 81.5)
+    _seed_weight(session, anchor - timedelta(days=1), None)  # row present, no reading
+    _seed_weight(session, anchor, None)  # anchor day has no scale reading
+    session.commit()
+    assert current_body_weight(session, anchor) == 81.5  # walks back to the latest non-null
+
+
+def test_current_body_weight_none_when_no_history(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), None)
+    _seed_weight(session, anchor, None)
+    session.commit()
+    assert current_body_weight(session, anchor) is None
+
+
+def test_current_body_weight_ignores_future_reading(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), 80.0)
+    _seed_weight(session, anchor + timedelta(days=1), 78.0)  # after the anchor → ignored
+    session.commit()
+    assert current_body_weight(session, anchor) == 80.0
+
+
+def test_current_body_weight_skips_non_positive_garbage(session: Session) -> None:
+    """A materialised 0/negative body_weight is garbage (bad HealthKit body_mass), not a usable
+    weight — it is skipped and the walk-back finds the latest valid positive reading, so a bad
+    metric never reaches the macro engine's positive-weight guard (review)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=2), 80.0)
+    _seed_weight(session, anchor - timedelta(days=1), -5.0)  # garbage → skipped
+    _seed_weight(session, anchor, 0.0)  # garbage → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 80.0  # walks back to the latest positive
+
+    # An anchor whose window has ONLY non-positive readings (before the 80.0 above) → None,
+    # so the caller falls back to goal_weight_kg.
+    bad_only_anchor = date(2026, 6, 5)  # precedes the 80.0 reading on 2026-06-08
+    _seed_weight(session, date(2026, 6, 4), 0.0)
+    _seed_weight(session, date(2026, 6, 5), -1.0)
+    session.commit()
+    assert current_body_weight(session, bad_only_anchor) is None
+
+
+def test_current_body_weight_skips_implausible_weights(session: Session) -> None:
+    """A +inf or finite-but-absurd materialised body_weight (the sync value is an unconstrained
+    float) would 5xx the brief — `+inf` reaches `_round_half_up` → OverflowError, and a finite
+    outlier like 1e308 overflows bmr→tdee to inf → OverflowError. The reader's plausible-range
+    bound (`0 < w <= MAX_PLAUSIBLE_BODY_WEIGHT_KG`) skips both and walks back to the latest valid
+    weight (review #1 rounds 2-3)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=2), 79.0)
+    _seed_weight(session, anchor - timedelta(days=1), float("inf"))  # non-finite → skipped
+    _seed_weight(session, anchor, 1e308)  # finite but absurd (overflows the macro chain) → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 79.0
+
+
+def test_current_body_weight_skips_sub_physiological(session: Session) -> None:
+    """A corrupted sub-physiological positive weight (e.g. 0.1 kg) is below any real adult
+    athlete and would emit impossible weekly nutrition (protein/fat/carbs round to ~0). The
+    reader's lower bound skips it and walks back to the latest plausible weight (review #1
+    round-4)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), 78.5)
+    _seed_weight(session, anchor, 0.1)  # sub-physiological garbage → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 78.5
 
 
 @pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])

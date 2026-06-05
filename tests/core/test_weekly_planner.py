@@ -375,6 +375,88 @@ def test_load_aggregates_node_no_intake_still_null(session, profile_path):
 
 
 # --------------------------------------------------------------------------- #
+# E13·P3: weekly nutrition + adherence target track the live body weight.
+# --------------------------------------------------------------------------- #
+def test_compute_nutrition_node_tracks_live_weight(session, profile_path):
+    """E13·P3: with a materialised body_weight ≠ goal_weight_kg, the displayed macros track the
+    live weight (not goal_weight_kg)."""
+    from app.core.profile import load_profile
+    from app.services.macros import compute_weekly_nutrition
+
+    profile = load_profile()
+    goal = profile.athlete.goal_weight_kg
+    live = goal + 6.0  # distinct from goal → macros must differ
+    session.add(DailyMetrics(date=ANCHOR.isoformat(), body_weight=live))
+    session.flush()
+
+    ctx = _ctx(session, GeneratePlanNode=_clean_llm_output())
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    out_ctx = asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+    nutrition = out_ctx.nodes["ComputeNutritionNode"].nutrition
+
+    # proteinG / avgCaloriesKcal (picks-independent) track the LIVE weight, not goal_weight_kg.
+    def _scalars(weight: float) -> tuple[int, int]:
+        wn = compute_weekly_nutrition(
+            picks=[], weight_kg=weight, nutrition=profile.nutrition, athlete=profile.athlete
+        )
+        return wn.protein_g, wn.avg_calories_kcal
+
+    live_protein, live_avg = _scalars(live)
+    goal_protein, goal_avg = _scalars(goal)
+    assert (nutrition.protein_g, nutrition.avg_calories_kcal) == (live_protein, live_avg)
+    assert (live_protein, live_avg) != (goal_protein, goal_avg)  # the basis really changed
+
+
+def test_adherence_target_uses_live_weight(session, profile_path):
+    """E13·P3: the LoadAggregatesNode adherence target is built on the same live weight, so it
+    equals the displayed live-weight target (lock-step)."""
+    from app.core.profile import load_profile
+    from app.services.macros import per_day_nutrition_target
+
+    profile = load_profile()
+    live = profile.athlete.goal_weight_kg + 6.0
+    session.add(DailyMetrics(date=ANCHOR.isoformat(), body_weight=live))
+    session.flush()
+
+    ctx = _ctx(session, GeneratePlanNode=_clean_llm_output())
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    target = ctx.nodes["LoadAggregatesNode"].aggregates.nutrition_7d.target
+    expected = per_day_nutrition_target(
+        weight_kg=live, nutrition=profile.nutrition, athlete=profile.athlete
+    )
+    assert target is not None
+    assert target.kcal == expected.kcal
+    assert target.protein_g == expected.protein_g
+
+
+def test_nutrition_falls_back_to_goal_weight_when_no_history(session, profile_path, caplog):
+    """E13·P3: with no scale history, the macros fall back to goal_weight_kg, a note is logged
+    once, and the brief still succeeds (numbers identical to the goal-weight output)."""
+    import logging
+
+    from app.core.profile import load_profile
+    from app.services.macros import protein_g
+
+    profile = load_profile()
+    seed_window(session, ANCHOR)  # rows present, but no body_weight seeded → fallback
+
+    ctx = _ctx(session, GeneratePlanNode=_clean_llm_output())
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    with caplog.at_level(logging.WARNING, logger="app.core.weekly_planner"):
+        out_ctx = asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+    nutrition = out_ctx.nodes["ComputeNutritionNode"].nutrition
+
+    assert nutrition.protein_g == protein_g(
+        profile.athlete.goal_weight_kg, profile.nutrition.protein_g_per_kg
+    )
+    # The fallback note is logged (once) at the display node.
+    fallback_notes = [r for r in caplog.records if "goal_weight_kg" in r.getMessage()]
+    assert len(fallback_notes) == 1
+
+
+# --------------------------------------------------------------------------- #
 # TASK-002: is_recompute_due (the monthly gate) + RecomputeConstants branches.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
