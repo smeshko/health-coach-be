@@ -789,3 +789,275 @@ def test_build_user_context_serialises_pydantic_and_enum_values(_profile):
     # And it round-trips through json.dumps via the _jsonable default.
     dumped = json.dumps(ctx, sort_keys=True, default=_jsonable)
     assert json.loads(dumped)["band"] == "amber"
+
+
+# --------------------------------------------------------------------------- #
+# E9·P2 — @agent.output_validator wiring (TASK-002): RunContext deps ->
+# validate_fn -> ModelRetry on a hard Violation. Model-mocked + a FAKE validator
+# (no real E7·P3 import for the harness-logic cases; a separate importorskip-
+# guarded compatibility test binds the adapter to the REAL E7·P3 symbols).
+# --------------------------------------------------------------------------- #
+
+
+class _ValidatorDeps(BaseModel):
+    """A deps shape carrying the computed values the adapter maps to ValidationContext."""
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    budgets: object | None = None
+    quality_run_pick: object | None = None
+    band: object | None = None
+    knee_pain: int | None = None
+    week_plan_cards: frozenset | None = None
+    safety_gate_triggered: bool | None = None
+
+
+def _known_validator_deps() -> _ValidatorDeps:
+    from app.core.enums import ReadinessBand, WorkoutCard
+
+    return _ValidatorDeps(
+        budgets={"hard_days": 2, "strength_sessions": 2, "long_run_km": 18.0, "deload": False},
+        quality_run_pick=WorkoutCard.threshold,
+        band=ReadinessBand.amber,
+        knee_pain=4,
+        week_plan_cards=frozenset({WorkoutCard.easy_run, WorkoutCard.threshold}),
+        safety_gate_triggered=True,
+    )
+
+
+def _fake_validator(violations: list):
+    """A fake `validate_fn(out, ctx) -> list[Violation]` returning a fixed set.
+
+    Records the (output, ctx) it was called with so a test can assert the pure
+    function was invoked with the adapted ValidationContext.
+    """
+    seen: dict = {}
+
+    def _fn(output, ctx):
+        seen["output"] = output
+        seen["ctx"] = ctx
+        return list(violations)
+
+    return _fn, seen
+
+
+def _hard(rule: str, message: str):
+    from app.core.constraints import Severity, Violation
+
+    return Violation(rule=rule, message=message, severity=Severity.hard)
+
+
+def _soft(rule: str, message: str):
+    from app.core.constraints import Severity, Violation
+
+    return Violation(rule=rule, message=message, severity=Severity.soft)
+
+
+def _validating_node_cls(validate_fn, *, deps_factory=_known_validator_deps):
+    """A `PydanticAgentNode` that registers `validate_fn` and builds known deps."""
+    from app.core.agent_node import PydanticAgentNode
+
+    class _ValNode(PydanticAgentNode[_ValidatorDeps, _ToyOut]):  # type: ignore[valid-type]
+        OutputType = _ToyOut
+        DepsType = _ValidatorDeps
+
+        def get_agent_config(self) -> AgentConfig:
+            return AgentConfig(model_id="claude-opus-4-8", output_type=_ToyOut)
+
+        def build_system_prompt(self, task_context: TaskContext) -> str:
+            return "<rendered constitution>"
+
+        def build_run_input(self, task_context: TaskContext) -> str:
+            return "USER-CTX"
+
+        def build_deps(self, task_context: TaskContext) -> _ValidatorDeps:
+            return deps_factory()
+
+        def get_validate_fn(self):
+            return validate_fn
+
+    return _ValNode
+
+
+def test_deps_to_validation_context_maps_fields_one_to_one():
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.constraints import ValidationContext, WeeklyBudgets
+    from app.core.enums import ReadinessBand, WorkoutCard
+
+    deps = _known_validator_deps()
+    vctx = _deps_to_validation_context(deps)
+
+    assert isinstance(vctx, ValidationContext)
+    assert isinstance(vctx.budgets, WeeklyBudgets)
+    assert vctx.budgets.hard_days == 2
+    assert vctx.budgets.strength_sessions == 2
+    assert vctx.budgets.long_run_km == 18.0
+    assert vctx.budgets.deload is False
+    assert vctx.quality_run_pick is WorkoutCard.threshold
+    assert vctx.band is ReadinessBand.amber
+    assert vctx.knee_pain == 4
+    assert vctx.week_plan_cards == frozenset({WorkoutCard.easy_run, WorkoutCard.threshold})
+    assert vctx.safety_gate_triggered is True
+
+
+def test_deps_adapter_accepts_real_weeklybudgets_instance():
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.constraints import WeeklyBudgets
+
+    budgets = WeeklyBudgets(hard_days=3, strength_sessions=1, long_run_km=None, deload=True)
+    deps = _ValidatorDeps(budgets=budgets)
+    vctx = _deps_to_validation_context(deps)
+    assert vctx.budgets is budgets
+
+
+def test_deps_adapter_real_symbol_compatibility():
+    """Round-1 #2: bind the adapter to the REAL E7·P3 ValidationContext/Severity."""
+    constraints = pytest.importorskip("app.core.constraints")
+    from app.core.agent_node import _deps_to_validation_context
+
+    vctx = _deps_to_validation_context(_known_validator_deps())
+    # The adapter returns a genuine app.core.constraints.ValidationContext.
+    assert isinstance(vctx, constraints.ValidationContext)
+    # The hard/soft filter keys on the real Severity.hard enum member.
+    assert constraints.Severity.hard is constraints.Severity("hard")
+
+
+def test_hard_violation_raises_model_retry_with_rule_and_message(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    model, calls = _valid_tool_call_model()
+    fake_fn, _seen = _fake_validator([_hard("hard_day_count", "3 hard days exceed budget of 2")])
+
+    _patch_build_agent(monkeypatch, model)
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    from app.core.agent_node import BriefGenerationError
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+    # Exhausting the retries surfaces brief_generation_failed; the model was re-invoked.
+    assert excinfo.value.code == "brief_generation_failed"
+    assert calls["n"] >= 2  # initial + at least one retry => the ModelRetry fired
+
+
+def test_model_retry_message_contains_rule_and_message(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from app.core.agent_node import make_output_validator
+    from pydantic_ai import ModelRetry
+
+    fake_fn, _seen = _fake_validator(
+        [_hard("hard_day_count", "3 hard days exceed budget of 2")]
+    )
+    validator = make_output_validator(fake_fn)
+
+    class _Ctx:
+        deps = _known_validator_deps()
+
+    with pytest.raises(ModelRetry) as excinfo:
+        asyncio.run(validator(_Ctx(), _ToyOut(pick="p", note="n")))
+    msg = str(excinfo.value)
+    assert "hard_day_count" in msg
+    assert "3 hard days exceed budget of 2" in msg
+
+
+def test_model_retry_message_joins_all_hard_violations():
+    from app.core.agent_node import make_output_validator
+    from pydantic_ai import ModelRetry
+
+    fake_fn, _seen = _fake_validator(
+        [
+            _hard("hard_day_count", "too many hard days"),
+            _hard("hard_day_spacing", "tue and wed are adjacent"),
+        ]
+    )
+    validator = make_output_validator(fake_fn)
+
+    class _Ctx:
+        deps = _known_validator_deps()
+
+    with pytest.raises(ModelRetry) as excinfo:
+        asyncio.run(validator(_Ctx(), _ToyOut(pick="p", note="n")))
+    msg = str(excinfo.value)
+    assert "hard_day_count" in msg
+    assert "hard_day_spacing" in msg
+
+
+def test_validator_invokes_pure_fn_with_adapted_context():
+    from app.core.agent_node import make_output_validator
+    from app.core.constraints import ValidationContext
+
+    fake_fn, seen = _fake_validator([])  # clean
+    validator = make_output_validator(fake_fn)
+
+    out = _ToyOut(pick="p", note="n")
+
+    class _Ctx:
+        deps = _known_validator_deps()
+
+    result = asyncio.run(validator(_Ctx(), out))
+    # Clean result is returned unchanged (PydanticAI requires the validated value).
+    assert result is out
+    # The pure fn was invoked with the model output + the adapted ValidationContext.
+    assert seen["output"] is out
+    assert isinstance(seen["ctx"], ValidationContext)
+    assert seen["ctx"].knee_pain == 4
+
+
+def test_soft_only_result_is_accepted_and_stored(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.models.test import TestModel
+
+    fake_fn, _seen = _fake_validator([_soft("advisory", "just a heads up")])
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    result = asyncio.run(node.process(ctx))
+    assert result is ctx
+    stored = node.get_output(node_cls)
+    assert isinstance(stored, _ToyOut)
+
+
+def test_empty_result_is_accepted_and_stored(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.models.test import TestModel
+
+    fake_fn, _seen = _fake_validator([])
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    asyncio.run(node.process(ctx))
+    assert isinstance(node.get_output(node_cls), _ToyOut)
+
+
+def test_make_output_validator_is_brief_agnostic_two_fakes():
+    """The SAME factory wraps two different fake validators, each behaving per its fake."""
+    from app.core.agent_node import make_output_validator
+    from pydantic_ai import ModelRetry
+
+    class _Ctx:
+        deps = _known_validator_deps()
+
+    out = _ToyOut(pick="p", note="n")
+
+    # Validator A: a hard violation -> retries.
+    fn_a, _ = _fake_validator([_hard("rule_a", "broke a")])
+    val_a = make_output_validator(fn_a)
+    with pytest.raises(ModelRetry):
+        asyncio.run(val_a(_Ctx(), out))
+
+    # Validator B: empty -> accepts.
+    fn_b, _ = _fake_validator([])
+    val_b = make_output_validator(fn_b)
+    assert asyncio.run(val_b(_Ctx(), out)) is out

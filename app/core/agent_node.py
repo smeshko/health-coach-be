@@ -29,11 +29,14 @@ from pydantic_ai import (
     Agent,
     AgentRunError,
     ModelHTTPError,
+    ModelRetry,
+    RunContext,
     ToolOutput,
 )
 from pydantic_ai.settings import ModelSettings
 
 from app.core.constitution import constitution_version, render_constitution
+from app.core.constraints import Severity, ValidationContext, WeeklyBudgets
 from app.core.nodes import AgentConfig, AgentNode
 from app.core.profile import Profile
 from app.core.task_context import TaskContext
@@ -220,6 +223,106 @@ def _is_timeout(exc: Exception) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------
+# Output-validation wiring (E9·P2). The pure E7·P3 `validate_weekly`/`validate_daily`
+# are wired here as a PydanticAI `@agent.output_validator`: a hard `Violation` does
+# `raise ModelRetry(...)` (the model sees exactly what it broke); a soft-only/empty
+# result is accepted. No invariant logic lives here — the pure validators stay the
+# single source of truth (LLM §4). The harness is brief-agnostic: `make_output_validator`
+# takes `validate_fn` as an argument, so the shared module binds neither concrete
+# validator name nor any `*LLMOutput` type (E10/E11 pass `validate_weekly`/`validate_daily`).
+# --------------------------------------------------------------------------
+
+
+def _deps_to_validation_context(deps: Any) -> ValidationContext:
+    """Adapt the node's `RunContext` deps → the E7·P3 `ValidationContext` (the
+    "interface requirement on E9" E7·P3 named as this phase's acceptance).
+
+    Reads the computed values the deps carry (the budgets / band / safety-gate /
+    week-plan-cards / knee / quality-pick the pure validator policies against) and
+    builds the PydanticAI-free `ValidationContext` **field-by-field**. The single
+    place the PydanticAI `RunContext` deps meet E7·P3's frozen-dataclass context —
+    so a drift is a failing adapter test, not a silent mismatch. E10/E11 specialise
+    this for their concrete deps shapes; the shared version maps the documented
+    fields, reading each structurally (a `getattr` off the deps `BaseModel`).
+    """
+
+    def _get(name: str, default: Any = None) -> Any:
+        return getattr(deps, name, default)
+
+    budgets = _get("budgets")
+    if budgets is None:
+        # ValidationContext.budgets is required; a deps without it can't be
+        # validated against the weekly invariants. E10/E11 always populate it.
+        raise ValueError("deps must carry `budgets` (WeeklyBudgets) for validation")
+    if not isinstance(budgets, WeeklyBudgets):
+        budgets = WeeklyBudgets(
+            hard_days=budgets["hard_days"],
+            strength_sessions=budgets["strength_sessions"],
+            long_run_km=budgets.get("long_run_km"),
+            deload=budgets["deload"],
+        )
+
+    kwargs: dict[str, Any] = {"budgets": budgets}
+    for name in (
+        "quality_run_pick",
+        "band",
+        "knee_pain",
+        "week_plan_cards",
+        "safety_gate_triggered",
+    ):
+        value = _get(name)
+        if value is not None:
+            kwargs[name] = value
+    return ValidationContext(**kwargs)
+
+
+def _format_violations(violations: list) -> str:
+    """Join hard `Violation`s into one human-readable `ModelRetry` message.
+
+    One message of **all** hard violations' `rule` + `message` (DECISIONS Decision
+    2) so a single retry can repair the whole brief within the ≤ 2 budget — the
+    model "sees exactly what it broke" (LLM §4).
+    """
+    return "; ".join(f"{v.rule}: {v.message}" for v in violations)
+
+
+def make_output_validator(validate_fn):
+    """Build a PydanticAI `@agent.output_validator` wrapping the pure `validate_fn`.
+
+    Brief-agnostic: `validate_fn` is the pure E7·P3 `validate_weekly`/`validate_daily`
+    (or any `(output, ctx) -> list[Violation]`) the concrete node passes in, so the
+    shared harness binds no concrete validator name. The returned async callable has
+    PydanticAI's output-validator signature `(ctx: RunContext[Deps], output) -> output`
+    (verified 1.105.0 surface): it (1) adapts `ctx.deps` → `ValidationContext`, (2)
+    calls the pure `validate_fn` (which returns `list[Violation]`, never raises), (3)
+    on **any** `Severity.hard` violation `raise ModelRetry(joined_message)`; a
+    soft-only / empty result is **accepted** — the validator returns `output`
+    unchanged (PydanticAI requires the validator to return the validated value).
+    """
+
+    async def _validate(ctx: RunContext[Any], output: Any) -> Any:
+        validation_ctx = _deps_to_validation_context(ctx.deps)
+        violations = validate_fn(output, validation_ctx)
+        hard = [v for v in violations if v.severity is Severity.hard]
+        if hard:
+            raise ModelRetry(_format_violations(hard))
+        return output
+
+    return _validate
+
+
+def register_output_validator(agent: Agent, validate_fn) -> None:
+    """Register `make_output_validator(validate_fn)` on `agent` (the E10/E11 hook).
+
+    The shared registration seam: a concrete node's `validate_fn` (the pure E7·P3
+    `validate_weekly`/`validate_daily`) is wired onto the agent E9·P1 built, so the
+    validator runs inside the `retries=MAX_RETRIES` (=2) budget. `process()` calls
+    this before `agent.run` when the node exposes a validator (below).
+    """
+    agent.output_validator(make_output_validator(validate_fn))
+
+
 class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     """A generic, brief-agnostic `AgentNode` wrapping a PydanticAI `Agent` (E9·P1).
 
@@ -300,6 +403,17 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
         """Build the `RunContext` deps for the run; default is a bare `DepsType` (E9·P2 enriches)."""
         return self.DepsType()
 
+    def get_validate_fn(self):
+        """The pure `(output, ValidationContext) -> list[Violation]` validator, or `None`.
+
+        The brief-agnostic registration seam: E10/E11 return the pure E7·P3
+        `validate_weekly`/`validate_daily` so `process()` wires it as the agent's
+        `@agent.output_validator` (a hard `Violation` ⇒ `ModelRetry`). The shared
+        base binds no concrete validator name; the default `None` leaves the agent
+        un-validated (the E9·P1 behaviour).
+        """
+        return None
+
     async def process(self, task_context: TaskContext) -> TaskContext:
         """Build the agent, run it over the context, and store the typed `OutputType`.
 
@@ -321,6 +435,9 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             system_prompt=self.build_system_prompt(task_context),
             deps_type=self.DepsType,
         )
+        validate_fn = self.get_validate_fn()
+        if validate_fn is not None:
+            register_output_validator(agent, validate_fn)
         try:
             result = await agent.run(
                 self.build_run_input(task_context),
