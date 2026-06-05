@@ -156,3 +156,176 @@ def test_build_agent_passes_system_prompt_as_instructions(_no_anthropic_key):
     )
     # The rendered constitution is passed fresh as instructions (caching off).
     assert "THE-FRESH-CONSTITUTION" in str(agent._instructions)
+
+
+# --------------------------------------------------------------------------- #
+# E9·P1 — PydanticAgentNode (TASK-002): generic node run + output storage
+# --------------------------------------------------------------------------- #
+
+
+class _OtherOut(BaseModel):
+    """A second, differently-shaped toy OutputType for the generic round-trip."""
+
+    label: str
+    score: int
+
+
+def _toy_agent_node_cls(out_type: type[BaseModel], *, run_input_marker: str = "USER-CTX"):
+    """Build a concrete `PydanticAgentNode` subclass over `out_type`, model-mocked."""
+    from app.core.agent_node import PydanticAgentNode
+
+    class _ToyAgentNode(PydanticAgentNode[_ToyDeps, out_type]):  # type: ignore[valid-type]
+        OutputType = out_type
+        DepsType = _ToyDeps
+
+        def get_agent_config(self) -> AgentConfig:
+            return AgentConfig(model_id="claude-opus-4-8", output_type=out_type)
+
+        def build_system_prompt(self, task_context: TaskContext) -> str:
+            return "<rendered constitution>"
+
+        def build_run_input(self, task_context: TaskContext) -> str:
+            return run_input_marker
+
+    return _ToyAgentNode
+
+
+def _patch_build_agent(monkeypatch: pytest.MonkeyPatch, model) -> None:
+    """Drive `process()`'s inner agent with a mock `model` via the official override seam.
+
+    `process()` builds its agent internally, so the test calls the **real** `build_agent`
+    (keeping every LLM §2 setting under test) and wraps the agent's `run` so the call
+    happens inside `agent.override(model=…)` — PydanticAI's supported in-process test
+    seam. Entering the override **inside** the run coroutine keeps its `ContextVar` in the
+    run's own event loop. No live Anthropic call, no network, no key.
+    """
+    import app.core.agent_node as agent_node_mod
+
+    real_build = agent_node_mod.build_agent
+
+    def _build_with_mock_model(*args, **kwargs):
+        agent = real_build(*args, **kwargs)
+        original_run = agent.run
+
+        async def _run_under_override(*run_args, **run_kwargs):
+            with agent.override(model=model):
+                return await original_run(*run_args, **run_kwargs)
+
+        agent.run = _run_under_override
+        return agent
+
+    monkeypatch.setattr(agent_node_mod, "build_agent", _build_with_mock_model)
+
+
+def test_pydantic_agent_node_subclasses_e1_agent_node():
+    import app.core.nodes as nodes
+    from app.core.agent_node import PydanticAgentNode
+
+    assert issubclass(PydanticAgentNode, nodes.AgentNode)
+
+
+def test_process_runs_agent_and_stores_typed_output(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.models.test import TestModel
+
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    result = asyncio.run(node.process(ctx))
+
+    assert result is ctx
+    stored = node.get_output(node_cls)
+    assert isinstance(stored, _ToyOut)
+    assert ctx.nodes[node.node_name] is stored
+
+
+def test_node_is_generic_two_output_types_round_trip(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.models.test import TestModel
+
+    _patch_build_agent(monkeypatch, TestModel())
+
+    # Two different toy OutputTypes each round-trip through the SAME base class.
+    node_a_cls = _toy_agent_node_cls(_ToyOut)
+    ctx_a = TaskContext(event=None)
+    node_a = node_a_cls(task_context=ctx_a)
+    asyncio.run(node_a.process(ctx_a))
+    assert isinstance(node_a.get_output(node_a_cls), _ToyOut)
+
+    node_b_cls = _toy_agent_node_cls(_OtherOut)
+    ctx_b = TaskContext(event=None)
+    node_b = node_b_cls(task_context=ctx_b)
+    asyncio.run(node_b.process(ctx_b))
+    assert isinstance(node_b.get_output(node_b_cls), _OtherOut)
+
+
+def test_node_runs_under_real_workflow_runner_sync_and_async(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.models.test import TestModel
+
+    from app.core import NodeConfig, Workflow, WorkflowSchema
+
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+
+    class _Event(BaseModel):
+        pass
+
+    class _ToyWorkflow(Workflow):
+        workflow_schema = WorkflowSchema(
+            event_schema=_Event,
+            start=node_cls,
+            nodes=[NodeConfig(node=node_cls)],
+        )
+
+    # Sync Workflow.run wraps the whole walk in one asyncio.run — no nested loop.
+    ctx_sync = _ToyWorkflow().run(event=_Event())
+    assert isinstance(ctx_sync.nodes[node_cls.__name__], _ToyOut)
+
+    # run_async on an active loop — no nested-loop RuntimeError.
+    async def _drive():
+        return await _ToyWorkflow().run_async(event=_Event())
+
+    ctx_async = asyncio.run(_drive())
+    assert isinstance(ctx_async.nodes[node_cls.__name__], _ToyOut)
+
+
+def test_process_reads_build_run_input_seam(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    # The run feeds build_run_input(ctx) as the user message to the agent. Capture it
+    # with a FunctionModel that reads the prompt, proving the seam is wired.
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    seen: dict[str, str] = {}
+
+    def _capture(messages, info: AgentInfo) -> ModelResponse:
+        for msg in reversed(messages):
+            for part in getattr(msg, "parts", []):
+                content = getattr(part, "content", None)
+                if isinstance(content, str):
+                    seen["user"] = content
+                    break
+            if "user" in seen:
+                break
+        tool = info.output_tools[0]
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool.name, args={"pick": "p", "note": "n"})]
+        )
+
+    _patch_build_agent(monkeypatch, FunctionModel(_capture))
+
+    node_cls = _toy_agent_node_cls(_ToyOut, run_input_marker="UNIQUE-USER-CONTEXT-123")
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+    asyncio.run(node.process(ctx))
+
+    assert seen.get("user") == "UNIQUE-USER-CONTEXT-123"
