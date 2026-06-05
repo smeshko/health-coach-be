@@ -438,3 +438,17 @@ def test_safety_gate_rejects_stale_override():
     # overrideTo must be the mapped card for the reasons — a stale override fails (review #2)
     with pytest.raises(ValueError, match="overrideTo"):
         SafetyGate(triggered=True, reasons=(ILLNESS,), overrideTo=WorkoutCard.mobility)
+
+
+def test_safety_gate_rejects_unknown_reason_key():
+    # __post_init__ enforces the closed REASON_KEYS set — an undocumented machine key
+    # cannot escape in reasons[] even though override_for fails closed to rest (review #3).
+    with pytest.raises(ValueError, match="unknown"):
+        SafetyGate(
+            triggered=True,
+            reasons=("some_future_reason",),
+            overrideTo=WorkoutCard.rest,
+        )
+    # a valid known key still constructs fine
+    ok = SafetyGate(triggered=True, reasons=(ILLNESS,), overrideTo=WorkoutCard.rest)
+    assert ok.reasons == (ILLNESS,)

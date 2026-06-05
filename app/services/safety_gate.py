@@ -222,6 +222,12 @@ class SafetyGate:
     def __post_init__(self) -> None:
         if not isinstance(self.reasons, tuple):
             object.__setattr__(self, "reasons", tuple(self.reasons))
+        unknown = set(self.reasons) - REASON_KEYS
+        if unknown:
+            raise ValueError(
+                f"SafetyGate.reasons contains unknown §6.2 keys {sorted(unknown)!r}; "
+                f"valid keys are {sorted(REASON_KEYS)!r} (review #3)"
+            )
         if self.triggered != bool(self.reasons):
             raise ValueError(
                 f"SafetyGate.triggered ({self.triggered!r}) must equal bool(reasons) "
