@@ -117,6 +117,12 @@ class WeeklyBudgets:
     Defined locally (Decision 2) so this phase depends only on E7·P1, not on the
     unbuilt E8 that computes the real values; the field names mirror MODELS so
     E9's adapter is a thin field copy.
+
+    ``long_run_km`` is part of the MODELS budgets contract (carried for the E9
+    adapter), but is **not** a deterministic invariant this validator enforces
+    (review #3): a weekly ``PlannedPick`` carries minutes, not distance, so the
+    long-run ramp/distance cap has no code input here — it is a plan-generation /
+    prompt-time concern (LLM.md), outside this phase's CARDS.md §4 invariant set.
     """
 
     hard_days: int
@@ -267,9 +273,10 @@ def validate_daily(out: object, ctx: ValidationContext) -> list[Violation]:
     raises); an empty list means a clean session.
 
     Per-pick checks (card-in-plan, RED/AMBER band gating, knee gate,
-    dose-in-band) run over ``session`` **and** each ``alternatives`` entry.
-    Whole-output checks (the ``dayType`` fuel floor and the ``alternatives``
-    count) apply once, keyed off the primary ``session`` pick.
+    dose-in-band, **and the ``dayType`` fuel floor**) run over ``session``
+    **and** each ``alternatives`` entry — a hard/long alternative under a
+    sub-``hard`` ``dayType`` under-fuels the user just like the primary would.
+    The ``alternatives``-count check is the one whole-output check, applied once.
     """
     violations: list[Violation] = []
 
@@ -295,21 +302,26 @@ def validate_daily(out: object, ctx: ValidationContext) -> list[Violation]:
             _per_pick_violations(alt, ctx, allowed_frozen, where="alternative")
         )
 
-    # Whole-output: the dayType fuel floor (epic R6; CARDS.md §0/§4). The primary
-    # session card sets the floor; enforced via E7·P1's `floors_day_type_hard`,
-    # never re-derived. The LLM may fuel up but never under-fuel.
-    session_card: WorkoutCard = session.card  # type: ignore[attr-defined]
+    # The dayType fuel floor (epic R6; CARDS.md §0/§4). Enforced via E7·P1's
+    # `floors_day_type_hard`, never re-derived. The LLM may fuel up but never
+    # under-fuel. Applied to the primary `session` AND each `alternatives` entry
+    # (review #1): an alternative is a real fallback pick the UI may show, so a
+    # hard/long alternative under a sub-`hard` dayType under-fuels the user just
+    # as the primary would — parity with the other per-pick safety gates (AMBER,
+    # knee, dose) that already cover alternatives.
     day_type: DayType = out.day_type  # type: ignore[attr-defined]
-    if floors_day_type_hard(session_card) and day_type is not DayType.hard:
-        violations.append(
-            Violation(
-                rule="day_type_below_floor",
-                message=(
-                    f"card {session_card.value!r} floors dayType at 'hard' but "
-                    f"dayType is {day_type.value!r}"
-                ),
+    for pick, where in [(session, "session"), *((a, "alternative") for a in alternatives)]:
+        pick_card: WorkoutCard = pick.card  # type: ignore[attr-defined]
+        if floors_day_type_hard(pick_card) and day_type is not DayType.hard:
+            violations.append(
+                Violation(
+                    rule="day_type_below_floor",
+                    message=(
+                        f"{where} card {pick_card.value!r} floors dayType at 'hard' "
+                        f"but dayType is {day_type.value!r}"
+                    ),
+                )
             )
-        )
 
     # Whole-output: alternatives ≤ 2 (LLM.md §4 / MODELS).
     if len(alternatives) > 2:
@@ -379,18 +391,21 @@ def validate_weekly(out: object, ctx: ValidationContext) -> list[Violation]:
             )
         )
 
-    # hard_day_spacing — no two is_hard picks on adjacent suggestedDays (mon→sun,
-    # no wrap). Day-less picks excluded.
+    # hard_day_spacing — no two is_hard picks on the same or adjacent
+    # suggestedDays (mon→sun, no wrap). Day-less picks excluded. `b - a <= 1`
+    # catches both same-day (delta 0 — two hard sessions stacked on one day, zero
+    # recovery) and adjacent (delta 1) collisions; non-adjacent (>=2) is clean
+    # (review #2 — `== 1` alone let two same-day hard cards through).
     hard_days_idx = sorted(
         _weekday_index(p.suggested_day)
         for p in hard_picks
         if p.suggested_day is not None
     )
-    if any(b - a == 1 for a, b in zip(hard_days_idx, hard_days_idx[1:])):
+    if any(b - a <= 1 for a, b in zip(hard_days_idx, hard_days_idx[1:])):
         violations.append(
             Violation(
                 rule="hard_day_spacing",
-                message="two hard cards sit on adjacent days",
+                message="two hard cards sit on the same or adjacent days",
             )
         )
 

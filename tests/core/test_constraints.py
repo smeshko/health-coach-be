@@ -801,3 +801,51 @@ def test_weekly_validators_never_raise():
     out = _weekly_out([_wpick(C.vo2, None, 25, 45)], [])
     ctx = _weekly_ctx(hard_days=2, strength_sessions=2)
     assert isinstance(validate_weekly(out, ctx), list)
+
+
+# --------------------------------------------------------------------------
+# Review regressions (round 1): the fuel floor covers alternatives (#1), and
+# same-day hard cards trip spacing (#2).
+# --------------------------------------------------------------------------
+def test_daily_fuel_floor_flags_hard_alternative_under_rest():
+    # Primary easy_run does not floor, so a rest day is clean for the primary —
+    # but a vo2 ALTERNATIVE floors dayType at hard. An alternative is a real
+    # fallback pick, so doing it under rest-day fuel is the same under-fuel risk
+    # (review #1: the floor now runs over alternatives, like AMBER/knee/dose).
+    out = _daily_out(
+        _pick(C.easy_run, 30, 45),
+        DayType.rest,
+        alternatives=[_pick(C.vo2, 25, 45)],
+    )
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run, C.vo2}))
+    assert "day_type_below_floor" in _rules(validate_daily(out, ctx))
+
+
+def test_daily_fuel_floor_clean_when_alternative_is_easy():
+    # An easy alternative under a rest day is clean — only hard/long picks floor.
+    out = _daily_out(
+        _pick(C.easy_run, 30, 45),
+        DayType.rest,
+        alternatives=[_pick(C.active_recovery, 20, 40)],
+    )
+    ctx = _daily_ctx(week_plan_cards=frozenset({C.easy_run}))
+    assert "day_type_below_floor" not in _rules(validate_daily(out, ctx))
+
+
+def test_weekly_spacing_flags_same_day_hard():
+    # boxing + vo2 both on tue → two hard sessions stacked on one day (zero
+    # recovery gap), worse than adjacent; must trip spacing (review #2 — the old
+    # `== 1` adjacency check let a same-day delta of 0 through).
+    core = [
+        _wpick(C.boxing, D.tue, 60, 90),
+        _wpick(C.vo2, D.tue, 25, 45),
+        _wpick(C.easy_run, D.sun, 30, 45),
+    ]
+    extras = [
+        _wpick(C.strength_pull, D.thu, 30, 45),
+        _wpick(C.strength_lower, D.sat, 25, 35),
+    ]
+    ctx = _weekly_ctx(hard_days=2, strength_sessions=2, quality_run_pick=C.vo2)
+    assert "hard_day_spacing" in _rules(
+        validate_weekly(_weekly_out(core, extras), ctx)
+    )
