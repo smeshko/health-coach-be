@@ -579,3 +579,41 @@ def test_cache_hit_legacy_no_intake_last_week_is_null(ctx) -> None:
     assert body["data"]["cached"] is True
     assert gen.calls == 0
     assert body["data"]["nutrition"]["lastWeek"] is None  # empty state, not an all-null object
+
+
+def test_cache_hit_current_format_all_null_last_week_is_null(ctx) -> None:
+    """Review #3: a cached row whose `nutrition.lastWeek` is already the current five-key
+    shape but with every value null (intermediate-build / cache drift) must still serve
+    `lastWeek: null` on cache hit — the empty-state contract is enforced at the validation
+    boundary independent of payload provenance."""
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)
+
+    data = _plan_data(CURRENT_WEEK)
+    data["nutrition"]["lastWeek"] = {
+        "avgCaloriesKcal": None, "avgProteinG": None,
+        "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+    }
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps({"aggregates": {}, "constants": None}),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0
+    assert body["data"]["nutrition"]["lastWeek"] is None  # collapsed, not an all-null object

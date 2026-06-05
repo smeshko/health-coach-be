@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from app.api.schemas.base import CamelModel
 from app.core.enums import DayType
@@ -304,26 +304,22 @@ class WeeklyNutrition(CamelModel):
 
     @field_validator("last_week", mode="before")
     @classmethod
-    def _adapt_legacy_last_week(cls, value: object) -> object:
-        """Read-side adapter for a **legacy** cached ``lastWeek`` (E13·P1 review #1/#2).
+    def _map_legacy_last_week(cls, value: object) -> object:
+        """Translate a **legacy** cached ``lastWeek`` dump to the five-key shape (E13·P1
+        review #1). Key mapping only — the empty-state collapse is ``_empty_last_week_is_null``.
 
-        Current rows store ``lastWeek`` as ``LastWeekNutrition.from_adherence``'s output
-        (the five camelCase keys, or ``null``). A pre-E13·P1 ``plans.payload`` instead
-        stored ``dataclasses.asdict(NutritionAdherence)`` — a snake_case dict carrying
+        Current rows store ``lastWeek`` as ``LastWeekNutrition.from_adherence``'s output (the
+        five camelCase keys, or ``null``). A pre-E13·P1 ``plans.payload`` instead stored
+        ``dataclasses.asdict(NutritionAdherence)`` — a snake_case dict carrying
         ``consumed``/``target``/``avg_kcal``/``kcal_pct``. The cache-hit re-validation path
-        (``weekly.py``) runs on **every** cache read, so that legacy dict must still honour
-        the P1 contract: a no-coverage window (``consumed.kcal_in_n == 0 and
-        protein_in_g_n == 0``) collapses to ``None`` (the empty state — never an all-null
-        object), and the legacy ``avg_kcal`` is mapped to the ``avg_calories_kcal`` key
-        (else the stored calorie average would silently drop to ``null``). Non-legacy values
-        (a ``LastWeekNutrition``, ``None``, or a current camelCase dict — none of which carry
-        a ``consumed`` key) pass through untouched. This is read-side tolerance, not a row
-        migration (DECISIONS Decision 5): stored rows are never rewritten.
+        (``weekly.py``) runs on **every** cache read, so that legacy dict (identified by its
+        ``consumed`` key) is projected onto the five contract fields, mapping the legacy
+        ``avg_kcal`` to ``avg_calories_kcal`` (else the stored calorie average would silently
+        drop to ``null``). Non-legacy values (a ``LastWeekNutrition``, ``None``, or a current
+        camelCase dict — none of which carry a ``consumed`` key) pass through untouched. This
+        is read-side tolerance, not a row migration (DECISIONS Decision 5): rows aren't rewritten.
         """
         if isinstance(value, dict) and "consumed" in value:
-            consumed = value.get("consumed") or {}
-            if (consumed.get("kcal_in_n") or 0) == 0 and (consumed.get("protein_in_g_n") or 0) == 0:
-                return None
             return {
                 "avg_calories_kcal": value.get("avg_kcal"),
                 "avg_protein_g": value.get("avg_protein_g"),
@@ -332,6 +328,35 @@ class WeeklyNutrition(CamelModel):
                 "days_under_target": value.get("days_under_target"),
             }
         return value
+
+    @model_validator(mode="after")
+    def _empty_last_week_is_null(self) -> WeeklyNutrition:
+        """Collapse an all-null ``lastWeek`` to ``None`` regardless of provenance — the P1
+        empty-state contract ("never a populated all-null object on the wire") enforced at
+        the validation boundary, not just at the ``from_adherence`` producer (review #2/#3).
+
+        A non-null ``LastWeekNutrition`` whose five contract fields are *all* ``None`` carries
+        no information, so it is the empty state. This catches every way one can arise on the
+        cache-hit re-validation path: a legacy no-coverage asdict dump, a legacy
+        covered-but-no-target row (old target-gating left ``avg_kcal``/``avg_protein_g``
+        ``None`` despite logged days), and a current-format five-key payload that is all-null
+        (intermediate-build / future cache drift). The live producer never emits such an
+        object (``from_adherence`` returns ``None`` for no coverage and otherwise carries ≥1
+        non-null average), so this is purely a read-side safety net — no production change.
+        """
+        lw = self.last_week
+        if lw is not None and all(
+            field is None
+            for field in (
+                lw.avg_calories_kcal,
+                lw.avg_protein_g,
+                lw.protein_hit_days,
+                lw.days_over_target,
+                lw.days_under_target,
+            )
+        ):
+            self.last_week = None
+        return self
 
 
 def _require_positive_weight(weight_kg: float) -> None:

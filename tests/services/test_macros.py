@@ -575,6 +575,41 @@ def test_weekly_nutrition_adapts_legacy_cached_last_week():
     assert current.last_week.avg_protein_g == 144
 
 
+def test_weekly_nutrition_collapses_all_null_last_week():
+    """Review #3: an all-null `lastWeek` collapses to None at the validation boundary
+    regardless of provenance — the empty-state contract never emits an all-null object."""
+    # (a) Current five-key shape, every value null (intermediate-build / cache drift).
+    current_all_null = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "avgCaloriesKcal": None, "avgProteinG": None,
+                "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+            }
+        )
+    )
+    assert current_all_null.last_week is None
+    assert current_all_null.model_dump(mode="json")["lastWeek"] is None
+
+    # (b) Legacy row that logged days but had no target (old target-gating left both
+    #     averages null despite `kcal_in_n > 0`) → still collapses to the empty state.
+    legacy_covered_no_target = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 7, "protein_in_g_n": 7},
+                "avg_kcal": None, "avg_protein_g": None, "protein_hit_days": None,
+            }
+        )
+    )
+    assert legacy_covered_no_target.last_week is None
+
+    # A LastWeekNutrition instance with one non-null field is NOT collapsed.
+    populated = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(last_week=LastWeekNutrition(avg_protein_g=150))
+    )
+    assert populated.last_week is not None
+    assert populated.last_week.avg_protein_g == 150
+
+
 def test_weekly_nutrition_last_week_passes_through():
     # The field is typed now: a LastWeekNutrition round-trips unchanged (no object() identity).
     lw = LastWeekNutrition(avg_calories_kcal=2600, avg_protein_g=150, protein_hit_days=4)
