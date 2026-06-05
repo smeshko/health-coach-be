@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from datetime import date, timedelta
+from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, select, update
@@ -51,6 +52,7 @@ from app.core.nodes import BaseRouter, Node, RouterNode
 from app.core.profile import Profile, load_profile
 from app.core.task_context import TaskContext
 from app.core.time import now_sofia
+from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
 from app.database.models import Checkins, DailyMetrics, Plans, Suggestions
 from app.services.derive.session import SessionBlock
 from app.services.derive.session import SessionPick as DerivePick
@@ -627,6 +629,10 @@ class ValidateSessionNode(Node):
     does **not** re-run the agent. Runs **only** on the clean path. Encodes no rule.
     """
 
+    class OutputType(BaseModel):
+        passed: bool
+        soft_violations: list[str] = []
+
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
         event: DailyAdjusterEvent = task_context.event
@@ -642,6 +648,9 @@ class ValidateSessionNode(Node):
         violations = validate_daily_output(out, validation_ctx)
         if any(v.severity is Severity.hard for v in violations):
             raise BriefGenerationError(code="brief_generation_failed")
+        self.save_output(
+            self.OutputType(passed=True, soft_violations=[v.rule for v in violations])
+        )
         return task_context
 
 
@@ -702,3 +711,43 @@ class PersistSuggestionNode(Node):
         )
         self.save_output(self.OutputType(brief=brief))
         return task_context
+
+
+# --------------------------------------------------------------------------- #
+# The assembled DAILY_ADJUSTER workflow (ARCHITECTURE §5 — one gate router).
+# --------------------------------------------------------------------------- #
+class DailyAdjuster(Workflow):
+    """The ``DAILY_ADJUSTER`` workflow — the six ARCHITECTURE §5 nodes + the one router.
+
+        ComputeReadinessNode → SafetyGateRouter → [SafetyRestNode | TuneSessionNode]
+        → DeriveSessionNode → ValidateSessionNode → PersistSuggestionNode
+
+    ``SafetyGateRouter`` is the system's **only** router: a tripped gate routes to the
+    code-written ``SafetyRestNode`` (which persists itself + ``stop_workflow()``, so it has
+    **no** successor), a clean gate falls through to the ``TuneSessionNode`` fallback (the
+    one ``AgentNode``, E11·P1) → derive → validate → persist. Both terminals are
+    ``connections=[]``. Construction runs ``WorkflowValidator`` (E1·P3) — a mis-wired /
+    missing / duplicate node or an ``is_router``↔``BaseRouter`` mismatch fails **here**, not
+    mid-run. The endpoint (E11·P3) runs ``DailyAdjuster().run_async(context=TaskContext(
+    event=DailyAdjusterEvent(date=…), metadata={"session": session}))`` and commits; tests
+    mock ``TuneSessionNode.process`` so the graph runs with no LLM/network/key.
+    """
+
+    workflow_schema: ClassVar[WorkflowSchema] = WorkflowSchema(
+        event_schema=DailyAdjusterEvent,
+        start=ComputeReadinessNode,
+        nodes=[
+            NodeConfig(node=ComputeReadinessNode, connections=[SafetyGateRouter]),
+            NodeConfig(
+                node=SafetyGateRouter,
+                connections=[SafetyRestNode, TuneSessionNode],
+                is_router=True,
+            ),
+            NodeConfig(node=SafetyRestNode, connections=[]),
+            NodeConfig(node=TuneSessionNode, connections=[DeriveSessionNode]),
+            NodeConfig(node=DeriveSessionNode, connections=[ValidateSessionNode]),
+            NodeConfig(node=ValidateSessionNode, connections=[PersistSuggestionNode]),
+            NodeConfig(node=PersistSuggestionNode, connections=[]),
+        ],
+        description="DAILY_ADJUSTER — the daily readiness/gate/tune/derive/validate/persist brain (ARCHITECTURE §5).",
+    )

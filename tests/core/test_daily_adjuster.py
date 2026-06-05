@@ -490,3 +490,154 @@ def test_persist_suggestion_node_does_not_commit_or_lookup(session, profile_path
     ctx = _clean_persist_ctx(session)
     asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
     assert session.execute(select(Suggestions)).scalars().all()  # row staged, uncommitted
+
+
+# --------------------------------------------------------------------------- #
+# TASK-004: the assembled DailyAdjuster workflow (node order + end-to-end).
+# --------------------------------------------------------------------------- #
+def test_node_order_and_router_branch_is_architecture_section_5():
+    from app.core.daily_adjuster import (
+        ComputeReadinessNode,
+        DailyAdjuster,
+        DeriveSessionNode,
+        PersistSuggestionNode,
+        SafetyGateRouter,
+        SafetyRestNode,
+        ValidateSessionNode,
+    )
+    from app.core.daily_agent import TuneSessionNode
+
+    schema = DailyAdjuster.workflow_schema
+    assert schema.start is ComputeReadinessNode
+    edges = {nc.node: list(nc.connections) for nc in schema.nodes}
+    assert edges[ComputeReadinessNode] == [SafetyGateRouter]
+    assert edges[SafetyGateRouter] == [SafetyRestNode, TuneSessionNode]
+    assert edges[SafetyRestNode] == []  # gated terminal — persists itself
+    assert edges[TuneSessionNode] == [DeriveSessionNode]
+    assert edges[DeriveSessionNode] == [ValidateSessionNode]
+    assert edges[ValidateSessionNode] == [PersistSuggestionNode]
+    assert edges[PersistSuggestionNode] == []  # clean terminal
+    # SafetyGateRouter is the ONLY router.
+    routers = [nc.node for nc in schema.nodes if nc.is_router]
+    assert routers == [SafetyGateRouter]
+
+
+def test_daily_adjuster_constructs_without_error():
+    from app.core.daily_adjuster import DailyAdjuster
+
+    assert DailyAdjuster() is not None  # the E1·P3 WorkflowValidator accepts the branch
+
+
+def _mock_tune_session(monkeypatch, llm_output):
+    """Substitute the AgentNode's process with a stand-in (no LLM/network/key)."""
+    from app.core.daily_agent import TuneSessionNode
+
+    async def _stand_in(self, task_context):
+        self.save_output(llm_output)
+        return task_context
+
+    monkeypatch.setattr(TuneSessionNode, "process", _stand_in, raising=True)
+
+
+def _run_event_ctx(session):
+    from app.core.daily_adjuster import DailyAdjusterEvent
+
+    return TaskContext(
+        event=DailyAdjusterEvent(date=TODAY), metadata={"session": session}
+    )
+
+
+def test_end_to_end_happy_path_clean_gate(session, profile_path, monkeypatch):
+    from app.core.daily_adjuster import DailyAdjuster
+
+    seed_metrics(session, yesterday_kwargs=dict(kcal_in=2400.0, protein_in_g=150.0))
+    _mock_tune_session(monkeypatch, _clean_daily_output(card="vo2", day_type="hard"))
+
+    ctx = _run_event_ctx(session)
+    out_ctx = asyncio.run(DailyAdjuster().run_async(context=ctx))
+
+    for name in (
+        "ComputeReadinessNode",
+        "GateTrippedRoute",
+        "TuneSessionNode",
+        "DeriveSessionNode",
+        "ValidateSessionNode",
+        "PersistSuggestionNode",
+    ):
+        assert name in out_ctx.nodes, f"{name} output missing"
+    # Code-expanded session, macros from the resolved dayType, intake derived.
+    derived = out_ctx.nodes["DeriveSessionNode"]
+    assert derived.session.zone_target.value == "z5"  # from CARD_META
+    assert derived.macro_focus.day_type is DayType.hard
+    assert derived.intake_yesterday is not None
+    # Exactly one Suggestions row (safety_gate_tripped=0) + the daily_metrics write-back.
+    rows = session.execute(select(Suggestions)).scalars().all()
+    assert len(rows) == 1 and rows[0].safety_gate_tripped == 0 and rows[0].model
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score is not None and dm.band == "green"
+
+
+def test_end_to_end_gate_short_circuit_skips_llm(session, profile_path, monkeypatch):
+    from app.core.daily_adjuster import DailyAdjuster
+    from app.core.daily_agent import TuneSessionNode
+
+    seed_metrics(session)
+    seed_checkin(session, illness=1)  # gate trips
+
+    called = {"n": 0}
+
+    async def _must_not_run(self, task_context):
+        called["n"] += 1
+        raise AssertionError("the LLM must not run on the gated path")
+
+    monkeypatch.setattr(TuneSessionNode, "process", _must_not_run, raising=True)
+
+    ctx = _run_event_ctx(session)
+    out_ctx = asyncio.run(DailyAdjuster().run_async(context=ctx))  # returns normally
+
+    assert called["n"] == 0  # the agent was never invoked (no LLM)
+    assert "SafetyRestNode" in out_ctx.nodes
+    assert "DeriveSessionNode" not in out_ctx.nodes  # clean-path nodes never ran
+    rows = session.execute(select(Suggestions)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].safety_gate_tripped == 1 and rows[0].gate_reason and rows[0].model is None
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score is not None  # still written back on the gated path
+
+
+def test_end_to_end_constraint_breaking_never_persists(session, profile_path, monkeypatch):
+    from app.core.agent_node import BriefGenerationError
+    from app.core.daily_adjuster import DailyAdjuster
+
+    seed_metrics(session)
+    # A vo2 (hard/long) card with dayType=moderate under-fuels → ValidateSessionNode
+    # rejects the LLM's raw under-fuelling dayType (the fuel-floor safety guard).
+    _mock_tune_session(monkeypatch, _clean_daily_output(card="vo2", day_type="moderate"))
+
+    ctx = _run_event_ctx(session)
+    with pytest.raises(BriefGenerationError) as exc:
+        asyncio.run(DailyAdjuster().run_async(context=ctx))
+    assert exc.value.code == "brief_generation_failed"
+    assert not session.execute(select(Suggestions)).scalars().all()  # no row
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score is None  # write-back never ran (persist skipped)
+
+
+def test_end_to_end_persisted_macro_day_type_is_hard_for_hard_card(session, profile_path, monkeypatch):
+    from app.core.daily_adjuster import DailyAdjuster
+
+    seed_metrics(session)
+    _mock_tune_session(monkeypatch, _clean_daily_output(card="vo2", day_type="hard"))
+
+    ctx = _run_event_ctx(session)
+    asyncio.run(DailyAdjuster().run_async(context=ctx))
+
+    row = session.execute(select(Suggestions)).scalars().one()
+    data = json.loads(row.payload)["data"]
+    assert data["macroFocus"]["dayType"] == "hard"  # hard card fuels hard
