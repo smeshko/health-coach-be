@@ -27,7 +27,8 @@ mis-transcription is caught by a per-reason boundary test at the exact §6.2 edg
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from app.core.enums import WorkoutCard
 
@@ -38,6 +39,12 @@ ILLNESS = "illness"
 KNEE_PAIN_HIGH = "knee_pain_high"
 RHR_SPIKE = "rhr_spike"
 HRV_CRASH = "hrv_crash"
+
+#: The closed set of valid §6.2 reason keys — used to reject unknown reasons and fail
+#: CLOSED to the most-restrictive override (review #1).
+REASON_KEYS: frozenset[str] = frozenset(
+    {GI_FLARE, SLEEP_BELOW_4H, ILLNESS, KNEE_PAIN_HIGH, RHR_SPIKE, HRV_CRASH}
+)
 
 # --- Pinned thresholds, transcribed verbatim from CONSTITUTION §6.2 (all STRICT) ---
 # §6.2 "Sleep <4 h → rest or Z1 active recovery only"  (strict `< 4`)
@@ -153,7 +160,7 @@ def collect_reasons(
     return [reason for reason in candidates if reason is not None]
 
 
-def override_for(reasons: list[str]) -> WorkoutCard | None:
+def override_for(reasons: Sequence[str]) -> WorkoutCard | None:
     """Map the firing reason set to the single most-restrictive forced card (§6.2).
 
     ``[]`` → ``None`` (not triggered). Otherwise the **most-restrictive-wins** precedence
@@ -165,8 +172,14 @@ def override_for(reasons: list[str]) -> WorkoutCard | None:
     - else ``knee_pain_high`` (§6.2 → no impact) / ``rhr_spike`` / ``hrv_crash`` (§6.2 →
       "treat as red"; §6.1 RED = active-recovery/rest) ⇒ ``active_recovery`` (matches the
       MODELS ``["knee_pain_high"] → "active_recovery"`` example).
-    - else ``gi_flare`` alone (§6.2 → "no hard training; easy/mobility only") ⇒
-      ``mobility`` (the least-restrictive of the three forced cards).
+    - else ``gi_flare`` (§6.2 → "no hard training; easy/mobility only") ⇒ ``mobility``
+      (the least-restrictive of the three forced cards).
+
+    **Fail closed (review #1):** a non-empty ``reasons`` containing only unrecognized keys
+    (schema drift, a typo, or a future reason this map hasn't learned) returns the
+    **most-restrictive** ``rest`` — never the least-restrictive ``mobility`` — so an
+    unknown trigger can never silently downgrade the override. The ``gi_flare`` branch is
+    explicit, not a catch-all.
     """
     if not reasons:
         return None
@@ -174,7 +187,9 @@ def override_for(reasons: list[str]) -> WorkoutCard | None:
         return WorkoutCard.rest
     if KNEE_PAIN_HIGH in reasons or RHR_SPIKE in reasons or HRV_CRASH in reasons:
         return WorkoutCard.active_recovery
-    return WorkoutCard.mobility
+    if GI_FLARE in reasons:
+        return WorkoutCard.mobility
+    return WorkoutCard.rest
 
 
 @dataclass(frozen=True)
@@ -184,20 +199,40 @@ class SafetyGate:
     Exactly the three MODELS fields — **not** the readiness score result (E8·P1, a
     separate computation) and **no** medical-diagnosis field (auto-regulation only):
 
-    - ``triggered`` — ``bool``; ``True`` iff any reason fired. Derived from ``reasons``
-      (``bool(reasons)``), never set independently, so the two can never disagree.
+    - ``triggered`` — ``bool``; ``True`` iff any reason fired. Must equal ``bool(reasons)``.
     - ``reasons`` — the firing machine reason keys in the fixed §6.2 / MODELS order
       (a subset of ``gi_flare``/``sleep_below_4h``/``illness``/``knee_pain_high``/
-      ``rhr_spike``/``hrv_crash``).
+      ``rhr_spike``/``hrv_crash``), stored as an **immutable tuple**.
     - ``overrideTo`` — the single most-restrictive forced ``WorkoutCard``
       (``rest``/``active_recovery``/``mobility``), or ``None`` when not triggered. The
       field is named ``overrideTo`` (camelCase) to match the MODELS wire shape exactly,
       so E11 serializes it correctly by construction.
+
+    ``__post_init__`` **enforces** the documented invariants (review #2): ``reasons`` is
+    coerced to a tuple (a ``list`` field on a frozen dataclass is still mutable in place),
+    and ``triggered``/``overrideTo`` are checked against ``reasons`` so a direct
+    construction can never desync the three fields or leave a stale override. Prefer
+    ``evaluate_safety_gate`` to build instances; direct construction must be self-consistent.
     """
 
     triggered: bool
-    reasons: list[str] = field(default_factory=list)
+    reasons: tuple[str, ...] = ()
     overrideTo: WorkoutCard | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reasons, tuple):
+            object.__setattr__(self, "reasons", tuple(self.reasons))
+        if self.triggered != bool(self.reasons):
+            raise ValueError(
+                f"SafetyGate.triggered ({self.triggered!r}) must equal bool(reasons) "
+                f"({bool(self.reasons)!r}) for reasons {self.reasons!r}"
+            )
+        expected = override_for(self.reasons)
+        if self.overrideTo != expected:
+            raise ValueError(
+                f"SafetyGate.overrideTo ({self.overrideTo!r}) must be {expected!r} for "
+                f"reasons {self.reasons!r}"
+            )
 
 
 def evaluate_safety_gate(
@@ -237,8 +272,9 @@ def evaluate_safety_gate(
         hrv_sdnn=hrv_sdnn,
         hrv_30d_mean=hrv_30d_mean,
     )
+    reasons_t = tuple(reasons)
     return SafetyGate(
-        triggered=bool(reasons),
-        reasons=reasons,
-        overrideTo=override_for(reasons),
+        triggered=bool(reasons_t),
+        reasons=reasons_t,
+        overrideTo=override_for(reasons_t),
     )

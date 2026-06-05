@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import pytest
+
 from app.core.enums import WorkoutCard
 from app.services.safety_gate import (
     GI_FLARE,
@@ -279,46 +281,46 @@ def test_evaluate_each_reason_triggers_with_correct_card():
     # gi_symptoms=1 → gi_flare / mobility
     g = evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1})
     assert g.triggered is True
-    assert g.reasons == [GI_FLARE]
+    assert g.reasons == (GI_FLARE,)
     assert g.overrideTo == WorkoutCard.mobility
 
     # sleep <4 h → sleep_below_4h / rest
     s = evaluate_safety_gate(**{**_ALL_CLEAR, "sleep_h": 3.0})
     assert s.triggered is True
-    assert s.reasons == [SLEEP_BELOW_4H]
+    assert s.reasons == (SLEEP_BELOW_4H,)
     assert s.overrideTo == WorkoutCard.rest
 
     # illness=1 → illness / rest
     i = evaluate_safety_gate(**{**_ALL_CLEAR, "illness": 1})
     assert i.triggered is True
-    assert i.reasons == [ILLNESS]
+    assert i.reasons == (ILLNESS,)
     assert i.overrideTo == WorkoutCard.rest
 
     # knee 5 → knee_pain_high / active_recovery (MODELS triggered example)
     k = evaluate_safety_gate(**{**_ALL_CLEAR, "knee_pain": 5})
     assert k.triggered is True
-    assert k.reasons == [KNEE_PAIN_HIGH]
+    assert k.reasons == (KNEE_PAIN_HIGH,)
     assert k.overrideTo == WorkoutCard.active_recovery
     assert k.overrideTo == "active_recovery"  # MODELS wire token
 
     # rhr delta 15 → rhr_spike / active_recovery
     r = evaluate_safety_gate(**{**_ALL_CLEAR, "rhr": 70.0, "rhr_30d_mean": 55.0})
     assert r.triggered is True
-    assert r.reasons == [RHR_SPIKE]
+    assert r.reasons == (RHR_SPIKE,)
     assert r.overrideTo == WorkoutCard.active_recovery
 
     # hrv 50 % below → hrv_crash / active_recovery
     h = evaluate_safety_gate(**{**_ALL_CLEAR, "hrv_sdnn": 30.0, "hrv_30d_mean": 60.0})
     assert h.triggered is True
-    assert h.reasons == [HRV_CRASH]
+    assert h.reasons == (HRV_CRASH,)
     assert h.overrideTo == WorkoutCard.active_recovery
 
 
 def test_evaluate_no_reason_is_not_triggered():
     result = evaluate_safety_gate(**_ALL_CLEAR)
-    assert result == SafetyGate(triggered=False, reasons=[], overrideTo=None)
+    assert result == SafetyGate(triggered=False, reasons=(), overrideTo=None)
     assert result.triggered is False
-    assert result.reasons == []
+    assert result.reasons == ()
     assert result.overrideTo is None
 
 
@@ -334,13 +336,13 @@ def test_evaluate_triggered_equals_reasons_nonempty():
 
 
 def _triggered_matches(result: SafetyGate) -> bool:
-    return result.triggered == (result.reasons != [])
+    return result.triggered == bool(result.reasons)
 
 
 def test_evaluate_multi_reason_fixed_order_and_most_restrictive_card():
     result = evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1, "illness": 1})
     assert result.triggered is True
-    assert result.reasons == [GI_FLARE, ILLNESS]  # fixed MODELS order
+    assert result.reasons == (GI_FLARE, ILLNESS)  # fixed MODELS order
     assert result.overrideTo == WorkoutCard.rest  # most restrictive (DECISIONS 7)
 
 
@@ -357,7 +359,7 @@ def test_evaluate_day_one_null_baselines_trips_on_flags_and_sleep_floor():
         hrv_30d_mean=None,  # sparse / day-one window
     )
     # trips on the check-in flag + the <4 h floor only — no spike/crash, no exception
-    assert result.reasons == [GI_FLARE, SLEEP_BELOW_4H]
+    assert result.reasons == (GI_FLARE, SLEEP_BELOW_4H)
     assert RHR_SPIKE not in result.reasons
     assert HRV_CRASH not in result.reasons
     assert result.triggered is True
@@ -395,3 +397,44 @@ def test_evaluate_overrideto_always_in_the_card_universe_or_none():
     for override in ("gi_symptoms", "illness"):
         card = evaluate_safety_gate(**{**_ALL_CLEAR, override: 1}).overrideTo
         assert card in _FORCED_CARDS
+
+
+# --- Review round 1: override fails closed; SafetyGate enforces its invariants ---
+
+
+def test_override_for_unknown_reason_fails_closed_to_rest():
+    # A non-empty reasons list with only an unrecognized key (schema drift / typo /
+    # future reason) must fall to the MOST-restrictive card, never mobility (review #1).
+    assert override_for(["some_future_reason"]) == WorkoutCard.rest
+
+
+def test_override_for_gi_flare_alone_is_mobility_explicit():
+    # The gi_flare → mobility branch is explicit (not a catch-all): a known single reason.
+    assert override_for([GI_FLARE]) == WorkoutCard.mobility
+    assert override_for(()) is None
+
+
+def test_safety_gate_coerces_reasons_to_immutable_tuple():
+    g = evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1})
+    assert isinstance(g.reasons, tuple)
+    # frozen + tuple → no in-place mutation of the snapshot
+    with pytest.raises(AttributeError):
+        g.reasons.append(ILLNESS)  # type: ignore[attr-defined]
+    # constructing from a list still yields a tuple (coerced in __post_init__)
+    built = SafetyGate(triggered=True, reasons=[GI_FLARE], overrideTo=WorkoutCard.mobility)
+    assert built.reasons == (GI_FLARE,)
+    assert isinstance(built.reasons, tuple)
+
+
+def test_safety_gate_rejects_triggered_disagreeing_with_reasons():
+    # triggered must equal bool(reasons) — desynced construction fails closed (review #2)
+    with pytest.raises(ValueError, match="triggered"):
+        SafetyGate(triggered=True, reasons=(), overrideTo=None)
+    with pytest.raises(ValueError, match="triggered"):
+        SafetyGate(triggered=False, reasons=(ILLNESS,), overrideTo=WorkoutCard.rest)
+
+
+def test_safety_gate_rejects_stale_override():
+    # overrideTo must be the mapped card for the reasons — a stale override fails (review #2)
+    with pytest.raises(ValueError, match="overrideTo"):
+        SafetyGate(triggered=True, reasons=(ILLNESS,), overrideTo=WorkoutCard.mobility)
