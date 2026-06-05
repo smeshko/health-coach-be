@@ -12,6 +12,8 @@ edges, the null/skip cases (a sparse/day-one E6·P2 baseline), and the most-rest
 
 from __future__ import annotations
 
+import dataclasses
+
 from app.core.enums import WorkoutCard
 from app.services.safety_gate import (
     GI_FLARE,
@@ -22,7 +24,9 @@ from app.services.safety_gate import (
     RHR_SPIKE,
     RHR_SPIKE_BPM,
     SLEEP_BELOW_4H,
+    SafetyGate,
     collect_reasons,
+    evaluate_safety_gate,
     gi_flare_reason,
     hrv_crash_reason,
     illness_reason,
@@ -30,6 +34,18 @@ from app.services.safety_gate import (
     override_for,
     rhr_spike_reason,
     sleep_below_4h_reason,
+)
+
+# All-clear objective inputs (no reason fires) — the baseline for single-reason cases.
+_ALL_CLEAR = dict(
+    gi_symptoms=0,
+    illness=0,
+    knee_pain=0,
+    sleep_h=8.0,
+    rhr=55.0,
+    rhr_30d_mean=55.0,
+    hrv_sdnn=60.0,
+    hrv_30d_mean=60.0,
 )
 
 # The six MODELS machine reason keys, in the fixed §6.2 / MODELS listing order.
@@ -254,3 +270,128 @@ def test_override_for_returns_only_the_three_forced_cards_or_none():
     for reason in _SIX_REASONS:
         assert override_for([reason]) in _FORCED_CARDS
     assert override_for(_SIX_REASONS) in _FORCED_CARDS
+
+
+# --- evaluate_safety_gate (epic §4 — each reason triggers with the correct overrideTo) ---
+
+
+def test_evaluate_each_reason_triggers_with_correct_card():
+    # gi_symptoms=1 → gi_flare / mobility
+    g = evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1})
+    assert g.triggered is True
+    assert g.reasons == [GI_FLARE]
+    assert g.overrideTo == WorkoutCard.mobility
+
+    # sleep <4 h → sleep_below_4h / rest
+    s = evaluate_safety_gate(**{**_ALL_CLEAR, "sleep_h": 3.0})
+    assert s.triggered is True
+    assert s.reasons == [SLEEP_BELOW_4H]
+    assert s.overrideTo == WorkoutCard.rest
+
+    # illness=1 → illness / rest
+    i = evaluate_safety_gate(**{**_ALL_CLEAR, "illness": 1})
+    assert i.triggered is True
+    assert i.reasons == [ILLNESS]
+    assert i.overrideTo == WorkoutCard.rest
+
+    # knee 5 → knee_pain_high / active_recovery (MODELS triggered example)
+    k = evaluate_safety_gate(**{**_ALL_CLEAR, "knee_pain": 5})
+    assert k.triggered is True
+    assert k.reasons == [KNEE_PAIN_HIGH]
+    assert k.overrideTo == WorkoutCard.active_recovery
+    assert k.overrideTo == "active_recovery"  # MODELS wire token
+
+    # rhr delta 15 → rhr_spike / active_recovery
+    r = evaluate_safety_gate(**{**_ALL_CLEAR, "rhr": 70.0, "rhr_30d_mean": 55.0})
+    assert r.triggered is True
+    assert r.reasons == [RHR_SPIKE]
+    assert r.overrideTo == WorkoutCard.active_recovery
+
+    # hrv 50 % below → hrv_crash / active_recovery
+    h = evaluate_safety_gate(**{**_ALL_CLEAR, "hrv_sdnn": 30.0, "hrv_30d_mean": 60.0})
+    assert h.triggered is True
+    assert h.reasons == [HRV_CRASH]
+    assert h.overrideTo == WorkoutCard.active_recovery
+
+
+def test_evaluate_no_reason_is_not_triggered():
+    result = evaluate_safety_gate(**_ALL_CLEAR)
+    assert result == SafetyGate(triggered=False, reasons=[], overrideTo=None)
+    assert result.triggered is False
+    assert result.reasons == []
+    assert result.overrideTo is None
+
+
+def test_evaluate_triggered_equals_reasons_nonempty():
+    # no reason
+    assert _triggered_matches(evaluate_safety_gate(**_ALL_CLEAR))
+    # single reason
+    assert _triggered_matches(evaluate_safety_gate(**{**_ALL_CLEAR, "illness": 1}))
+    # multi reason
+    assert _triggered_matches(
+        evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1, "illness": 1})
+    )
+
+
+def _triggered_matches(result: SafetyGate) -> bool:
+    return result.triggered == (result.reasons != [])
+
+
+def test_evaluate_multi_reason_fixed_order_and_most_restrictive_card():
+    result = evaluate_safety_gate(**{**_ALL_CLEAR, "gi_symptoms": 1, "illness": 1})
+    assert result.triggered is True
+    assert result.reasons == [GI_FLARE, ILLNESS]  # fixed MODELS order
+    assert result.overrideTo == WorkoutCard.rest  # most restrictive (DECISIONS 7)
+
+
+def test_evaluate_day_one_null_baselines_trips_on_flags_and_sleep_floor():
+    # day-one athlete: null rolling baselines, but gi flare + <4 h sleep present
+    result = evaluate_safety_gate(
+        gi_symptoms=1,
+        illness=0,
+        knee_pain=0,
+        sleep_h=3.0,
+        rhr=80.0,
+        rhr_30d_mean=None,  # sparse / day-one window (E6·P2)
+        hrv_sdnn=10.0,
+        hrv_30d_mean=None,  # sparse / day-one window
+    )
+    # trips on the check-in flag + the <4 h floor only — no spike/crash, no exception
+    assert result.reasons == [GI_FLARE, SLEEP_BELOW_4H]
+    assert RHR_SPIKE not in result.reasons
+    assert HRV_CRASH not in result.reasons
+    assert result.triggered is True
+    assert result.overrideTo == WorkoutCard.rest  # sleep_below_4h forces rest
+
+
+def test_evaluate_objective_only_signature_has_no_subjective_parameter():
+    import inspect
+
+    params = set(inspect.signature(evaluate_safety_gate).parameters)
+    # exactly the three check-in flags + the five physiological values — nothing subjective
+    assert params == {
+        "gi_symptoms",
+        "illness",
+        "knee_pain",
+        "sleep_h",
+        "rhr",
+        "rhr_30d_mean",
+        "hrv_sdnn",
+        "hrv_30d_mean",
+    }
+    assert not (params & {"energy", "soreness", "motivation", "mood"})
+
+
+def test_safety_gate_result_has_exactly_the_three_models_fields():
+    field_names = {f.name for f in dataclasses.fields(SafetyGate)}
+    assert field_names == {"triggered", "reasons", "overrideTo"}
+    # not the readiness shape — no score/band/penalties or any medical-diagnosis field
+    assert not (field_names & {"score", "band", "penalties", "diagnosis", "medical"})
+
+
+def test_evaluate_overrideto_always_in_the_card_universe_or_none():
+    # all-clear → None; every single reason → one of the three forced cards
+    assert evaluate_safety_gate(**_ALL_CLEAR).overrideTo is None
+    for override in ("gi_symptoms", "illness"):
+        card = evaluate_safety_gate(**{**_ALL_CLEAR, override: 1}).overrideTo
+        assert card in _FORCED_CARDS

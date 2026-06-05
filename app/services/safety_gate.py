@@ -27,6 +27,8 @@ mis-transcription is caught by a per-reason boundary test at the exact §6.2 edg
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from app.core.enums import WorkoutCard
 
 # --- The six MODELS machine reason keys (MODELS § SafetyGate), in fixed listing order ---
@@ -173,3 +175,70 @@ def override_for(reasons: list[str]) -> WorkoutCard | None:
     if KNEE_PAIN_HIGH in reasons or RHR_SPIKE in reasons or HRV_CRASH in reasons:
         return WorkoutCard.active_recovery
     return WorkoutCard.mobility
+
+
+@dataclass(frozen=True)
+class SafetyGate:
+    """The safety-gate result (MODELS ``SafetyGate``).
+
+    Exactly the three MODELS fields — **not** the readiness score result (E8·P1, a
+    separate computation) and **no** medical-diagnosis field (auto-regulation only):
+
+    - ``triggered`` — ``bool``; ``True`` iff any reason fired. Derived from ``reasons``
+      (``bool(reasons)``), never set independently, so the two can never disagree.
+    - ``reasons`` — the firing machine reason keys in the fixed §6.2 / MODELS order
+      (a subset of ``gi_flare``/``sleep_below_4h``/``illness``/``knee_pain_high``/
+      ``rhr_spike``/``hrv_crash``).
+    - ``overrideTo`` — the single most-restrictive forced ``WorkoutCard``
+      (``rest``/``active_recovery``/``mobility``), or ``None`` when not triggered. The
+      field is named ``overrideTo`` (camelCase) to match the MODELS wire shape exactly,
+      so E11 serializes it correctly by construction.
+    """
+
+    triggered: bool
+    reasons: list[str] = field(default_factory=list)
+    overrideTo: WorkoutCard | None = None
+
+
+def evaluate_safety_gate(
+    *,
+    gi_symptoms: int | None,
+    illness: int | None,
+    knee_pain: int | None,
+    sleep_h: float | None,
+    rhr: float | None,
+    rhr_30d_mean: float | None,
+    hrv_sdnn: float | None,
+    hrv_30d_mean: float | None,
+) -> SafetyGate:
+    """Evaluate the §6.2 safety gate from objective inputs — the single public entry point.
+
+    ``reasons = collect_reasons(...)``; ``triggered = bool(reasons)``;
+    ``overrideTo = override_for(reasons)``. The deterministic predicate E11's
+    ``SafetyGateRouter`` calls **before** the LLM — any reason ⇒ short-circuit to the
+    forced REST/active-recovery card.
+
+    **Keyword-only, objective-only** — there is **no** energy/soreness/motivation or any
+    other subjective parameter (MODELS DailyCheckin "no subjective self-report"); the
+    keyword-only signature also prevents pairing the wrong rolling baseline with a
+    reading. The HRV/RHR baselines are the **rolling** ``daily_metrics`` values (E6·P2);
+    a null rolling baseline (sparse/day-one window) skips that spike/crash reason, so a
+    day-one athlete still trips on the check-in flags + the <4 h sleep floor. Pure: no DB
+    read/write, no LLM, no HTTP (the row query, the router branch, the REST-brief write,
+    and the ``suggestions`` snapshot are E10/E11).
+    """
+    reasons = collect_reasons(
+        gi_symptoms=gi_symptoms,
+        illness=illness,
+        knee_pain=knee_pain,
+        sleep_h=sleep_h,
+        rhr=rhr,
+        rhr_30d_mean=rhr_30d_mean,
+        hrv_sdnn=hrv_sdnn,
+        hrv_30d_mean=hrv_30d_mean,
+    )
+    return SafetyGate(
+        triggered=bool(reasons),
+        reasons=reasons,
+        overrideTo=override_for(reasons),
+    )
