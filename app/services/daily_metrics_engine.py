@@ -23,7 +23,6 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
-import math
 import re
 import statistics
 from collections.abc import Callable, Iterable, Sequence
@@ -499,8 +498,19 @@ def body_weight(session: Session, day: date) -> float | None:
     return max(candidates, key=instant_key).value
 
 
+# A hard sanity ceiling on a usable live body weight (kg). The heaviest human ever recorded was
+# ~635 kg, so 1000 kg can never be a real athlete weight — it is purely a garbage/overflow guard.
+# The sync `HealthRecord.value` is an unconstrained float, so a materialised `body_weight` may be
+# 0/negative/NaN/`±inf` or a finite-but-absurd outlier (e.g. 1e308). Any such value reaching the
+# macro engine 5xxes the brief: a non-positive trips `_require_positive_weight`, while `+inf` /
+# an over-ceiling finite overflow `bmr → tdee` to `inf` and then `_round_half_up` raises
+# `OverflowError` (review rounds 1-3). Bounding the reader to `0 < w <= this` rejects the whole
+# class at once (NaN/`±inf` comparisons are false in SQLite, so they fail the range too).
+MAX_PLAUSIBLE_BODY_WEIGHT_KG = 1000.0
+
+
 def current_body_weight(session: Session, anchor: date) -> float | None:
-    """The athlete's **current/live** weight: the latest **positive** materialised
+    """The athlete's **current/live** weight: the latest **plausible** materialised
     `daily_metrics.body_weight` on or before `anchor` (E13·P3).
 
     The multi-day ("≤ anchor") counterpart to `body_weight(session, day)` — where that reads
@@ -511,25 +521,23 @@ def current_body_weight(session: Session, anchor: date) -> float | None:
     lexical `<=` + `ORDER BY date DESC` selects the chronologically latest reading on/before the
     anchor.
 
-    Only **finite positive** weights qualify: a materialised `0`/negative/NaN/`±inf` from bad
-    HealthKit `body_mass` (the sync `value` is an unconstrained float) is garbage, not a usable
-    weight, so it is **skipped** — the walk-back continues to the latest valid reading rather
-    than letting a bad value reach the macro engine, which would 5xx the brief (a non-positive
-    trips the positive-weight guard; `+inf` passes `> 0` and the guard, then `_round_half_up`
-    raises `OverflowError` — review rounds 1-2). The SQL `> 0` excludes NULL/NaN/zero/negative;
-    `+inf` is a positive REAL in SQLite, so the `math.isfinite` filter drops it in Python.
-    Returns `None` when no finite-positive reading exists at/before the anchor (caller falls
-    back to `goal_weight_kg`).
+    Only a **plausible** weight qualifies — `0 < body_weight <= MAX_PLAUSIBLE_BODY_WEIGHT_KG` —
+    so a garbage materialised value (0/negative/NaN/`±inf`/absurd finite) is **skipped** and the
+    walk-back continues to the latest valid reading, rather than letting it reach the macro
+    engine and 5xx the brief (review rounds 1-3; see `MAX_PLAUSIBLE_BODY_WEIGHT_KG`). Returns
+    `None` when no plausible reading exists at/before the anchor (caller falls back to
+    `goal_weight_kg`).
     """
-    candidates = session.scalars(
+    return session.scalars(
         select(DailyMetrics.body_weight)
         .where(
             DailyMetrics.body_weight > 0,
+            DailyMetrics.body_weight <= MAX_PLAUSIBLE_BODY_WEIGHT_KG,
             DailyMetrics.date <= anchor.isoformat(),
         )
         .order_by(DailyMetrics.date.desc())
-    ).all()
-    return next((w for w in candidates if math.isfinite(w)), None)
+        .limit(1)
+    ).first()
 
 
 def _duration_minutes(w: Workouts) -> float:

@@ -511,14 +511,16 @@ def test_current_body_weight_skips_non_positive_garbage(session: Session) -> Non
     assert current_body_weight(session, bad_only_anchor) is None
 
 
-def test_current_body_weight_skips_non_finite(session: Session) -> None:
-    """A materialised +inf body_weight (sync value is an unconstrained float) is a positive
-    REAL in SQLite, so `> 0` alone would return it — and inf reaches `_round_half_up` →
-    OverflowError → 5xx. The reader's `math.isfinite` filter skips it and walks back to the
-    latest finite weight (review #1 round-2)."""
+def test_current_body_weight_skips_implausible_weights(session: Session) -> None:
+    """A +inf or finite-but-absurd materialised body_weight (the sync value is an unconstrained
+    float) would 5xx the brief — `+inf` reaches `_round_half_up` → OverflowError, and a finite
+    outlier like 1e308 overflows bmr→tdee to inf → OverflowError. The reader's plausible-range
+    bound (`0 < w <= MAX_PLAUSIBLE_BODY_WEIGHT_KG`) skips both and walks back to the latest valid
+    weight (review #1 rounds 2-3)."""
     anchor = date(2026, 6, 10)
-    _seed_weight(session, anchor - timedelta(days=1), 79.0)
-    _seed_weight(session, anchor, float("inf"))  # garbage → skipped
+    _seed_weight(session, anchor - timedelta(days=2), 79.0)
+    _seed_weight(session, anchor - timedelta(days=1), float("inf"))  # non-finite → skipped
+    _seed_weight(session, anchor, 1e308)  # finite but absurd (overflows the macro chain) → skipped
     session.commit()
     assert current_body_weight(session, anchor) == 79.0
 
