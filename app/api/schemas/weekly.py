@@ -1,0 +1,73 @@
+"""The weekly LLM output contract — the strict `OutputType` `GeneratePlanNode`
+returns (E10·P1 TASK-001; MODELS `WeeklyPlanLLMOutput`; LLM §1).
+
+`WeeklyPlanLLMOutput { core, extras, narrative }` over slim `PlannedPick`s and
+`NarrativeSection`s — **only genuine picks + prose**. Every card-derived field
+(`tier`/`intensity`/`zoneTarget`/`isHardDay`/`flags`) is filled downstream by
+E7·P2's `PlannedPick → PlannedSession` expander, and every number
+(`targets`/`nutrition`/`budgets`) is code in E10·P2 (derive-don't-emit; MODELS
+rule 2; LLM §3). So the model output is **slim by design** and the validation
+surface collapses to a handful of judgment checks (LLM §4).
+
+The 2–3 core / 1–2 extras count invariant and the weekly `plan|session|nutrition`
+narrative subset (LLM §1) are policed in the **validator** path (E10·P1 TASK-003 /
+E7·P3 `validate_weekly`), **not** as Pydantic `min_length`/`Literal` constraints —
+so a miss is a `ModelRetry` the model sees, not a silent 422 (DECISIONS Decision
+1). The Pydantic types therefore stay permissive (`list[PlannedPick]`, `type:
+NarrativeType`).
+
+All three subclass the shared `CamelModel` (`app/api/schemas/base.py`) so the wire
+JSON is camelCase and Python stays snake_case (MODELS Casing); they reference
+E7·P1's `WorkoutCard`/`Weekday`/`NarrativeType` enums and redefine none. Pure wire
+models — no FastAPI route, no PydanticAI/LLM import. (`NarrativeSection` lives here
+for the weekly output; E11's daily output imports or re-homes it — RESEARCH
+Uncertainty.)
+"""
+
+from app.api.schemas.base import CamelModel
+from app.core.enums import NarrativeType, Weekday, WorkoutCard
+
+
+class NarrativeSection(CamelModel):
+    """One unit of LLM-authored coach prose for display (MODELS `NarrativeSection`).
+
+    `type` keys placement/styling in the app; `heading`/`body` are the prose. The
+    weekly output restricts `type` to the `plan|session|nutrition` subset (LLM §1),
+    enforced in the validator path (TASK-003), not as a `Literal` here.
+    """
+
+    type: NarrativeType
+    heading: str
+    body: str
+
+
+class PlannedPick(CamelModel):
+    """The slim weekly pick the LLM emits (MODELS `PlannedPick` — "what the LLM emits").
+
+    Exactly the four LLM fields: the `card`, the `suggestedDay` sequencing hint
+    (`Weekday | null` — "not a fixed calendar"), and the `durationMin[Low|High]`
+    dose band (the LLM's one numeric pick). **No** card-derived field
+    (`tier`/`intensity`/`zoneTarget`/`isHardDay`/`flags`) — E7·P2's expander fills
+    those (derive-don't-emit; MODELS rule 2; LLM §3).
+    """
+
+    card: WorkoutCard
+    suggested_day: Weekday | None = None
+    duration_min_low: int | None = None
+    duration_min_high: int | None = None
+
+
+class WeeklyPlanLLMOutput(CamelModel):
+    """The strict `OutputType` `GeneratePlanNode` returns (MODELS `WeeklyPlanLLMOutput`).
+
+    **Exactly** these three fields — `core`/`extras` of slim `PlannedPick`s and the
+    `narrative`. No `targets`/`nutrition`/`budgets`/card-derived field (all computed
+    downstream — MODELS). The 2–3 core / 1–2 extras count is policed by
+    `validate_weekly` (E7·P3 `core_size`/`extras_size`), not a Pydantic
+    `min_length`/`max_length`, so a bad count is a `ModelRetry`, not a 422
+    (DECISIONS Decision 1) — the lists stay permissive here.
+    """
+
+    core: list[PlannedPick]
+    extras: list[PlannedPick]
+    narrative: list[NarrativeSection]
