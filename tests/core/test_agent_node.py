@@ -1061,3 +1061,164 @@ def test_make_output_validator_is_brief_agnostic_two_fakes():
     fn_b, _ = _fake_validator([])
     val_b = make_output_validator(fn_b)
     assert asyncio.run(val_b(_Ctx(), out)) is out
+
+
+# --------------------------------------------------------------------------- #
+# E9·P2 — exhausted retries -> brief_generation_failed + belt-and-suspenders
+# re-check before persist (TASK-003). Model-mocked + fake validators.
+# --------------------------------------------------------------------------- #
+
+
+def _flipping_validator(per_call: list):
+    """A fake validator returning `per_call[i]` on its i-th call (last entry sticks).
+
+    Lets a test pass the output-validator DURING the run (early calls clean) but
+    report a hard Violation at the pre-persist re-check (a later call), simulating
+    an LLM slip / a final adapter mismatch.
+    """
+    state = {"i": 0}
+
+    def _fn(output, ctx):
+        i = min(state["i"], len(per_call) - 1)
+        state["i"] += 1
+        return list(per_call[i])
+
+    return _fn, state
+
+
+def test_exhausted_retries_map_to_brief_generation_failed_via_validator(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    """An always-hard validator exhausts retries=2 -> brief_generation_failed, ≤3 calls."""
+    from app.core.agent_node import BriefGenerationError
+
+    model, calls = _valid_tool_call_model()
+    fake_fn, _seen = _fake_validator([_hard("hard_day_count", "always broken")])
+    _patch_build_agent(monkeypatch, model)
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "brief_generation_failed"
+    # 1 initial + 2 retries = at most 3 model invocations (retries <= 2).
+    assert calls["n"] <= 3
+    # Nothing persisted on failure.
+    assert node.node_name not in ctx.nodes
+
+
+def test_recheck_catches_a_slip_and_persists_nothing(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    """Clean DURING the run, hard at re-check -> error, nothing stored, model not re-run."""
+    from pydantic_ai.models.test import TestModel
+
+    from app.core.agent_node import BriefGenerationError
+
+    # 1st call (output-validator during the run) -> clean; 2nd call (the re-check) -> hard.
+    fake_fn, state = _flipping_validator(
+        [[], [_hard("knee_impact_blocked", "slipped an impact card past")]]
+    )
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "brief_generation_failed"
+    # The brief never reached the cache (nothing persisted) — LLM §4.
+    assert node.node_name not in ctx.nodes
+    # The validator ran exactly twice: once in the run, once in the re-check.
+    assert state["i"] == 2
+
+
+def test_recheck_does_not_reinvoke_the_model(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    """The re-check is deterministic + LLM-free: it does not call the model again."""
+    from app.core.agent_node import BriefGenerationError
+
+    model, calls = _valid_tool_call_model()
+    # Clean during the run, hard at the re-check.
+    fake_fn, _state = _flipping_validator(
+        [[], [_hard("day_type_below_floor", "under-fuelled")]]
+    )
+    _patch_build_agent(monkeypatch, model)
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError):
+        asyncio.run(node.process(ctx))
+
+    # The model was invoked exactly ONCE (the clean run); the re-check added no call.
+    assert calls["n"] == 1
+
+
+def test_fully_clean_run_persists_the_output(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    """Clean during the run AND at the re-check -> the output is stored (happy path)."""
+    from pydantic_ai.models.test import TestModel
+
+    fake_fn, _seen = _fake_validator([])  # always clean
+    _patch_build_agent(monkeypatch, TestModel())
+
+    node_cls = _validating_node_cls(fake_fn)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    result = asyncio.run(node.process(ctx))
+    assert result is ctx
+    stored = node.get_output(node_cls)
+    assert isinstance(stored, _ToyOut)
+    assert ctx.nodes[node.node_name] is stored
+
+
+def test_recheck_output_helper_raises_on_hard_without_model():
+    """The re-check helper, called directly: hard -> BriefGenerationError; clean -> None."""
+    from app.core.agent_node import (
+        BriefGenerationError,
+        _deps_to_validation_context,
+        recheck_output,
+    )
+
+    vctx = _deps_to_validation_context(_known_validator_deps())
+    out = _ToyOut(pick="p", note="n")
+
+    clean_fn, _ = _fake_validator([])
+    assert recheck_output(out, clean_fn, vctx) is None
+
+    hard_fn, _ = _fake_validator([_hard("hard_day_count", "broken")])
+    with pytest.raises(BriefGenerationError) as excinfo:
+        recheck_output(out, hard_fn, vctx)
+    assert excinfo.value.code == "brief_generation_failed"
+
+    # A soft-only re-check result does NOT error (advisory).
+    soft_fn, _ = _fake_validator([_soft("advisory", "fyi")])
+    assert recheck_output(out, soft_fn, vctx) is None
+
+
+def test_module_introduces_no_new_error_code_literal():
+    """A grep guard: the only error-code literals are the two reused MODELS codes."""
+    import re
+    from pathlib import Path
+
+    import app.core.agent_node as agent_node_mod
+
+    source = Path(agent_node_mod.__file__).read_text()
+    # Every quoted code literal in the module must be one of the closed ErrorCode set.
+    found = set(re.findall(r'"(brief_generation_failed|upstream_timeout)"', source))
+    assert found <= {"brief_generation_failed", "upstream_timeout"}
+    # And both are members of the closed ErrorCode enum.
+    from app.api.errors import ErrorCode
+
+    for code in found:
+        assert ErrorCode(code) in ErrorCode

@@ -323,6 +323,23 @@ def register_output_validator(agent: Agent, validate_fn) -> None:
     agent.output_validator(make_output_validator(validate_fn))
 
 
+def recheck_output(output: Any, validate_fn, validation_ctx: ValidationContext) -> None:
+    """The belt-and-suspenders re-check before persist (LLM §4; DECISIONS Decision 3).
+
+    After a **clean** `agent.run` returns the validated `output`, run the **same**
+    pure `validate_fn` once more against the **same** `ValidationContext` — if it now
+    reports a `Severity.hard` `Violation` (the LLM slipped one past, or a final
+    adapter mismatch), `raise BriefGenerationError(code="brief_generation_failed")`
+    so a constraint-breaking brief **never reaches the cache**. Deterministic and
+    **LLM-free**: it runs the validator once and **errors**; it does **not**
+    `ModelRetry` / re-invoke the model (the retries were the agent's job inside
+    `agent.run`). This is the last gate before `save_output`.
+    """
+    violations = validate_fn(output, validation_ctx)
+    if any(v.severity is Severity.hard for v in violations):
+        raise BriefGenerationError(code="brief_generation_failed")
+
+
 class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     """A generic, brief-agnostic `AgentNode` wrapping a PydanticAI `Agent` (E9·P1).
 
@@ -438,19 +455,27 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
         validate_fn = self.get_validate_fn()
         if validate_fn is not None:
             register_output_validator(agent, validate_fn)
+        deps = self.build_deps(task_context)
         try:
             result = await agent.run(
                 self.build_run_input(task_context),
-                deps=self.build_deps(task_context),
+                deps=deps,
             )
         except Exception as exc:
             if _is_timeout(exc):
                 raise BriefGenerationError(code="upstream_timeout") from exc
-            # Exhausted retries (UnexpectedModelBehavior), invalid structure, and every
+            # Exhausted retries (UnexpectedModelBehavior) — the E9·P2 output-validator
+            # ModelRetry'd past the retries=2 budget — invalid structure, and every
             # other model/HTTP failure (ModelHTTPError/ModelAPIError) derive from
             # AgentRunError → the generic LLM-failure code.
             if isinstance(exc, AgentRunError):
                 raise BriefGenerationError(code="brief_generation_failed") from exc
             raise
+        # Belt-and-suspenders re-check before persist (E9·P2; LLM §4): re-run the
+        # SAME pure validator against the SAME deps-derived ValidationContext once
+        # more. A hard violation raises and stores NOTHING, so a constraint-breaking
+        # brief never reaches the cache. Deterministic + LLM-free — no model re-run.
+        if validate_fn is not None:
+            recheck_output(result.output, validate_fn, _deps_to_validation_context(deps))
         self.save_output(result.output)
         return task_context
