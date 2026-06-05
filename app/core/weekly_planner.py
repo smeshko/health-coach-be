@@ -59,7 +59,7 @@ from app.database.models import DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
 from app.services.derive.plan import PlannedSession, expand_plan
-from app.services.macros import WeeklyNutrition, compute_weekly_nutrition
+from app.services.macros import LastWeekNutrition, WeeklyNutrition, compute_weekly_nutrition
 from app.services.recompute import (
     QualityFocus,
     StrengthPoint,
@@ -469,17 +469,15 @@ class ComputeTargetsNode(Node):
 # ---------------------------------------------------------------------------
 # ComputeNutritionNode — the weekly nutrition half (E8·P3).
 # ---------------------------------------------------------------------------
-def _last_week_adherence(aggregates: Aggregates) -> dict | None:
-    """The 7-day intake-adherence summary ``WeeklyNutrition.lastWeek`` carries.
+def _last_week_adherence(aggregates: Aggregates) -> LastWeekNutrition | None:
+    """The 7-day intake scorecard ``WeeklyNutrition.lastWeek`` carries (E13·P1).
 
-    Flattens the E6·P3 ``NutritionAdherence`` (a frozen dataclass) to a JSON-able dict so
-    it survives ``PersistPlanNode``'s ``payload`` serialisation. Its derivation is E6·P3's
-    (passed through unchanged here — E8·P3 keeps ``last_week`` opaque).
+    Delegates to ``LastWeekNutrition.from_adherence`` (the typed mapper + null predicate
+    live next to the model in ``macros.py`` — DECISIONS Decision 4), which returns ``None``
+    (→ ``lastWeek: null``) when the 7-day window logged no dietary coverage and otherwise
+    the camelCase scorecard. No more snake_case ``dataclasses.asdict`` dump.
     """
-    adherence = aggregates.nutrition_7d
-    if adherence is None:
-        return None
-    return dataclasses.asdict(adherence)
+    return LastWeekNutrition.from_adherence(aggregates.nutrition_7d)
 
 
 class ComputeNutritionNode(Node):

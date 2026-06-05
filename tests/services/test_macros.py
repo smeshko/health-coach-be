@@ -24,12 +24,15 @@ import pytest
 
 from app.core.enums import DayType
 from app.core.profile import Athlete, CarbsPerKg, Nutrition
+from app.services.aggregates import NutritionAdherence, NutritionConsumed
 from app.services.macros import (
     BMR_SEX_CONSTANT,
     MAX_DEFICIT_PCT,
     MAX_PROTEIN_G_PER_KG,
     REST_DEFICIT_PCT,
     DayTypePatternEntry,
+    LastWeekNutrition,
+    WeeklyNutrition,
     _round_half_up,
     bmr,
     calories_kcal,
@@ -396,12 +399,224 @@ def test_day_type_pattern_helper_matches_selectors():
         assert entry.calories_kcal == calories_kcal(dt, tdee_kcal=t, target_avg_kcal=target)
 
 
-def test_weekly_nutrition_last_week_passes_through():
-    sentinel = object()
-    weekly = compute_weekly_nutrition(
-        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE, last_week=sentinel
+# --- E13·P1: LastWeekNutrition model + from_adherence mapper + typed last_week ---
+
+
+def _adherence(
+    *,
+    kcal_in_n: int,
+    protein_in_g_n: int,
+    avg_kcal: float | None,
+    avg_protein_g: float | None,
+    protein_hit_days: int | None = None,
+    days_over_target: int | None = None,
+    days_under_target: int | None = None,
+) -> NutritionAdherence:
+    """Build a `NutritionAdherence` for the mapper tests (no DB) — only the fields the
+    `from_adherence` null predicate + pass-through read are varied."""
+    consumed = NutritionConsumed(
+        days=7, kcal_in=0.0, protein_in_g=0.0, carbs_in_g=0.0, fat_in_g=0.0,
+        fiber_in_g=0.0, sodium_in_mg=0.0, water_in_l=0.0, n_days=7,
+        kcal_in_n=kcal_in_n, protein_in_g_n=protein_in_g_n, carbs_in_g_n=0,
+        fat_in_g_n=0, fiber_in_g_n=0, sodium_in_mg_n=0, water_in_l_n=0,
     )
-    assert weekly.last_week is sentinel  # passed through unchanged, not computed
+    return NutritionAdherence(
+        consumed=consumed, target=None, avg_kcal=avg_kcal, avg_protein_g=avg_protein_g,
+        kcal_pct=None, protein_hit_days=protein_hit_days,
+        days_over_target=days_over_target, days_under_target=days_under_target,
+    )
+
+
+_LAST_WEEK_KEYS = {
+    "avgCaloriesKcal", "avgProteinG", "proteinHitDays", "daysOverTarget", "daysUnderTarget",
+}
+
+
+def test_last_week_nutrition_serialises_camel_keys():
+    lw = LastWeekNutrition(
+        avg_calories_kcal=2600, avg_protein_g=150,
+        protein_hit_days=4, days_over_target=3, days_under_target=1,
+    )
+    dumped = lw.model_dump(mode="json")
+    assert set(dumped) == _LAST_WEEK_KEYS  # exactly the five camelCase keys, no extras
+    assert dumped == {
+        "avgCaloriesKcal": 2600, "avgProteinG": 150,
+        "proteinHitDays": 4, "daysOverTarget": 3, "daysUnderTarget": 1,
+    }
+
+
+def test_last_week_nutrition_rounds_float_averages():
+    # Fractional floats round half-up to int (camelCase input) — no ValidationError.
+    camel = LastWeekNutrition.model_validate({"avgProteinG": 138.5, "avgCaloriesKcal": 2610.4})
+    assert camel.avg_protein_g == 139  # floor(138.5 + 0.5)
+    assert camel.avg_calories_kcal == 2610  # floor(2610.4 + 0.5)
+    # snake_case input is equally accepted (populate_by_name) and rounded the same.
+    snake = LastWeekNutrition.model_validate({"avg_protein_g": 138.5, "avg_calories_kcal": 2610.4})
+    assert snake.avg_protein_g == 139
+    assert snake.avg_calories_kcal == 2610
+    # int / None pass through unchanged.
+    passthrough = LastWeekNutrition(avg_protein_g=150, avg_calories_kcal=None)
+    assert passthrough.avg_protein_g == 150
+    assert passthrough.avg_calories_kcal is None
+
+
+def test_from_adherence_none_on_no_coverage():
+    no_coverage = _adherence(
+        kcal_in_n=0, protein_in_g_n=0, avg_kcal=None, avg_protein_g=None
+    )
+    assert LastWeekNutrition.from_adherence(no_coverage) is None
+    assert LastWeekNutrition.from_adherence(None) is None
+
+
+def test_from_adherence_rounds_and_passes_counts():
+    adherence = _adherence(
+        kcal_in_n=5, protein_in_g_n=5, avg_kcal=2610.4, avg_protein_g=138.5,
+        protein_hit_days=4, days_over_target=3, days_under_target=1,
+    )
+    lw = LastWeekNutrition.from_adherence(adherence)
+    assert lw is not None
+    assert lw.avg_calories_kcal == 2610  # float mean rounded
+    assert lw.avg_protein_g == 139
+    assert lw.protein_hit_days == 4  # counts pass through unchanged
+    assert lw.days_over_target == 3
+    assert lw.days_under_target == 1
+
+
+def test_from_adherence_partial_coverage_nulls_missing_average():
+    # Protein-only week: calories never logged → avg_calories_kcal stays None (not fabricated).
+    protein_only = _adherence(
+        kcal_in_n=0, protein_in_g_n=5, avg_kcal=None, avg_protein_g=150.0
+    )
+    lw = LastWeekNutrition.from_adherence(protein_only)
+    assert lw is not None
+    assert lw.avg_calories_kcal is None
+    assert lw.avg_protein_g == 150  # the logged nutrient is an int
+
+
+def test_weekly_nutrition_last_week_null_and_object_shapes():
+    none_dump = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    ).model_dump(mode="json")
+    assert none_dump["lastWeek"] is None  # default → lastWeek: null
+
+    lw = LastWeekNutrition(avg_calories_kcal=2600, avg_protein_g=150)
+    obj_dump = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE, last_week=lw
+    ).model_dump(mode="json")
+    assert set(obj_dump["lastWeek"]) == _LAST_WEEK_KEYS  # camelCase only, no snake/extra
+    assert obj_dump["lastWeek"] == {
+        "avgCaloriesKcal": 2600, "avgProteinG": 150,
+        "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+    }
+
+
+def _weekly_nutrition_kwargs(**overrides):
+    base = dict(
+        protein_g=150, fat_g_low=60, fat_g_high=80,
+        hydration_l_low=2.5, hydration_l_high=3.5,
+        avg_calories_kcal=2600, day_type_pattern=[],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_weekly_nutrition_adapts_legacy_cached_last_week():
+    """Review #1/#2: the read-side adapter on `WeeklyNutrition.last_week` keeps a legacy
+    `dataclasses.asdict(NutritionAdherence)` payload contract-correct on the cache-hit path —
+    no all-null object, no dropped calorie average."""
+    # (a) Legacy no-intake dump → lastWeek collapses to null (never an all-null object).
+    no_intake = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 0, "protein_in_g_n": 0},
+                "avg_kcal": None, "avg_protein_g": None, "kcal_pct": None,
+            }
+        )
+    )
+    assert no_intake.last_week is None
+    assert no_intake.model_dump(mode="json")["lastWeek"] is None
+
+    # (b) Legacy calorie-only dump → avg_kcal mapped to avgCaloriesKcal; avgProteinG stays null.
+    cal_only = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 5, "protein_in_g_n": 0},
+                "avg_kcal": 2610.0, "avg_protein_g": None,
+            }
+        )
+    )
+    assert cal_only.model_dump(mode="json")["lastWeek"] == {
+        "avgCaloriesKcal": 2610, "avgProteinG": None,
+        "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+    }
+
+    # (c) Legacy full dump → avg_kcal mapped + both averages rounded; counts pass through.
+    full = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 7, "protein_in_g_n": 7},
+                "avg_kcal": 2610.0, "avg_protein_g": 138.5,
+                "kcal_pct": None, "protein_hit_days": 4,
+                "days_over_target": 3, "days_under_target": 1,
+            }
+        )
+    )
+    assert full.model_dump(mode="json")["lastWeek"] == {
+        "avgCaloriesKcal": 2610, "avgProteinG": 139,
+        "proteinHitDays": 4, "daysOverTarget": 3, "daysUnderTarget": 1,
+    }
+
+    # (d) A current camelCase dict (no `consumed` key) passes through untranslated.
+    current = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(last_week={"avgCaloriesKcal": 2605, "avgProteinG": 144})
+    )
+    assert current.last_week is not None
+    assert current.last_week.avg_calories_kcal == 2605
+    assert current.last_week.avg_protein_g == 144
+
+
+def test_weekly_nutrition_collapses_all_null_last_week():
+    """Review #3: an all-null `lastWeek` collapses to None at the validation boundary
+    regardless of provenance — the empty-state contract never emits an all-null object."""
+    # (a) Current five-key shape, every value null (intermediate-build / cache drift).
+    current_all_null = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "avgCaloriesKcal": None, "avgProteinG": None,
+                "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+            }
+        )
+    )
+    assert current_all_null.last_week is None
+    assert current_all_null.model_dump(mode="json")["lastWeek"] is None
+
+    # (b) Legacy row that logged days but had no target (old target-gating left both
+    #     averages null despite `kcal_in_n > 0`) → still collapses to the empty state.
+    legacy_covered_no_target = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 7, "protein_in_g_n": 7},
+                "avg_kcal": None, "avg_protein_g": None, "protein_hit_days": None,
+            }
+        )
+    )
+    assert legacy_covered_no_target.last_week is None
+
+    # A LastWeekNutrition instance with one non-null field is NOT collapsed.
+    populated = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(last_week=LastWeekNutrition(avg_protein_g=150))
+    )
+    assert populated.last_week is not None
+    assert populated.last_week.avg_protein_g == 150
+
+
+def test_weekly_nutrition_last_week_passes_through():
+    # The field is typed now: a LastWeekNutrition round-trips unchanged (no object() identity).
+    lw = LastWeekNutrition(avg_calories_kcal=2600, avg_protein_g=150, protein_hit_days=4)
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE, last_week=lw
+    )
+    assert weekly.last_week == lw  # passed through unchanged, not recomputed
     weekly_none = compute_weekly_nutrition(
         picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
     )

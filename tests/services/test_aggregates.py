@@ -157,12 +157,32 @@ def test_nutrition_adherence_no_target_consumed_only(session: Session) -> None:
     session.commit()
     a = nutrition_adherence(session, D, 7, target=None)
     assert a.consumed.kcal_in == pytest.approx(2000.0)
-    assert a.avg_kcal is None
-    assert a.avg_protein_g is None
+    # Averages are window means of logged intake → target-independent (round-1 #1):
+    # they populate from `consumed` even with no target injected.
+    assert a.avg_kcal == pytest.approx(2000.0)
+    assert a.avg_protein_g == pytest.approx(150.0)
+    # The target-gated comparison fields stay None with no target.
     assert a.kcal_pct is None
     assert a.protein_hit_days is None
     assert a.days_over_target is None
     assert a.days_under_target is None
+
+
+def test_nutrition_adherence_averages_partial_coverage(session: Session) -> None:
+    # A calorie-only window (protein never logged) → avg_kcal populated, avg_protein_g None.
+    _dm(session, D, kcal_in=2000.0)
+    # A non-overlapping protein-only window → avg_protein_g populated, avg_kcal None.
+    earlier = D - timedelta(days=14)
+    _dm(session, earlier, protein_in_g=150.0)
+    session.commit()
+
+    cal_only = nutrition_adherence(session, D, 7, target=None)
+    assert cal_only.avg_kcal == pytest.approx(2000.0)
+    assert cal_only.avg_protein_g is None  # never fabricated
+
+    prot_only = nutrition_adherence(session, earlier, 7, target=None)
+    assert prot_only.avg_protein_g == pytest.approx(150.0)
+    assert prot_only.avg_kcal is None  # never fabricated
 
 
 def test_nutrition_adherence_per_day_comparison(session: Session) -> None:

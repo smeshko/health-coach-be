@@ -217,17 +217,30 @@ def _safe_ratio(num: float | None, den: float | None) -> float | None:
 def nutrition_adherence(
     session: Session, anchor: date, days: int, *, target: NutritionTarget | None = None
 ) -> NutritionAdherence:
-    """The consumed rollup plus, when a per-day `target` is supplied, the documented
-    per-day-comparison adherence fields over the window's **logged** days.
+    """The consumed rollup plus window-mean averages, plus — when a per-day `target` is
+    supplied — the documented per-day-comparison adherence fields over the window's
+    **logged** days.
 
-    Each adherence field is `None` (unknown) when: the relevant target field is `None`,
-    the target is `0` (divide-by-zero guard), or no day was logged for that nutrient
-    (round-1 #1) — so a NULL-only window never reads as `0%`. Day-count fields count
-    only logged days, so they are naturally coverage-aware. `target=None` → all `None`.
+    `avg_kcal`/`avg_protein_g` are window means of logged intake (`sum / count`) and are
+    **target-independent** (round-1 #1; DECISIONS Decision 1): they populate whenever the
+    nutrient is logged, or stay `None` when no day logged it. The comparison fields
+    (`kcal_pct`/`protein_hit_days`/`days_over_target`/`days_under_target`) are `None`
+    (unknown) when: the relevant target field is `None`, the target is `0`
+    (divide-by-zero guard), or no day was logged for that nutrient — so a NULL-only window
+    never reads as `0%`. `target=None` → averages from `consumed`, all comparison fields
+    `None`.
     """
     consumed = nutrition_consumed(session, anchor, days)
-    avg_kcal: float | None = None
-    avg_protein_g: float | None = None
+    # Averages are window means of logged intake — NULL-skipping `sum / count` over the
+    # `consumed` rollup, target-independent (round-1 #1; DECISIONS Decision 1). They
+    # populate whenever the nutrient is logged, so a pre-E13·P2 `lastWeek` carries real
+    # averages; a nutrient with no logged day stays `None` (unknown, never fabricated).
+    avg_kcal: float | None = (
+        consumed.kcal_in / consumed.kcal_in_n if consumed.kcal_in_n > 0 else None
+    )
+    avg_protein_g: float | None = (
+        consumed.protein_in_g / consumed.protein_in_g_n if consumed.protein_in_g_n > 0 else None
+    )
     kcal_pct: float | None = None
     protein_hit_days: int | None = None
     days_over_target: int | None = None
@@ -244,13 +257,11 @@ def nutrition_adherence(
         logged_protein = [p for (_k, p) in rows if p is not None]
 
         if logged_kcal:
-            avg_kcal = sum(logged_kcal) / len(logged_kcal)
             kcal_pct = _safe_ratio(avg_kcal, target.kcal)
             if target.kcal not in (None, 0):
                 days_over_target = sum(1 for k in logged_kcal if k > target.kcal)
                 days_under_target = sum(1 for k in logged_kcal if k < target.kcal)
         if logged_protein:
-            avg_protein_g = sum(logged_protein) / len(logged_protein)
             if target.protein_g not in (None, 0):
                 protein_hit_days = sum(1 for p in logged_protein if p >= target.protein_g)
 

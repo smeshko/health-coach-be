@@ -474,3 +474,146 @@ def test_real_generator_no_staged_write_when_metadata_absent(monkeypatch) -> Non
     gen = _WeeklyPlannerGenerator(session=None)
     gen("2026-W23")
     assert gen.pending_profile is None
+
+
+# --------------------------------------------------------------------------- #
+# E13·P1 regression: a legacy `plans.payload` (snake_case asdict `lastWeek` with a
+# FRACTIONAL `avg_protein_g`) survives the cache-hit re-validation path without a 500.
+# --------------------------------------------------------------------------- #
+def test_cache_hit_legacy_last_week_payload_does_not_500(ctx) -> None:
+    """A stored `nutrition.lastWeek` that is a faithful `dataclasses.asdict(NutritionAdherence)`
+    dump — including a fractional `avg_protein_g` (the exact Pydantic v2 float→int rejection,
+    round-2 #1) — is served on cache hit with HTTP 200, not 500. The TASK-002 `mode="before"`
+    validator rounds it (138.5 → 139); the unmatched legacy keys (`avg_kcal`/`kcal_pct`/
+    `consumed`/`target`) are ignored by CamelModel."""
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)  # a cache hit must never invoke it
+
+    legacy_last_week = {
+        "consumed": {
+            "days": 7, "kcal_in": 18270.0, "protein_in_g": 969.5, "carbs_in_g": 0.0,
+            "fat_in_g": 0.0, "fiber_in_g": 0.0, "sodium_in_mg": 0.0, "water_in_l": 0.0,
+            "n_days": 7, "kcal_in_n": 7, "protein_in_g_n": 7, "carbs_in_g_n": 0,
+            "fat_in_g_n": 0, "fiber_in_g_n": 0, "sodium_in_mg_n": 0, "water_in_l_n": 0,
+        },
+        "target": None,
+        "avg_kcal": 2610.0,
+        "avg_protein_g": 138.5,  # fractional → would 500 a bare `int` field without the validator
+        "kcal_pct": None,
+        "protein_hit_days": 4,
+        "days_over_target": 3,
+        "days_under_target": 1,
+    }
+    data = _plan_data(CURRENT_WEEK)
+    data["nutrition"]["lastWeek"] = legacy_last_week
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps({"aggregates": {}, "constants": None}),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0  # served from cache, never regenerated
+    last_week = body["data"]["nutrition"]["lastWeek"]
+    assert last_week["avgProteinG"] == 139  # 138.5 rounded half-up by the TASK-002 validator
+    # review #1: the read-side adapter maps the legacy `avg_kcal` to `avgCaloriesKcal`
+    # (rounded) rather than silently dropping it to null.
+    assert last_week["avgCaloriesKcal"] == 2610
+    assert last_week["proteinHitDays"] == 4  # matched snake key passes through (populate_by_name)
+
+
+def test_cache_hit_legacy_no_intake_last_week_is_null(ctx) -> None:
+    """Review #2: a legacy `plans.payload` whose `nutrition.lastWeek` is an asdict dump for a
+    NO-intake window (consumed `kcal_in_n == 0` and `protein_in_g_n == 0`, all averages null)
+    must serve `lastWeek: null` on cache hit — never a populated all-null object (P1's
+    empty-state contract), and still HTTP 200."""
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)
+
+    legacy_no_intake = {
+        "consumed": {
+            "days": 7, "kcal_in": 0.0, "protein_in_g": 0.0, "carbs_in_g": 0.0,
+            "fat_in_g": 0.0, "fiber_in_g": 0.0, "sodium_in_mg": 0.0, "water_in_l": 0.0,
+            "n_days": 7, "kcal_in_n": 0, "protein_in_g_n": 0, "carbs_in_g_n": 0,
+            "fat_in_g_n": 0, "fiber_in_g_n": 0, "sodium_in_mg_n": 0, "water_in_l_n": 0,
+        },
+        "target": None, "avg_kcal": None, "avg_protein_g": None, "kcal_pct": None,
+        "protein_hit_days": None, "days_over_target": None, "days_under_target": None,
+    }
+    data = _plan_data(CURRENT_WEEK)
+    data["nutrition"]["lastWeek"] = legacy_no_intake
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps({"aggregates": {}, "constants": None}),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0
+    assert body["data"]["nutrition"]["lastWeek"] is None  # empty state, not an all-null object
+
+
+def test_cache_hit_current_format_all_null_last_week_is_null(ctx) -> None:
+    """Review #3: a cached row whose `nutrition.lastWeek` is already the current five-key
+    shape but with every value null (intermediate-build / cache drift) must still serve
+    `lastWeek: null` on cache hit — the empty-state contract is enforced at the validation
+    boundary independent of payload provenance."""
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)
+
+    data = _plan_data(CURRENT_WEEK)
+    data["nutrition"]["lastWeek"] = {
+        "avgCaloriesKcal": None, "avgProteinG": None,
+        "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+    }
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps({"aggregates": {}, "constants": None}),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0
+    assert body["data"]["nutrition"]["lastWeek"] is None  # collapsed, not an all-null object
