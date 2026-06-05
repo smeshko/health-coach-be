@@ -91,3 +91,41 @@ def _tracer_provider(settings: Settings | None = None) -> Any:
 def reset_tracing_cache() -> None:
     """Clear the client/provider singleton — for test isolation (mirrors `cache_clear`)."""
     _CLIENTS.clear()
+
+
+# --------------------------------------------------------------------------- #
+# TASK-002 — instrument the PydanticAI Agent (prompt/output/retries/latency/cost).
+# --------------------------------------------------------------------------- #
+def build_instrumentation_settings(settings: Settings | None = None) -> Any:
+    """The PydanticAI `InstrumentationSettings` exporting through the Langfuse provider.
+
+    When enabled: ``InstrumentationSettings(tracer_provider=<the Langfuse client's OTel
+    provider>, include_content=True)`` — ``include_content=True`` puts the **prompt** and the
+    **structured output** into the span; the retries + latency + token usage/cost are emitted
+    by PydanticAI's instrumentation automatically per `agent.run`. ``event_mode`` is left at
+    the installed default (``version=2``/``"attributes"``; passing ``"logs"`` raises a
+    deprecation warning), and no ``meter_provider`` is needed (v2 emits usage as a span
+    attribute). Returns ``None`` when tracing is off.
+    """
+    s = settings or get_settings()
+    if not is_tracing_enabled(s):
+        return None
+    from pydantic_ai.agent import InstrumentationSettings
+
+    return InstrumentationSettings(
+        tracer_provider=_tracer_provider(s),
+        include_content=True,
+    )
+
+
+def instrument_agent(agent: Any, settings: Settings | None = None) -> Any:
+    """Set ``agent.instrument`` to the built `InstrumentationSettings` when enabled (a
+    per-agent opt-in), else leave the agent untouched (**no-op**). Returns the agent.
+
+    Per-agent (not the global `Agent.instrument_all`) so the no-op is total and no global
+    process state leaks into untraced contexts (tests, the no-key path).
+    """
+    instrumentation = build_instrumentation_settings(settings)
+    if instrumentation is not None:
+        agent.instrument = instrumentation
+    return agent

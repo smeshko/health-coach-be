@@ -431,6 +431,20 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
         """
         return None
 
+    def _instrument(self, agent: Agent) -> Agent:
+        """The E12·P1 tracing hook — instrument the agent for Langfuse, or no-op.
+
+        Delegates to `app.core.tracing.instrument_agent`, which sets `agent.instrument`
+        to a Langfuse-backed `InstrumentationSettings` when the Langfuse keys are
+        configured, and is a **hard no-op** otherwise (no client, no spans, no network) —
+        so the brief behaviour is unchanged on the no-key path. Overridable; both
+        AgentNodes inherit it. Imported inside so `agent_node.py`'s top level stays
+        Langfuse/OTel-free (E9·P1's pure-core boundary).
+        """
+        from app.core.tracing import instrument_agent
+
+        return instrument_agent(agent)
+
     async def process(self, task_context: TaskContext) -> TaskContext:
         """Build the agent, run it over the context, and store the typed `OutputType`.
 
@@ -452,6 +466,8 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             system_prompt=self.build_system_prompt(task_context),
             deps_type=self.DepsType,
         )
+        # E12·P1: instrument the agent for Langfuse tracing (a no-op when unconfigured).
+        agent = self._instrument(agent)
         validate_fn = self.get_validate_fn()
         if validate_fn is not None:
             register_output_validator(agent, validate_fn)
