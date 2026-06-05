@@ -29,23 +29,25 @@ from datetime import date, datetime
 from pydantic import field_validator
 
 from app.api.schemas.base import CamelModel
-from app.core.enums import NarrativeType, Weekday, WorkoutCard
+
+# `NarrativeSection` is re-homed to the shared `narrative` module (E11·P1) so the
+# weekly and daily outputs share the **one** class; imported here so existing
+# `app.api.schemas.weekly.NarrativeSection` references keep resolving.
+from app.api.schemas.narrative import NarrativeSection
+from app.core.enums import Weekday, WorkoutCard
 from app.services.derive.plan import PlannedSession
 from app.services.macros import WeeklyNutrition
 from app.services.targets import WeeklyTargets
 
-
-class NarrativeSection(CamelModel):
-    """One unit of LLM-authored coach prose for display (MODELS `NarrativeSection`).
-
-    `type` keys placement/styling in the app; `heading`/`body` are the prose. The
-    weekly output restricts `type` to the `plan|session|nutrition` subset (LLM §1),
-    enforced in the validator path (TASK-003), not as a `Literal` here.
-    """
-
-    type: NarrativeType
-    heading: str
-    body: str
+__all__ = [
+    "NarrativeSection",
+    "PlannedPick",
+    "WeeklyPlanLLMOutput",
+    "WeeklyBriefRequest",
+    "WeeklyBudgets",
+    "WeeklyPlanData",
+    "WeeklyPlan",
+]
 
 
 class PlannedPick(CamelModel):
