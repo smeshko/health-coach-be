@@ -1,35 +1,49 @@
-# profile.yaml — the SINGLE SOURCE for constants. Written by the bootstrap step + monthly
-# RecomputeConstants (§10). HEALTH-CONSITTUTION.md renders its {{ }} placeholders from here.
 athlete:
   age: 34
   sex: male
   height_cm: 174
-  goal_weight_kg: 75
+  goal_weight_kg: 75.0
 thresholds:
-  max_hr: 192
-  rhr_baseline: 58           # monthly anchor for zone derivation
-  hrv_baseline_ms: 38        # informational; readiness uses rolling daily_metrics
-  easy_hr_cap: 146           # Maffetone 180 − age
-  cadence_target_spm: 172    # the END target of the ramp
-  cadence_current_spm: 160   # THIS month's cue; RecomputeConstants ramps it +5 toward target
-zones:                        # bpm bounds, from compute_zones.py
-  z1: [96, 125]
-  z2: [125, 150]
-  z3: [150, 167]
-  z4: [167, 177]
-  z5: [177, 192]
-nutrition:                    # §7 constants — the macro engine reads these
-  activity_factor: 1.50       # TDEE multiplier; moderate NEAT (~10k deduped steps/day, not the ~17k summed-source figure)
-  deficit_pct: 0.12           # modest deficit for slow recomp (hard cap 0.20)
-  protein_g_per_kg: 1.8       # constant daily (kidney-stone cap 2.0)
+  max_hr: 195
+  rhr_baseline: 59
+  hrv_baseline_ms: 34
+  easy_hr_cap: 146
+  cadence_target_spm: 172
+  cadence_current_spm: 160
+zones:
+  z1:
+  - 98
+  - 127
+  z2:
+  - 127
+  - 152
+  z3:
+  - 152
+  - 170
+  z4:
+  - 170
+  - 179
+  z5:
+  - 179
+  - 195
+nutrition:
+  activity_factor: 1.5
+  deficit_pct: 0.12
+  protein_g_per_kg: 1.8
   fat_g_per_kg_low: 0.8
   fat_g_per_kg_high: 1.0
-  carbs_g_per_kg: { hard_low: 4, hard_high: 5, moderate: 3, rest_low: 2, rest_high: 2.5 }
+  carbs_g_per_kg:
+    hard_low: 4.0
+    hard_high: 5.0
+    moderate: 3.0
+    rest_low: 2.0
+    rest_high: 2.5
   hydration_l_low: 3.0
   hydration_l_high: 3.5
-  fiber_g_low: 25
-  fiber_g_high: 35
+  fiber_g_low: 25.0
+  fiber_g_high: 35.0
 meta:
   derived_from: baseline.db
-  computed_at: 2026-06-02
+  computed_at: '2026-06-05'
   constitution_version: v1
+  constants_recomputed_week: null

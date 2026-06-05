@@ -430,11 +430,11 @@ def test_shipped_profile_yaml_loads_via_default_path():
 def test_zone_bounds_accessor_returns_db_md_bounds():
     p = load_profile()
     assert p.zone_bounds() == {
-        "z1": (96, 125),
-        "z2": (125, 150),
-        "z3": (150, 167),
-        "z4": (167, 177),
-        "z5": (177, 192),
+        "z1": (98, 127),
+        "z2": (127, 152),
+        "z3": (152, 170),
+        "z4": (170, 179),
+        "z5": (179, 195),
     }
 
 

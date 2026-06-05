@@ -316,8 +316,8 @@ def test_zone_minutes_bucketing_boundary_and_full_duration(session: Session) -> 
         session,
         # full-duration in-day sample: 130 bpm (z2) for 10 min
         _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0),
-        # boundary sample: 125 bpm lands in z2 (low <= bpm < high) for 5 min
-        _rec("heart_rate", "2026-06-01T10:10:00+03:00", end="2026-06-01T10:15:00+03:00", value=125.0),
+        # boundary sample: 127 bpm == z2.low lands in z2 (low <= bpm < high) for 5 min
+        _rec("heart_rate", "2026-06-01T10:10:00+03:00", end="2026-06-01T10:15:00+03:00", value=127.0),
         # 100 bpm (z1) for 4 min
         _rec("heart_rate", "2026-06-01T10:15:00+03:00", end="2026-06-01T10:19:00+03:00", value=100.0),
     )

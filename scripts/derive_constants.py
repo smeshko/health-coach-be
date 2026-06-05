@@ -58,9 +58,14 @@ HRV_TYPE = "HKQuantityTypeIdentifierHeartRateVariabilitySDNN"
 # derivation falls back to the config anchor (see derive_cadence_current_spm).
 CADENCE_TYPE = "HKQuantityTypeIdentifierRunningCadence"
 
-# Physiological clamp so an artifact spike/dropout can't move max_hr.
+# Physiological window so an artifact spike/dropout can't move max_hr. The corpus
+# carries isolated one-off spikes at 210–244 bpm (impossible for this athlete); the
+# ceiling sits above a realistic HRmax (Tanaka 208−0.7·age ≈ 184; observed boxing
+# peaks ≈ 185–192) but below that artifact band, so a lone spike can no longer win
+# MAX(). Tightened from a prior 220, where a single 220-bpm artifact sat exactly on
+# the ceiling and became max_hr.
 HR_FLOOR = 80.0
-HR_CEILING = 220.0
+HR_CEILING = 205.0
 
 # Rolling anchors (rhr/hrv/cadence) use the trailing window from the latest
 # sample so a multi-year corpus yields a *current monthly* anchor, not a lifetime

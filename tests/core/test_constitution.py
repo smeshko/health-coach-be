@@ -180,7 +180,7 @@ def test_render_shipped_profile_leaves_no_unresolved_real_placeholder():
 
 def test_rendered_output_contains_live_constants():
     rendered = render_constitution(load_profile())
-    for value in ("192", "177", "146", "138", "172", "1.8"):
+    for value in ("195", "179", "146", "138", "172", "1.8"):
         assert value in rendered, f"expected constant {value!r} in rendered output"
 
 
@@ -205,9 +205,10 @@ def test_autoescape_off_special_chars_survive():
 def test_render_is_fresh_each_call():
     p1 = load_profile()
     data = p1.model_dump()
-    # max_hr and z5.high move together (E3·P1 invariant z5.high == max_hr).
+    # max_hr and z5.high move together (E3·P1 invariant z5.high == max_hr); z5.low
+    # must stay contiguous with z4.high (179) or the E3 validator rejects the zones.
     data["thresholds"]["max_hr"] = 201
-    data["zones"]["z5"] = (177, 201)
+    data["zones"]["z5"] = (179, 201)
     p2 = Profile(**data)
     r1 = render_constitution(p1)
     r2 = render_constitution(p2)
