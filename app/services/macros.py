@@ -156,8 +156,12 @@ def calories_kcal(day_type: DayType, *, tdee_kcal: float, target_avg_kcal: float
     other): ``hard`` → TDEE (~maintenance); ``moderate`` → the §7.1 ``Target_avg``;
     ``rest`` → ``TDEE × (1 − clamp_deficit(REST_DEFICIT_PCT))`` (the deeper rest-day
     cut, **cap-safe** ≤0.20). The week of (hard ~maintenance, moderate ~avg, rest
-    ~deepest-deficit) nets to the §7.1 average (§7.3). At the worked athlete: hard 2859
-    (TDEE), moderate 2516 (target), rest 2287 (TDEE×0.80) — ``rest < moderate < hard``.
+    ~deepest-deficit) nets to the §7.1 average (§7.3). At the real profile (AF 1.50,
+    deficit 0.12, W=81): hard 2599 (TDEE), moderate 2287 (target), rest 2079 (TDEE×0.80)
+    — ``rest < moderate < hard``. (When a profile's ``deficit_pct`` itself sits at the
+    0.20 cap, moderate's target equals rest's ``TDEE×0.80``, so the ordering relaxes to
+    ``rest == moderate < hard`` — both legitimately at the cap; the production 0.12 keeps
+    it strict.)
     """
     if day_type == DayType.hard:
         return _round_half_up(tdee_kcal)
@@ -235,6 +239,14 @@ class WeeklyNutrition(CamelModel):
     last_week: Any | None = None
 
 
+def _require_positive_weight(weight_kg: float) -> None:
+    """A macro brief is meaningless for a non-positive body weight (missing/garbage
+    scale data) — fail fast rather than silently emit negative grams/calories (review).
+    """
+    if not weight_kg > 0:
+        raise ValueError(f"weight_kg must be > 0 to compute macros, got {weight_kg!r}")
+
+
 def compute_macro_focus(
     *,
     day_type: DayType,
@@ -251,6 +263,7 @@ def compute_macro_focus(
     ``day_type`` is the **already-chosen, already-floored** input (the LLM picks it,
     E7's validator floors it); this function classifies nothing.
     """
+    _require_positive_weight(weight_kg)
     b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
     t = tdee(b, nutrition.activity_factor)
     target = deficit_target(t, nutrition.deficit_pct)
@@ -285,6 +298,7 @@ def day_type_pattern(
     mapping is the caller's (E10 reads each pick's ``CARD_META.day_type``); this helper
     takes the resolved ``dayType`` per pick.
     """
+    _require_positive_weight(weight_kg)
     b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
     t = tdee(b, nutrition.activity_factor)
     target = deficit_target(t, nutrition.deficit_pct)
@@ -316,6 +330,7 @@ def compute_weekly_nutrition(
     **through** unchanged (or left ``None``) — its derivation from logged intake is
     E6·P3/E10 (Decision 9). Keyword-only.
     """
+    _require_positive_weight(weight_kg)
     b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
     t = tdee(b, nutrition.activity_factor)
     target = deficit_target(t, nutrition.deficit_pct)

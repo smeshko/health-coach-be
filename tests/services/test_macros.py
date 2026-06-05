@@ -413,3 +413,27 @@ def test_weekly_nutrition_last_week_passes_through():
 
 def test_day_type_value_set_is_exactly_three():
     assert {d.value for d in DayType} == {"hard", "moderate", "rest"}
+
+
+# --- Review: non-positive weight fails fast (no silent negative macros) ---
+
+
+def test_compute_macro_focus_rejects_non_positive_weight():
+    # A missing/garbage scale reading must fail fast, not emit negative grams (review).
+    for bad in (0.0, -5.0):
+        with pytest.raises(ValueError, match="weight_kg must be > 0"):
+            compute_macro_focus(
+                day_type=DayType.moderate, weight_kg=bad, nutrition=_NUTRITION, athlete=_ATHLETE
+            )
+
+
+def test_compute_weekly_nutrition_rejects_non_positive_weight():
+    with pytest.raises(ValueError, match="weight_kg must be > 0"):
+        compute_weekly_nutrition(
+            picks=_PICKS, weight_kg=0.0, nutrition=_NUTRITION, athlete=_ATHLETE
+        )
+
+
+def test_day_type_pattern_rejects_non_positive_weight():
+    with pytest.raises(ValueError, match="weight_kg must be > 0"):
+        day_type_pattern(_PICKS, weight_kg=-1.0, nutrition=_NUTRITION, athlete=_ATHLETE)
