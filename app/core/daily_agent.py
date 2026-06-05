@@ -28,17 +28,35 @@ E9·P1/E10·P1).
 
 import json
 from dataclasses import asdict, is_dataclass
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.schemas.daily import DailyBriefLLMOutput
 from app.core.agent_node import PydanticAgentNode, build_user_context
-from app.core.constraints import WeeklyBudgets
-from app.core.enums import ReadinessBand, WorkoutCard
+from app.core.constraints import (
+    ValidationContext,
+    Violation,
+    WeeklyBudgets,
+    validate_daily,
+)
+from app.core.enums import NarrativeType, ReadinessBand, WorkoutCard
 from app.core.nodes import AgentConfig
 from app.core.settings import Settings
 from app.core.task_context import TaskContext
+
+# The daily narrative subset (LLM §1): only these section types may appear in a
+# daily brief — the full `NarrativeType` **minus** the weekly-only `plan`. A `plan`
+# section is a hard violation the model retries on (the one daily narrative rule
+# E7·P3's `validate_daily` doesn't encode).
+_DAILY_NARRATIVE_TYPES: frozenset[NarrativeType] = frozenset(
+    {
+        NarrativeType.summary,
+        NarrativeType.session,
+        NarrativeType.nutrition,
+        NarrativeType.caution,
+    }
+)
 
 
 def _no_budgets() -> WeeklyBudgets:
@@ -239,3 +257,51 @@ class TuneSessionNode(PydanticAgentNode[DailyDeps, DailyBriefLLMOutput]):
             "macro_focus": _get("macro_focus"),
             "intake_summary": _get("intake_summary"),
         }
+
+    def get_validate_fn(
+        self,
+    ) -> Callable[[DailyBriefLLMOutput, ValidationContext], list[Violation]]:
+        """The pure daily validator E9·P1's `process()` wires as the agent's
+        `@agent.output_validator` (a hard `Violation` ⇒ `ModelRetry` within the
+        ``retries ≤ 2`` budget; a clean session returns unchanged).
+
+        Returns `validate_daily_output` — E7·P3's `validate_daily` (card-in-plan,
+        RED/AMBER band gating, knee gate, dose-in-band, the `dayType` fuel-floor
+        `day_type_below_floor`, and the `too_many_alternatives` ≤ 2 cap) **plus**
+        the one daily-only `summary|session|nutrition|caution` narrative-subset
+        check (LLM §1). E9·P2's `make_output_validator` builds the
+        `ValidationContext` from `RunContext[DailyDeps].deps` and drives the
+        `ModelRetry`; this node writes no `@agent.output_validator` boilerplate.
+        """
+        return validate_daily_output
+
+
+def validate_daily_output(
+    out: DailyBriefLLMOutput, ctx: ValidationContext
+) -> list[Violation]:
+    """The daily output validator — `validate_daily` (E7·P3) + the narrative subset.
+
+    Pure, LLM-free, same signature as `validate_daily` so it slots straight into
+    E9·P2's `make_output_validator`. Runs every E7·P3 daily invariant (card ∈ week
+    plan ∪ subs, RED ⇒ rest card, AMBER ⇒ no full vo2/z5, `knee_pain > 3` ⇒ no
+    impact card, dose-in-band, the `dayType` fuel-floor `day_type_below_floor`, and
+    the `too_many_alternatives` ≤ 2 cap) and **appends** one hard `Violation` per
+    narrative section whose `type` is outside the daily
+    `summary|session|nutrition|caution` subset (LLM §1) — i.e. the weekly-only
+    `plan` kind, the one daily narrative rule E7·P3 doesn't encode. All hard
+    violations flow through E9·P1's single `ModelRetry` path; an empty list means a
+    clean session.
+    """
+    violations = list(validate_daily(out, ctx))
+    for section in out.narrative:
+        if section.type not in _DAILY_NARRATIVE_TYPES:
+            violations.append(
+                Violation(
+                    rule="daily_narrative_type",
+                    message=(
+                        f"narrative section type {section.type.value!r} is not in the "
+                        "daily subset (summary|session|nutrition|caution)"
+                    ),
+                )
+            )
+    return violations
