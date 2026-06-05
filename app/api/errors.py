@@ -56,6 +56,16 @@ _DEFAULT_CODE_MESSAGE: tuple[ErrorCode, str] = (
 )
 _VALIDATION_MESSAGE = "Request validation failed."
 
+# BriefGenerationError code → (wire status, public message). E9 raises the in-engine
+# BriefGenerationError(code=…) and explicitly leaves the HTTP translation to the E10/E11
+# route layer; without this map the catch-all below would mask the LLM/validation failure
+# as a generic internal_error (codex round-1 #2). Both codes already exist in ErrorCode.
+_BRIEF_ERROR_STATUS: dict[str, tuple[int, str]] = {
+    ErrorCode.brief_generation_failed.value: (502, "Brief generation failed."),
+    ErrorCode.upstream_timeout.value: (504, "The brief model timed out."),
+}
+_BRIEF_ERROR_DEFAULT: tuple[int, str] = (502, "Brief generation failed.")
+
 
 def error_response(
     code: ErrorCode,
@@ -81,7 +91,10 @@ def _summarize_validation(exc: RequestValidationError) -> str:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Register the validation / HTTP / catch-all handlers so every non-2xx uses the envelope."""
+    """Register the validation / HTTP / brief / catch-all handlers so every non-2xx uses the envelope."""
+    # Imported here (not at module top) so importing app.api.errors stays free of the E9
+    # PydanticAI harness; the factory registers handlers once at startup.
+    from app.core.agent_node import BriefGenerationError
 
     @app.exception_handler(RequestValidationError)
     async def _on_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
@@ -91,6 +104,22 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=422,
             detail=_summarize_validation(exc),
         )
+
+    @app.exception_handler(BriefGenerationError)
+    async def _on_brief_error(request: Request, exc: BriefGenerationError) -> JSONResponse:
+        # The E10/E11 route layer's HTTP translation of an in-engine brief failure: map the
+        # stable machine code to its envelope (brief_generation_failed → 502, upstream_timeout
+        # → 504), never the catch-all internal_error (codex round-1 #2). Logged like a 5xx so
+        # the LLM/validation root cause still leaves a server-side trail.
+        logger.error(
+            "BriefGenerationError(%s) on %s %s",
+            exc.code,
+            request.method,
+            request.url.path,
+            exc_info=exc,
+        )
+        status_code, message = _BRIEF_ERROR_STATUS.get(exc.code, _BRIEF_ERROR_DEFAULT)
+        return error_response(ErrorCode(exc.code), message, status_code=status_code)
 
     @app.exception_handler(StarletteHTTPException)
     async def _on_http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
