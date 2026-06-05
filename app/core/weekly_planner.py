@@ -357,9 +357,9 @@ class ComputeBudgetsNode(Node):
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
         event: WeeklyPlannerEvent = task_context.event
-        # Asserts the upstream Aggregates landed (node order) — the prior-long-run /
-        # adherence feeds ride downstream; the budget inputs are the rolling baselines.
-        _aggregates_of(task_context)
+        # Capture the upstream Aggregates (node order) — the prior-long-run / adherence
+        # feeds ride into the agent context below; the budget inputs are the rolling baselines.
+        aggregates = _aggregates_of(task_context)
         anchor = event.anchor
 
         budgets = compute_budgets(
@@ -375,6 +375,22 @@ class ComputeBudgetsNode(Node):
             extra_underrecovery_signals=0,
         )
         self.save_output(self.OutputType(budgets=budgets))
+
+        # Bridge the deterministic feeds into the TaskContext metadata seams the NEXT node —
+        # GeneratePlanNode (the single AgentNode) — reads: `metadata["profile"]` for the
+        # rendered-constitution SYSTEM prompt (agent_node._profile) and `metadata["computed"]`
+        # for the USER context + `WeeklyDeps` (weekly_agent._weekly_feeds). E10·P1 built the
+        # agent node to read these "expecting E10·P2 to place them" (E10·P1 RESEARCH §25); that
+        # placement was never wired into a P2 task — this is it. Every value is already computed
+        # upstream (LoadAggregatesNode / RecomputeConstants / this node) — no new query/formula.
+        task_context.metadata["profile"] = _fresh_profile(task_context)
+        task_context.metadata["computed"] = {
+            "budgets": budgets,
+            "training_7d": aggregates.training_7d,
+            "training_28d": aggregates.training_28d,
+            "nutrition_adherence": aggregates.nutrition_7d,
+            "constants": _recomputed_constants(task_context),
+        }
         return task_context
 
 
