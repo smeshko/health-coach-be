@@ -12,7 +12,7 @@ Routers (health/errors in E1·P2, endpoints in later epics) are attached here vi
 from fastapi import FastAPI
 
 from app.api.errors import register_exception_handlers
-from app.api.routes import health, sync, weekly
+from app.api.routes import daily, health, sync, weekly
 from app.core.settings import Settings, get_settings
 
 
@@ -37,5 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(sync.router)
     # Authenticated weekly brief get-or-generate: POST /brief/weekly (E10·P3).
     app.include_router(weekly.router)
+    # Authenticated daily brief get-or-generate: POST /brief/daily (E11·P3).
+    app.include_router(daily.router)
 
     return app

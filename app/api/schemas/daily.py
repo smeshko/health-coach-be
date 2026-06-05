@@ -26,11 +26,16 @@ E7·P1's `WorkoutCard`/`DayType`/`NarrativeType` enums and redefine none.
 PydanticAI/LLM import.
 """
 
-from datetime import date
+# `date` is aliased so a wire field *named* `date` can be typed `date_type` without the
+# field name shadowing the type at annotation/forward-ref resolution.
+from datetime import date as date_type
+from datetime import datetime
 
 from app.api.schemas.base import CamelModel
 from app.api.schemas.narrative import NarrativeSection
-from app.core.enums import DayType, WorkoutCard
+from app.core.enums import DayType, ReadinessBand, WorkoutCard
+from app.services.derive.session import SessionBlock
+from app.services.macros import MacroFocus
 
 __all__ = [
     "SessionPick",
@@ -38,6 +43,12 @@ __all__ = [
     "NarrativeSection",
     "IntakeVsTarget",
     "IntakeSummary",
+    "ReadinessPenalty",
+    "Readiness",
+    "SafetyGate",
+    "DailyBriefRequest",
+    "DailyBriefData",
+    "DailyBrief",
 ]
 
 
@@ -60,7 +71,7 @@ class IntakeSummary(CamelModel):
     nothing was logged); `vsTarget` reports the calorie ratio + protein-floor hit.
     """
 
-    date: date
+    date: date_type
     calories_kcal: int | None = None
     protein_g: int | None = None
     carbs_g: int | None = None
@@ -102,4 +113,82 @@ class DailyBriefLLMOutput(CamelModel):
     alternatives: list[SessionPick]
     skip_ok: bool
     day_type: DayType
+    narrative: list[NarrativeSection]
+
+
+# --------------------------------------------------------------------------- #
+# POST /brief/daily — request + response wire models (E11·P3; MODELS DailyBrief).
+# --------------------------------------------------------------------------- #
+class ReadinessPenalty(CamelModel):
+    """One itemised readiness penalty (MODELS `ReadinessPenalty`) — wire shape.
+
+    The computation lives in the E8·P1 `app/services/readiness.py` frozen dataclass; this
+    `CamelModel` is the JSON-able wire/round-trip form the daily response carries.
+    """
+
+    factor: str
+    points: int
+
+
+class Readiness(CamelModel):
+    """The readiness result (MODELS `Readiness`) — wire shape (the E8·P1 dataclass twin)."""
+
+    score: int
+    band: ReadinessBand
+    penalties: list[ReadinessPenalty]
+
+
+class SafetyGate(CamelModel):
+    """The safety-gate result (MODELS `SafetyGate`) — wire shape (the E8·P2 dataclass twin).
+
+    `overrideTo` is the forced recovery card on a trip (`null` when not triggered).
+    """
+
+    triggered: bool
+    reasons: list[str]
+    override_to: WorkoutCard | None = None
+
+
+class DailyBriefRequest(CamelModel):
+    """The ``POST /brief/daily`` request body (MODELS ``DailyBriefRequest``).
+
+    ``date`` is a native Pydantic ``date`` — a malformed value (``"2026-13-40"``,
+    ``"garbage"``) raises at request validation → ``422`` ``validation_error`` (no regex
+    needed, unlike the weekly ``YYYY-Www`` string). ``None``/absent means "today",
+    resolved server-side (Europe/Sofia).
+    """
+
+    date: date_type | None = None
+
+
+class DailyBriefData(CamelModel):
+    """The ``DailyBrief.data`` sub-object (MODELS ``DailyBrief`` ``data``).
+
+    Every field except the endpoint-stamped ``date``/``generatedAt``/``cached``/
+    ``constitutionVersion`` is carried through from the workflow-produced/cached structured
+    data; ``intakeYesterday`` was derived by the E11·P2 ``DeriveSessionNode``.
+    """
+
+    date: date_type
+    readiness: Readiness
+    safety_gate: SafetyGate
+    session: SessionBlock
+    alternatives: list[SessionBlock]
+    skip_ok: bool
+    macro_focus: MacroFocus
+    intake_yesterday: IntakeSummary | None = None
+    generated_at: datetime
+    cached: bool
+    constitution_version: str | None = None
+
+
+class DailyBrief(CamelModel):
+    """The ``POST /brief/daily`` response (MODELS ``DailyBrief``) — ``{ data, narrative }``.
+
+    A tripped safety gate is a **normal** ``DailyBrief`` (``safetyGate.triggered=true``, a
+    code-written ``narrative``, the override ``session``, empty ``alternatives``) — never an
+    error envelope.
+    """
+
+    data: DailyBriefData
     narrative: list[NarrativeSection]
