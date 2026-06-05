@@ -302,6 +302,37 @@ class WeeklyNutrition(CamelModel):
     day_type_pattern: list[DayTypePatternEntry]
     last_week: LastWeekNutrition | None = None
 
+    @field_validator("last_week", mode="before")
+    @classmethod
+    def _adapt_legacy_last_week(cls, value: object) -> object:
+        """Read-side adapter for a **legacy** cached ``lastWeek`` (E13·P1 review #1/#2).
+
+        Current rows store ``lastWeek`` as ``LastWeekNutrition.from_adherence``'s output
+        (the five camelCase keys, or ``null``). A pre-E13·P1 ``plans.payload`` instead
+        stored ``dataclasses.asdict(NutritionAdherence)`` — a snake_case dict carrying
+        ``consumed``/``target``/``avg_kcal``/``kcal_pct``. The cache-hit re-validation path
+        (``weekly.py``) runs on **every** cache read, so that legacy dict must still honour
+        the P1 contract: a no-coverage window (``consumed.kcal_in_n == 0 and
+        protein_in_g_n == 0``) collapses to ``None`` (the empty state — never an all-null
+        object), and the legacy ``avg_kcal`` is mapped to the ``avg_calories_kcal`` key
+        (else the stored calorie average would silently drop to ``null``). Non-legacy values
+        (a ``LastWeekNutrition``, ``None``, or a current camelCase dict — none of which carry
+        a ``consumed`` key) pass through untouched. This is read-side tolerance, not a row
+        migration (DECISIONS Decision 5): stored rows are never rewritten.
+        """
+        if isinstance(value, dict) and "consumed" in value:
+            consumed = value.get("consumed") or {}
+            if (consumed.get("kcal_in_n") or 0) == 0 and (consumed.get("protein_in_g_n") or 0) == 0:
+                return None
+            return {
+                "avg_calories_kcal": value.get("avg_kcal"),
+                "avg_protein_g": value.get("avg_protein_g"),
+                "protein_hit_days": value.get("protein_hit_days"),
+                "days_over_target": value.get("days_over_target"),
+                "days_under_target": value.get("days_under_target"),
+            }
+        return value
+
 
 def _require_positive_weight(weight_kg: float) -> None:
     """A macro brief is meaningless for a non-positive body weight (missing/garbage

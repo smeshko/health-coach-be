@@ -32,6 +32,7 @@ from app.services.macros import (
     REST_DEFICIT_PCT,
     DayTypePatternEntry,
     LastWeekNutrition,
+    WeeklyNutrition,
     _round_half_up,
     bmr,
     calories_kcal,
@@ -507,6 +508,71 @@ def test_weekly_nutrition_last_week_null_and_object_shapes():
         "avgCaloriesKcal": 2600, "avgProteinG": 150,
         "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
     }
+
+
+def _weekly_nutrition_kwargs(**overrides):
+    base = dict(
+        protein_g=150, fat_g_low=60, fat_g_high=80,
+        hydration_l_low=2.5, hydration_l_high=3.5,
+        avg_calories_kcal=2600, day_type_pattern=[],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_weekly_nutrition_adapts_legacy_cached_last_week():
+    """Review #1/#2: the read-side adapter on `WeeklyNutrition.last_week` keeps a legacy
+    `dataclasses.asdict(NutritionAdherence)` payload contract-correct on the cache-hit path —
+    no all-null object, no dropped calorie average."""
+    # (a) Legacy no-intake dump → lastWeek collapses to null (never an all-null object).
+    no_intake = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 0, "protein_in_g_n": 0},
+                "avg_kcal": None, "avg_protein_g": None, "kcal_pct": None,
+            }
+        )
+    )
+    assert no_intake.last_week is None
+    assert no_intake.model_dump(mode="json")["lastWeek"] is None
+
+    # (b) Legacy calorie-only dump → avg_kcal mapped to avgCaloriesKcal; avgProteinG stays null.
+    cal_only = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 5, "protein_in_g_n": 0},
+                "avg_kcal": 2610.0, "avg_protein_g": None,
+            }
+        )
+    )
+    assert cal_only.model_dump(mode="json")["lastWeek"] == {
+        "avgCaloriesKcal": 2610, "avgProteinG": None,
+        "proteinHitDays": None, "daysOverTarget": None, "daysUnderTarget": None,
+    }
+
+    # (c) Legacy full dump → avg_kcal mapped + both averages rounded; counts pass through.
+    full = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(
+            last_week={
+                "consumed": {"kcal_in_n": 7, "protein_in_g_n": 7},
+                "avg_kcal": 2610.0, "avg_protein_g": 138.5,
+                "kcal_pct": None, "protein_hit_days": 4,
+                "days_over_target": 3, "days_under_target": 1,
+            }
+        )
+    )
+    assert full.model_dump(mode="json")["lastWeek"] == {
+        "avgCaloriesKcal": 2610, "avgProteinG": 139,
+        "proteinHitDays": 4, "daysOverTarget": 3, "daysUnderTarget": 1,
+    }
+
+    # (d) A current camelCase dict (no `consumed` key) passes through untranslated.
+    current = WeeklyNutrition.model_validate(
+        _weekly_nutrition_kwargs(last_week={"avgCaloriesKcal": 2605, "avgProteinG": 144})
+    )
+    assert current.last_week is not None
+    assert current.last_week.avg_calories_kcal == 2605
+    assert current.last_week.avg_protein_g == 144
 
 
 def test_weekly_nutrition_last_week_passes_through():
