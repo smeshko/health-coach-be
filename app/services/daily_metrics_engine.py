@@ -498,14 +498,17 @@ def body_weight(session: Session, day: date) -> float | None:
     return max(candidates, key=instant_key).value
 
 
-# A hard sanity ceiling on a usable live body weight (kg). The heaviest human ever recorded was
-# ~635 kg, so 1000 kg can never be a real athlete weight — it is purely a garbage/overflow guard.
-# The sync `HealthRecord.value` is an unconstrained float, so a materialised `body_weight` may be
-# 0/negative/NaN/`±inf` or a finite-but-absurd outlier (e.g. 1e308). Any such value reaching the
-# macro engine 5xxes the brief: a non-positive trips `_require_positive_weight`, while `+inf` /
-# an over-ceiling finite overflow `bmr → tdee` to `inf` and then `_round_half_up` raises
-# `OverflowError` (review rounds 1-3). Bounding the reader to `0 < w <= this` rejects the whole
-# class at once (NaN/`±inf` comparisons are false in SQLite, so they fail the range too).
+# The human-plausible body-weight range (kg) for a usable live weight. The sync
+# `HealthRecord.value` is an unconstrained float, so a materialised `body_weight` may be garbage:
+# 0/negative/NaN/`±inf`, a finite-but-absurd outlier (e.g. 1e308), or a corrupted sub-physiological
+# sample (e.g. 0.1). Both ends break the weekly brief — over the ceiling, `+inf`/overflow makes
+# `bmr → tdee → _round_half_up` raise (5xx); under the floor, a tiny weight yields impossible
+# macros (protein/fat/carbs round to ~0) and a bogus adherence target (review rounds 1-4).
+# Bounding the reader to `MIN <= body_weight <= MAX` rejects the whole class at once (NaN/`±inf`
+# comparisons are false in SQLite, so they fail the range too). The bounds are deliberately wide
+# sanity guards — the heaviest human ever recorded was ~635 kg and no adult athlete is < 30 kg —
+# so a real weight is never excluded.
+MIN_PLAUSIBLE_BODY_WEIGHT_KG = 30.0
 MAX_PLAUSIBLE_BODY_WEIGHT_KG = 1000.0
 
 
@@ -521,17 +524,17 @@ def current_body_weight(session: Session, anchor: date) -> float | None:
     lexical `<=` + `ORDER BY date DESC` selects the chronologically latest reading on/before the
     anchor.
 
-    Only a **plausible** weight qualifies — `0 < body_weight <= MAX_PLAUSIBLE_BODY_WEIGHT_KG` —
-    so a garbage materialised value (0/negative/NaN/`±inf`/absurd finite) is **skipped** and the
-    walk-back continues to the latest valid reading, rather than letting it reach the macro
-    engine and 5xx the brief (review rounds 1-3; see `MAX_PLAUSIBLE_BODY_WEIGHT_KG`). Returns
-    `None` when no plausible reading exists at/before the anchor (caller falls back to
-    `goal_weight_kg`).
+    Only a **plausible** weight qualifies — `MIN_PLAUSIBLE_BODY_WEIGHT_KG <= body_weight <=
+    MAX_PLAUSIBLE_BODY_WEIGHT_KG` — so a garbage materialised value (0/negative/NaN/`±inf`/absurd
+    finite/sub-physiological) is **skipped** and the walk-back continues to the latest valid
+    reading, rather than letting it reach the macro engine and either 5xx the brief or emit
+    impossible nutrition (review rounds 1-4; see the range constants). Returns `None` when no
+    plausible reading exists at/before the anchor (caller falls back to `goal_weight_kg`).
     """
     return session.scalars(
         select(DailyMetrics.body_weight)
         .where(
-            DailyMetrics.body_weight > 0,
+            DailyMetrics.body_weight >= MIN_PLAUSIBLE_BODY_WEIGHT_KG,
             DailyMetrics.body_weight <= MAX_PLAUSIBLE_BODY_WEIGHT_KG,
             DailyMetrics.date <= anchor.isoformat(),
         )

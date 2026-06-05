@@ -525,6 +525,18 @@ def test_current_body_weight_skips_implausible_weights(session: Session) -> None
     assert current_body_weight(session, anchor) == 79.0
 
 
+def test_current_body_weight_skips_sub_physiological(session: Session) -> None:
+    """A corrupted sub-physiological positive weight (e.g. 0.1 kg) is below any real adult
+    athlete and would emit impossible weekly nutrition (protein/fat/carbs round to ~0). The
+    reader's lower bound skips it and walks back to the latest plausible weight (review #1
+    round-4)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), 78.5)
+    _seed_weight(session, anchor, 0.1)  # sub-physiological garbage → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 78.5
+
+
 @pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])
 def test_hard_day_per_hard_activity_type(session: Session, activity: str) -> None:
     _seed(session, _workout(activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
