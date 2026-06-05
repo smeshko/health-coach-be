@@ -1,0 +1,278 @@
+"""Agent-mocked unit tests for `TuneSessionNode` — the daily AgentNode (E11·P1).
+
+Every test mocks the model (`TestModel`/`FunctionModel` via `Agent.override`, the
+E9·P1 seam) — **no** live Anthropic call, **no** network, **no** `ANTHROPIC_API_KEY`.
+TASK-002 covers the node specialisation + the pure `build_daily_computed` bundle;
+TASK-003 adds the wired `validate_daily` validator.
+"""
+
+import asyncio
+import json
+
+import pytest
+
+from app.api.schemas.daily import DailyBriefLLMOutput
+from app.core import TaskContext
+from app.core.enums import ReadinessBand, WorkoutCard
+
+# --------------------------------------------------------------------------- #
+# Feed fixtures — already-computed E8·P1 readiness+band, E8·P2 (un-triggered)
+# safety gate, E10 week-plan cards, the check-in flags. The node serialises
+# these into the USER context; it computes none of them.
+# --------------------------------------------------------------------------- #
+
+
+def _readiness(*, band: ReadinessBand = ReadinessBand.green, score: int = 90):
+    from app.services.readiness import Readiness
+
+    return Readiness(score=score, band=band, penalties=[])
+
+
+def _safety_gate(*, triggered: bool = False):
+    from app.services.safety_gate import SafetyGate
+
+    return SafetyGate(triggered=triggered)
+
+
+def _feeds(
+    *,
+    band: ReadinessBand = ReadinessBand.green,
+    knee_pain: int = 0,
+    week_plan_cards=(WorkoutCard.vo2, WorkoutCard.easy_run, WorkoutCard.strength_pull),
+    triggered: bool = False,
+) -> dict:
+    return {
+        "readiness": _readiness(band=band),
+        "safety_gate": _safety_gate(triggered=triggered),
+        "week_plan_cards": frozenset(week_plan_cards),
+        "flags": {"knee_pain": knee_pain, "gi_symptoms": False},
+        "aggregates": {"training7d": {"days": 7}},
+        "constants": {"cadence_spm": 165},
+        "live_weight_kg": 78.0,
+    }
+
+
+@pytest.fixture
+def _profile():
+    from app.core.profile import load_profile
+
+    return load_profile()
+
+
+@pytest.fixture
+def _no_anthropic_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
+def _ctx_with(profile, **feed_kwargs) -> TaskContext:
+    """A `TaskContext` carrying the live `Profile` + the computed daily feeds."""
+    return TaskContext(
+        event=None,
+        metadata={"profile": profile, "computed": _feeds(**feed_kwargs)},
+    )
+
+
+def _ctx_feeds_only(**feed_kwargs) -> TaskContext:
+    return TaskContext(event=None, metadata={"computed": _feeds(**feed_kwargs)})
+
+
+def _valid_brief_args() -> dict:
+    """A genuinely clean slim daily brief: an in-plan VO2 session with an in-band
+    dose, dayType=hard (floored for the hard card), one in-band alternative, and a
+    daily-subset narrative."""
+    return {
+        "session": {"card": "vo2", "durationMinLow": 30, "durationMinHigh": 40},
+        "alternatives": [
+            {"card": "easy_run", "durationMinLow": 30, "durationMinHigh": 45},
+        ],
+        "skipOk": False,
+        "dayType": "hard",
+        "narrative": [
+            {"type": "session", "heading": "Today", "body": "VO2 intervals."},
+        ],
+    }
+
+
+def _function_model_returning(args: dict):
+    """A `FunctionModel` that always calls the output tool with `args` (no live call)."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    calls = {"n": 0}
+
+    def _respond(messages, info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        tool = info.output_tools[0]
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool.name, args=args)])
+
+    return FunctionModel(_respond), calls
+
+
+def _patch_build_agent(monkeypatch: pytest.MonkeyPatch, model) -> None:
+    """Drive `process()`'s inner agent with a mock `model` via `agent.override`."""
+    import app.core.agent_node as agent_node_mod
+
+    real_build = agent_node_mod.build_agent
+
+    def _build_with_mock_model(*args, **kwargs):
+        agent = real_build(*args, **kwargs)
+        original_run = agent.run
+
+        async def _run_under_override(*run_args, **run_kwargs):
+            with agent.override(model=model):
+                return await original_run(*run_args, **run_kwargs)
+
+        agent.run = _run_under_override
+        return agent
+
+    monkeypatch.setattr(agent_node_mod, "build_agent", _build_with_mock_model)
+
+
+# --------------------------------------------------------------------------- #
+# TASK-002 — node specialisation + pure build_daily_computed
+# --------------------------------------------------------------------------- #
+
+
+def test_tune_session_node_subclasses_pydantic_agent_node():
+    import app.core.agent_node as agent_node_mod
+    import app.core.nodes as nodes
+    from app.core.daily_agent import TuneSessionNode
+
+    assert issubclass(TuneSessionNode, agent_node_mod.PydanticAgentNode)
+    assert issubclass(TuneSessionNode, nodes.AgentNode)
+
+
+def test_tune_session_node_does_not_override_process():
+    import app.core.agent_node as agent_node_mod
+    from app.core.daily_agent import TuneSessionNode
+
+    assert TuneSessionNode.process is agent_node_mod.PydanticAgentNode.process
+
+
+def test_get_agent_config_returns_output_type_and_opus_id():
+    from app.core.daily_agent import TuneSessionNode
+    from app.core.nodes import AgentConfig
+
+    cfg = TuneSessionNode().get_agent_config()
+    assert isinstance(cfg, AgentConfig)
+    assert cfg.output_type is DailyBriefLLMOutput
+    assert cfg.model_id == "claude-opus-4-8"
+    assert cfg.instructions is None
+
+
+def test_get_agent_config_model_id_sourced_from_settings_not_hardcoded():
+    from app.core.daily_agent import TuneSessionNode
+    from app.core.settings import Settings
+
+    cfg = TuneSessionNode().get_agent_config()
+    assert cfg.model_id == Settings.model_fields["model_id"].default
+
+
+def test_node_mode_is_daily():
+    from app.core.daily_agent import TuneSessionNode
+
+    assert TuneSessionNode.mode == "daily"
+
+
+def test_build_system_prompt_is_rendered_constitution(_profile):
+    from app.core.constitution import render_constitution
+    from app.core.daily_agent import TuneSessionNode
+
+    ctx = _ctx_with(_profile)
+    node = TuneSessionNode(task_context=ctx)
+    assert node.build_system_prompt(ctx) == render_constitution(_profile)
+
+
+def test_build_daily_computed_is_pure_dict_over_feeds():
+    from app.core.daily_agent import build_daily_computed
+
+    bundle = build_daily_computed(**_feeds())
+    assert isinstance(bundle, dict)
+    # The band surfaces from readiness; the week plan cards are a sorted card list.
+    assert bundle["band"] == ReadinessBand.green
+    assert bundle["week_plan"] == {
+        "cards": sorted(c.value for c in (WorkoutCard.vo2, WorkoutCard.easy_run, WorkoutCard.strength_pull))
+    }
+    assert bundle["safety_gate"]["triggered"] is False
+    assert bundle["readiness"]["score"] == 90
+    assert bundle["flags"]["knee_pain"] == 0
+
+
+def test_build_run_input_is_json_of_build_user_context_daily(_profile):
+    from app.core.agent_node import build_user_context
+    from app.core.daily_agent import TuneSessionNode, build_daily_computed
+
+    ctx = _ctx_with(_profile)
+    node = TuneSessionNode(task_context=ctx)
+    parsed = json.loads(node.build_run_input(ctx))
+    # The USER context carries the readiness/band/gate/week-plan/flags keys.
+    for key in ("readiness", "band", "safetyGate", "weekPlan", "flags"):
+        assert key in parsed
+    # It is exactly build_user_context over the daily bundle (shared builder, mode=daily).
+    expected = build_user_context(
+        _profile, computed=build_daily_computed(**_feeds()), mode="daily"
+    )
+    assert parsed == json.loads(json.dumps(expected, sort_keys=True))
+    assert parsed["band"] == "green"
+    assert parsed["weekPlan"]["cards"] == sorted(
+        c.value for c in (WorkoutCard.vo2, WorkoutCard.easy_run, WorkoutCard.strength_pull)
+    )
+
+
+def test_build_deps_carries_validator_subset(_profile):
+    from app.core.daily_agent import DailyDeps, TuneSessionNode
+
+    node = TuneSessionNode()
+    deps = node.build_deps(_ctx_feeds_only(band=ReadinessBand.amber, knee_pain=5))
+    assert isinstance(deps, DailyDeps)
+    assert deps.band is ReadinessBand.amber
+    assert deps.knee_pain == 5
+    assert WorkoutCard.vo2 in deps.week_plan_cards
+    assert deps.safety_gate_triggered is False
+
+
+def test_process_stores_typed_output(_no_anthropic_key, monkeypatch, _profile):
+    from app.core.daily_agent import TuneSessionNode
+
+    model, _calls = _function_model_returning(_valid_brief_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile)
+    node = TuneSessionNode(task_context=ctx)
+    result = asyncio.run(node.process(ctx))
+
+    assert result is ctx
+    stored = node.get_output(TuneSessionNode)
+    assert isinstance(stored, DailyBriefLLMOutput)
+    assert ctx.nodes[node.node_name] is stored
+    assert stored.session.card is WorkoutCard.vo2
+
+
+def test_untriggered_gate_path_fires_the_agent(_no_anthropic_key, monkeypatch, _profile):
+    """On the non-gated path (safety_gate_triggered=False) the agent runs — the
+    gate-skip is E11·P2's router, not this node (OOS)."""
+    from app.core.daily_agent import TuneSessionNode
+
+    model, calls = _function_model_returning(_valid_brief_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile, triggered=False)
+    node = TuneSessionNode(task_context=ctx)
+    asyncio.run(node.process(ctx))
+    assert calls["n"] >= 1
+    assert isinstance(node.get_output(TuneSessionNode), DailyBriefLLMOutput)
+
+
+def test_daily_agent_module_has_no_route_or_db_or_other_node_import():
+    import re
+    from pathlib import Path
+
+    import app.core.daily_agent as daily_agent_mod
+
+    source = Path(daily_agent_mod.__file__).read_text()
+    forbidden = re.compile(
+        r"fastapi|APIRouter|Depends|langfuse|observe|DeriveSessionNode|"
+        r"compute_macro_focus|compute_readiness|evaluate_safety_gate|"
+        r"SafetyGateRouter|Workflow\(|GeneratePlanNode|select\(|Session\("
+    )
+    assert not forbidden.search(source), "pure-core boundary breached in daily_agent.py"
