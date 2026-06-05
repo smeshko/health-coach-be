@@ -445,6 +445,32 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
 
         return instrument_agent(agent)
 
+    def _trace_name(self) -> str:
+        """The Langfuse trace name = the brief kind (E12·P1)."""
+        return {"weekly": "WEEKLY_PLANNER", "daily": "DAILY_ADJUSTER"}.get(
+            getattr(self, "mode", ""), "BRIEF"
+        )
+
+    def _traced_run(self, task_context: TaskContext, deps: Any):
+        """The tagging context manager around `agent.run` (E12·P1) — a no-op when off.
+
+        Tags the trace with `constitutionVersion` (the live `Profile`'s version when on the
+        `TaskContext`, else the deps value, else the `Settings` fallback) + the model id.
+        Imported inside so the top level stays Langfuse/OTel-free.
+        """
+        from app.core.tracing import resolve_constitution_version, traced_run
+
+        profile = task_context.metadata.get("profile")
+        version = (
+            getattr(profile, "constitution_version", None)
+            or resolve_constitution_version(deps)
+        )
+        return traced_run(
+            self._trace_name(),
+            constitution_version=version,
+            model_id=self.get_agent_config().model_id,
+        )
+
     async def process(self, task_context: TaskContext) -> TaskContext:
         """Build the agent, run it over the context, and store the typed `OutputType`.
 
@@ -473,10 +499,12 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             register_output_validator(agent, validate_fn)
         deps = self.build_deps(task_context)
         try:
-            result = await agent.run(
-                self.build_run_input(task_context),
-                deps=deps,
-            )
+            # E12·P1: tag the trace (constitutionVersion + model) around the run; no-op off.
+            with self._traced_run(task_context, deps):
+                result = await agent.run(
+                    self.build_run_input(task_context),
+                    deps=deps,
+                )
         except Exception as exc:
             if _is_timeout(exc):
                 raise BriefGenerationError(code="upstream_timeout") from exc

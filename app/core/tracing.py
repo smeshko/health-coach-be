@@ -21,6 +21,8 @@ can't break boot. No FastAPI/HTTP import.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from app.core.settings import Settings, get_settings
@@ -129,3 +131,57 @@ def instrument_agent(agent: Any, settings: Settings | None = None) -> Any:
     if instrumentation is not None:
         agent.instrument = instrumentation
     return agent
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003 — tag the trace with constitutionVersion + model (a parent span).
+# --------------------------------------------------------------------------- #
+def trace_attributes(*, constitution_version: str, model_id: str) -> dict[str, str]:
+    """The trace tag set: ``{constitutionVersion, model}`` (pure, import-light)."""
+    return {"constitutionVersion": constitution_version, "model": model_id}
+
+
+def resolve_constitution_version(deps: Any, settings: Settings | None = None) -> str:
+    """The constitution version to tag with — the node's deps value, else the Settings
+    fallback (``"v1"``).
+
+    E10·P1/E11·P1 stamp E3's `constitution_version(profile)` into the node context; the real
+    `TaskContext` carries no version field, so the deps `constitution_version` (when present)
+    is the sound source, falling back to `Settings.constitution_version`.
+    """
+    value = getattr(deps, "constitution_version", None)
+    if isinstance(value, str) and value.strip():
+        return value
+    s = settings or get_settings()
+    return s.constitution_version
+
+
+@contextlib.contextmanager
+def traced_run(
+    name: str,
+    *,
+    constitution_version: str,
+    model_id: str,
+    settings: Settings | None = None,
+) -> Iterator[None]:
+    """A context manager opening a parent span that **tags** the run with
+    ``constitutionVersion`` + ``model`` (the brief kind as the span ``name``), or a **no-op**
+    when tracing is off.
+
+    The span is opened on the Langfuse client's OTel `TracerProvider`, so the instrumented
+    `agent.run` spans nest **under** it and the whole trace carries the tags + the
+    prompt/output/retries/latency/usage. On an exception the span records the failure
+    (OTel `start_as_current_span` sets an error status), so a `BriefGenerationError` (exhausted
+    retries) is traced — without changing which error the node raises.
+    """
+    s = settings or get_settings()
+    provider = _tracer_provider(s)
+    if provider is None:
+        yield
+        return
+    tracer = provider.get_tracer("coach-app")
+    attrs = trace_attributes(constitution_version=constitution_version, model_id=model_id)
+    with tracer.start_as_current_span(name) as span:
+        for key, value in attrs.items():
+            span.set_attribute(key, value)
+        yield

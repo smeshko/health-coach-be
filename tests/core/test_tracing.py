@@ -223,3 +223,101 @@ def test_agent_node_has_no_langfuse_or_otel_import():
 
     src = pathlib.Path("app/core/agent_node.py").read_text(encoding="utf-8")
     assert not re.search(r"import langfuse|from langfuse|import opentelemetry|from opentelemetry", src)
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003 — tag the trace + capture retries/failure; both AgentNodes wrapped.
+# --------------------------------------------------------------------------- #
+class _WeeklyToyNode(_ToyNode):
+    mode = "weekly"
+
+
+def _bad_then_good_model(succeed_on: int = 2):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    calls = {"n": 0}
+
+    def _respond(messages, info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        tool = info.output_tools[0]
+        args = {"value": "ok"} if calls["n"] >= succeed_on else {"wrong": "x"}
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool.name, args=args)])
+
+    return FunctionModel(_respond), calls
+
+
+def _traced_node_run(monkeypatch, node_cls, model):
+    import asyncio
+
+    s = _settings()
+    monkeypatch.setattr(tracing, "get_settings", lambda: s)
+    tracing.get_langfuse_client(s)
+    exporter = _inmemory_exporter_on_provider(tracing._tracer_provider(s))
+    _patch_build_agent(monkeypatch, model)
+    ctx = TaskContext(event=None, metadata={})
+    node = node_cls(task_context=ctx)
+    return node, ctx, exporter, lambda: asyncio.run(node.process(ctx))
+
+
+def test_trace_attributes_pure():
+    assert tracing.trace_attributes(constitution_version="2026.1", model_id="m") == {
+        "constitutionVersion": "2026.1",
+        "model": "m",
+    }
+
+
+def test_resolve_constitution_version_both_ways():
+    class _WithVersion:
+        constitution_version = "2030.5"
+
+    class _NoVersion:
+        constitution_version = None
+
+    assert tracing.resolve_constitution_version(_WithVersion(), _settings()) == "2030.5"
+    # Absent/None deps value → the Settings fallback ("v1").
+    assert tracing.resolve_constitution_version(_NoVersion(), _settings()) == "v1"
+    assert tracing.resolve_constitution_version(object(), _settings()) == "v1"
+
+
+def test_traced_run_tags_constitution_version_and_model(monkeypatch, _fake_langfuse):
+    node, _ctx, exporter, run = _traced_node_run(
+        monkeypatch, _ToyNode, _function_model_returning("ok")
+    )
+    run()
+    named = [sp for sp in exporter.get_finished_spans() if sp.name == "DAILY_ADJUSTER"]
+    assert named, "the parent tagging span (DAILY_ADJUSTER) must be emitted"
+    attrs = dict(named[0].attributes)
+    assert attrs.get("constitutionVersion") == "2026.1"  # from the node's deps
+    assert attrs.get("model") == "claude-opus-4-8"
+
+
+def test_both_agentnodes_traced_via_same_base_hook(monkeypatch, _fake_langfuse):
+    node, _ctx, exporter, run = _traced_node_run(
+        monkeypatch, _WeeklyToyNode, _function_model_returning("ok")
+    )
+    run()
+    names = {sp.name for sp in exporter.get_finished_spans()}
+    assert "WEEKLY_PLANNER" in names  # the weekly-shaped node traced via the shared hook
+
+
+def test_retry_then_success_is_traced(monkeypatch, _fake_langfuse):
+    model, calls = _bad_then_good_model(succeed_on=2)
+    node, _ctx, exporter, run = _traced_node_run(monkeypatch, _ToyNode, model)
+    run()
+    assert node.get_output(_ToyNode).value == "ok"  # succeeded after a retry
+    assert calls["n"] >= 2  # at least one retry happened
+    assert exporter.get_finished_spans()  # the run (incl. the retry) was traced
+
+
+def test_exhausted_retries_records_failure_and_raises(monkeypatch, _fake_langfuse):
+    from app.core.agent_node import BriefGenerationError
+
+    model, _calls = _bad_then_good_model(succeed_on=99)  # never succeeds → exhausts retries
+    node, _ctx, exporter, run = _traced_node_run(monkeypatch, _ToyNode, model)
+    with pytest.raises(BriefGenerationError) as exc:
+        run()
+    assert exc.value.code == "brief_generation_failed"  # behaviour unchanged from E9·P1
+    parent = [sp for sp in exporter.get_finished_spans() if sp.name == "DAILY_ADJUSTER"]
+    assert parent, "the failed run is still traced"
+    assert parent[0].status.status_code.name == "ERROR"  # the failure is recorded
