@@ -2,9 +2,9 @@
 
 A **pure** module: start at 100, subtract the five itemised §6.1 penalties, clamp to
 ``[0, 100]``, and band the result (``green`` ≥75 · ``amber`` 50–74 · ``red`` <50). It
-takes already-resolved **objective** physiological inputs — ``sleep_h``; ``hrv_sdnn``
-against the rolling ``hrv_30d_mean``/``hrv_30d_sd``; ``rhr`` against the rolling
-``rhr_30d_mean``; and **yesterday's** ``hard_day``/boxing/sleep — and returns a
+takes already-resolved **objective** physiological inputs — last night's ``sleep_h``;
+``hrv_sdnn`` against the rolling ``hrv_30d_mean``/``hrv_30d_sd``; ``rhr`` against the
+rolling ``rhr_30d_mean``; and **yesterday's** ``hard_day``/boxing load — and returns a
 ``Readiness`` value object. There is **no** subjective check-in input, **no** LLM call,
 and **no** DB read/write (the query that loads the ``daily_metrics`` rows and the
 write-back of ``readiness_score``/``band`` are E10/E11). It imports only stdlib + the
@@ -86,10 +86,11 @@ def sleep_penalty(sleep_h: float | None) -> list[ReadinessPenalty]:
             SLEEP_BELOW_7H, round(SLEEP_PER_HOUR_BELOW_7 * (SLEEP_FULL_H - sleep_h))
         )
     ]
-    # The plan pins ``sleep_penalty(5.0)`` to stack the additional −10 (§6.1 "5 h → −10"
-    # row is the worked point where the deep-sleep penalty begins) — DECISIONS / TASK-001
-    # acceptance — so the additional term fires at ``sleep_h <= 5``.
-    if sleep_h <= SLEEP_DEEP_H:
+    # §6.1 "Sleep <5 h: additional −10" is **strict** (`<5`): at exactly 5.0 h only the
+    # `<7 h` per-hour penalty applies (the §6.1 "5 h → −10" worked row is that per-hour
+    # term alone), and the deep-sleep −10 stacks only **below** 5 h (review #2 — the plan's
+    # `<=5` over-penalized exactly-5.0 h, shifting band edges).
+    if sleep_h < SLEEP_DEEP_H:
         penalties.append(ReadinessPenalty(SLEEP_BELOW_5H, SLEEP_BELOW_5H_POINTS))
     return penalties
 
@@ -141,21 +142,20 @@ def yesterday_hard_penalty(
     yesterday_hard_day: bool,
     *,
     yesterday_boxing: bool,
-    yesterday_sleep_h: float | None,
+    sleep_h: float | None,
 ) -> ReadinessPenalty | None:
     """Yesterday-hard penalty (§6.1) — −15, or −25 if it was boxing **and** sleep <6 h.
 
     ``yesterday_hard_day`` false → ``None``. The −25 case is a **magnitude variant of the
-    same** ``yesterday_hard_day`` factor, not a sixth key (DECISIONS Decision 6). Note the
-    inputs are **yesterday's** values — the E11 loader passes the prior day's row.
+    same** ``yesterday_hard_day`` factor, not a sixth key (DECISIONS Decision 6). The
+    "sleep <6 h" clause reads **last night's** ``sleep_h`` — the only sleep readiness takes
+    (§6.1 input is "last night's sleep"; there is no "yesterday's sleep" signal) — so the
+    −25 fires when yesterday was boxing **and** the athlete under-recovered last night
+    (review #1 — the plan keyed this on a fabricated ``yesterday_sleep_h``).
     """
     if not yesterday_hard_day:
         return None
-    if (
-        yesterday_boxing
-        and yesterday_sleep_h is not None
-        and yesterday_sleep_h < HARD_DAY_LOW_SLEEP_H
-    ):
+    if yesterday_boxing and sleep_h is not None and sleep_h < HARD_DAY_LOW_SLEEP_H:
         return ReadinessPenalty(YESTERDAY_HARD_DAY, HARD_DAY_BOXING_LOW_SLEEP_POINTS)
     return ReadinessPenalty(YESTERDAY_HARD_DAY, HARD_DAY_POINTS)
 
@@ -170,14 +170,14 @@ def collect_penalties(
     rhr_30d_mean: float | None,
     yesterday_hard_day: bool,
     yesterday_boxing: bool = False,
-    yesterday_sleep_h: float | None = None,
 ) -> list[ReadinessPenalty]:
     """Itemise the firing penalties in the **fixed MODELS order** (epic §3/§4).
 
     Calls the per-factor helpers in order — ``sleep_below_7h``, ``sleep_below_5h``,
     ``hrv_below_baseline``, ``rhr_above_baseline``, ``yesterday_hard_day`` — and
     concatenates the non-``None`` results, so the list is stable and reproducible and the
-    score is exactly ``100 + Σ points`` of this list.
+    score is exactly ``100 + Σ points`` of this list. The boxing −25 escalation reads the
+    same last-night ``sleep_h`` (review #1).
     """
     penalties: list[ReadinessPenalty] = []
     penalties.extend(sleep_penalty(sleep_h))
@@ -189,7 +189,7 @@ def collect_penalties(
         hard := yesterday_hard_penalty(
             yesterday_hard_day,
             yesterday_boxing=yesterday_boxing,
-            yesterday_sleep_h=yesterday_sleep_h,
+            sleep_h=sleep_h,
         )
     ) is not None:
         penalties.append(hard)
@@ -245,7 +245,6 @@ def compute_readiness(
     rhr_30d_mean: float | None,
     yesterday_hard_day: bool,
     yesterday_boxing: bool = False,
-    yesterday_sleep_h: float | None = None,
 ) -> Readiness:
     """Compute the objective-only readiness score, band, and itemised penalties (§6.1).
 
@@ -255,10 +254,12 @@ def compute_readiness(
     (MODELS; CONSTITUTION §6.1); the keyword-only signature also prevents pairing the
     wrong rolling baseline with a reading.
 
-    The HRV/RHR baselines are the **rolling** ``daily_metrics`` values (E6·P2); a null
-    rolling baseline (sparse/day-one window) skips that term. The ``yesterday_*`` inputs
-    are **yesterday's** values — the E11 loader passes the prior day's row, never today's.
-    Pure: no DB read/write, no LLM, no HTTP (E10/E11 own the load + write-back).
+    ``sleep_h`` is **last night's** sleep — the only sleep §6.1 reads (it drives both the
+    sleep penalties and the boxing −25 escalation). The HRV/RHR baselines are the
+    **rolling** ``daily_metrics`` values (E6·P2); a null rolling baseline (sparse/day-one
+    window) skips that term. ``yesterday_hard_day``/``yesterday_boxing`` are **yesterday's
+    load** flags — the E11 loader passes the prior day's row. Pure: no DB read/write, no
+    LLM, no HTTP (E10/E11 own the load + write-back).
     """
     penalties = collect_penalties(
         sleep_h=sleep_h,
@@ -269,7 +270,6 @@ def compute_readiness(
         rhr_30d_mean=rhr_30d_mean,
         yesterday_hard_day=yesterday_hard_day,
         yesterday_boxing=yesterday_boxing,
-        yesterday_sleep_h=yesterday_sleep_h,
     )
     score = assemble_score(penalties)
     return Readiness(score=score, band=band_for(score), penalties=penalties)

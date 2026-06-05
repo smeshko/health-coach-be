@@ -48,9 +48,16 @@ def test_sleep_penalty_above_7h_is_empty() -> None:
     assert sleep_penalty(8.0) == []
 
 
-def test_sleep_penalty_at_5h_stacks_both_factors() -> None:
-    # §6.1 worked point: 5 h → −10 (sleep_below_7h) AND an additional −10 (sleep_below_5h)
-    assert sleep_penalty(5.0) == [
+def test_sleep_penalty_at_5h_only_below_7h_not_deep() -> None:
+    # §6.1 "Sleep <5 h: additional −10" is STRICT: at exactly 5.0 h only the per-hour
+    # `<7 h` penalty applies (the worked "5 h → −10" row). The deep −10 stacks only BELOW
+    # 5 h (review #2 — the plan's `<=5` over-penalized exactly 5.0 h).
+    assert sleep_penalty(5.0) == [ReadinessPenalty(SLEEP_BELOW_7H, -10)]
+
+
+def test_sleep_penalty_just_below_5h_stacks_deep() -> None:
+    # 4.9 h: round(-5 * (7 - 4.9)) = round(-10.5) = -10 (half-to-even) + additional -10
+    assert sleep_penalty(4.9) == [
         ReadinessPenalty(SLEEP_BELOW_7H, -10),
         ReadinessPenalty(SLEEP_BELOW_5H, -10),
     ]
@@ -187,41 +194,41 @@ def test_rhr_penalty_null_mean_is_none() -> None:
 
 
 def test_yesterday_hard_false_is_none() -> None:
-    assert (
-        yesterday_hard_penalty(False, yesterday_boxing=False, yesterday_sleep_h=8.0) is None
-    )
+    assert yesterday_hard_penalty(False, yesterday_boxing=False, sleep_h=8.0) is None
 
 
 def test_yesterday_hard_true_is_minus_15() -> None:
     assert yesterday_hard_penalty(
-        True, yesterday_boxing=False, yesterday_sleep_h=8.0
+        True, yesterday_boxing=False, sleep_h=8.0
     ) == ReadinessPenalty(YESTERDAY_HARD_DAY, -15)
 
 
 def test_yesterday_hard_boxing_low_sleep_is_minus_25_same_key() -> None:
-    # boxing AND sleep < 6 h -> -25, SAME factor key (DECISIONS Decision 6)
-    penalty = yesterday_hard_penalty(True, yesterday_boxing=True, yesterday_sleep_h=5.0)
+    # boxing AND last night's sleep < 6 h -> -25, SAME factor key (DECISIONS Decision 6).
+    # The "sleep <6 h" clause reads last night's sleep_h (review #1).
+    penalty = yesterday_hard_penalty(True, yesterday_boxing=True, sleep_h=5.0)
     assert penalty == ReadinessPenalty(YESTERDAY_HARD_DAY, -25)
     assert penalty.factor == YESTERDAY_HARD_DAY
 
 
 def test_yesterday_hard_boxing_adequate_sleep_is_minus_15() -> None:
-    # boxing but sleep >= 6 h -> -15
+    # boxing but last night's sleep >= 6 h -> -15 (review #1: keyed on last night, not
+    # yesterday — a well-recovered athlete is not escalated).
     assert yesterday_hard_penalty(
-        True, yesterday_boxing=True, yesterday_sleep_h=6.0
+        True, yesterday_boxing=True, sleep_h=6.0
     ) == ReadinessPenalty(YESTERDAY_HARD_DAY, -15)
 
 
 def test_yesterday_hard_nonboxing_low_sleep_is_minus_15() -> None:
     # not boxing, even with low sleep -> -15 (variant needs BOTH conditions)
     assert yesterday_hard_penalty(
-        True, yesterday_boxing=False, yesterday_sleep_h=5.0
+        True, yesterday_boxing=False, sleep_h=5.0
     ) == ReadinessPenalty(YESTERDAY_HARD_DAY, -15)
 
 
 def test_yesterday_hard_boxing_null_sleep_is_minus_15() -> None:
     assert yesterday_hard_penalty(
-        True, yesterday_boxing=True, yesterday_sleep_h=None
+        True, yesterday_boxing=True, sleep_h=None
     ) == ReadinessPenalty(YESTERDAY_HARD_DAY, -15)
 
 
@@ -237,8 +244,7 @@ def test_collect_penalties_fixed_order_and_negative() -> None:
         rhr=58.0,
         rhr_30d_mean=50.0,  # rhr_above_baseline (delta=8 -> -20)
         yesterday_hard_day=True,
-        yesterday_boxing=False,
-        yesterday_sleep_h=8.0,  # yesterday_hard_day -15
+        yesterday_boxing=False,  # yesterday_hard_day -15
     )
     assert [p.factor for p in penalties] == [
         SLEEP_BELOW_7H,
@@ -260,7 +266,6 @@ def test_collect_penalties_skips_non_firing() -> None:
         rhr_30d_mean=50.0,
         yesterday_hard_day=False,
         yesterday_boxing=False,
-        yesterday_sleep_h=8.0,
     )
     assert penalties == []
 
@@ -348,7 +353,6 @@ def test_compute_readiness_epic_section4_worked_example_exact() -> None:
         rhr_30d_mean=50.0,  # delta 0 -> no rhr penalty
         yesterday_hard_day=True,
         yesterday_boxing=False,
-        yesterday_sleep_h=8.0,
     )
     assert result.score == 68
     assert result.band == ReadinessBand.amber
@@ -371,7 +375,6 @@ def test_compute_readiness_models_doc_example_exact() -> None:
         rhr_30d_mean=50.0,
         yesterday_hard_day=True,
         yesterday_boxing=False,
-        yesterday_sleep_h=8.0,
     )
     assert result.score == 60
     assert result.band == ReadinessBand.amber
@@ -393,8 +396,7 @@ def test_compute_readiness_worst_case_clamps_to_0_red() -> None:
         rhr=60.0,
         rhr_30d_mean=50.0,  # delta 10 -> -20
         yesterday_hard_day=True,
-        yesterday_boxing=True,
-        yesterday_sleep_h=5.0,  # boxing & <6 h -> -25
+        yesterday_boxing=True,  # boxing & last night's sleep 3.0 h (<6) -> -25
     )
     assert result.score == 0
     assert result.band == ReadinessBand.red
@@ -433,7 +435,6 @@ def test_compute_readiness_objective_only_no_subjective_param() -> None:
         "rhr_30d_mean",
         "yesterday_hard_day",
         "yesterday_boxing",
-        "yesterday_sleep_h",
     }
 
 
@@ -443,7 +444,7 @@ def test_compute_readiness_factor_universe_is_the_five_keys() -> None:
     for sleep_h in (8.0, 6.5, 4.5, 3.0, None):
         for hrv in ((110.0, 100.0, 10.0), (90.0, 100.0, 10.0), (70.0, 100.0, 10.0), (None, None, None)):
             for rhr_pair in ((48.0, 50.0), (56.0, 50.0), (60.0, 50.0), (None, None)):
-                for hard, box, ysleep in ((False, False, 8.0), (True, False, 8.0), (True, True, 5.0)):
+                for hard, box in ((False, False), (True, False), (True, True)):
                     result = compute_readiness(
                         sleep_h=sleep_h,
                         hrv_sdnn=hrv[0],
@@ -453,7 +454,6 @@ def test_compute_readiness_factor_universe_is_the_five_keys() -> None:
                         rhr_30d_mean=rhr_pair[1],
                         yesterday_hard_day=hard,
                         yesterday_boxing=box,
-                        yesterday_sleep_h=ysleep,
                     )
                     emitted.update(p.factor for p in result.penalties)
     assert emitted <= _FIVE_FACTORS
@@ -479,7 +479,26 @@ def test_compute_readiness_day_one_sparse_baseline() -> None:
     assert factors == {SLEEP_BELOW_7H, YESTERDAY_HARD_DAY}
 
 
-def test_compute_readiness_boxing_variant_same_factor_key() -> None:
+def test_compute_readiness_boxing_variant_keys_on_last_night_sleep() -> None:
+    # review #1: boxed yesterday AND under-recovered last night (sleep_h 5.0 < 6) -> -25,
+    # same factor key (DECISIONS Decision 6).
+    result = compute_readiness(
+        sleep_h=5.0,
+        hrv_sdnn=110.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,
+        rhr=48.0,
+        rhr_30d_mean=50.0,
+        yesterday_hard_day=True,
+        yesterday_boxing=True,
+    )
+    hard_entries = [p for p in result.penalties if p.factor == YESTERDAY_HARD_DAY]
+    assert hard_entries == [ReadinessPenalty(YESTERDAY_HARD_DAY, -25)]
+
+
+def test_compute_readiness_boxing_well_recovered_last_night_is_minus_15() -> None:
+    # review #1 opposite direction: boxed yesterday but slept well last night (8 h >= 6)
+    # -> only -15, NOT the -25 escalation (the escalation is about poor recovery sleep).
     result = compute_readiness(
         sleep_h=8.0,
         hrv_sdnn=110.0,
@@ -489,10 +508,9 @@ def test_compute_readiness_boxing_variant_same_factor_key() -> None:
         rhr_30d_mean=50.0,
         yesterday_hard_day=True,
         yesterday_boxing=True,
-        yesterday_sleep_h=5.0,
     )
     hard_entries = [p for p in result.penalties if p.factor == YESTERDAY_HARD_DAY]
-    assert hard_entries == [ReadinessPenalty(YESTERDAY_HARD_DAY, -25)]
+    assert hard_entries == [ReadinessPenalty(YESTERDAY_HARD_DAY, -15)]
 
 
 def test_readiness_result_shape() -> None:
