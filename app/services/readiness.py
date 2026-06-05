@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.core.enums import ReadinessBand
+
 # --- The five MODELS `factor` keys (MODELS § Readiness / ReadinessPenalty) ---
 SLEEP_BELOW_7H = "sleep_below_7h"
 SLEEP_BELOW_5H = "sleep_below_5h"
@@ -52,6 +54,10 @@ HARD_DAY_LOW_SLEEP_H = 6  # boxing & sleep below this → the −25 variant
 RHR_BAND_LOW = 5  # +5 bpm: band floor
 RHR_BAND_HIGH = 7  # +7 bpm: band ceiling (above → the −20 tier)
 HRV_SD_THRESHOLD = 1.0  # 1 SD below the rolling mean
+
+# --- Band thresholds (§6.1 / MODELS): green ≥75 · amber 50–74 · red <50 ---
+GREEN_MIN = 75
+AMBER_MIN = 50
 
 
 @dataclass(frozen=True)
@@ -188,3 +194,28 @@ def collect_penalties(
     ) is not None:
         penalties.append(hard)
     return penalties
+
+
+def assemble_score(penalties: list[ReadinessPenalty]) -> int:
+    """Start at 100, sum the (negative) points, then **clamp to [0, 100]** (§6.1).
+
+    The clamp is the **single last step** applied to the summed score — never per-penalty
+    and never before summation (MODELS "starts at 100, subtract penalties, clamp to
+    [0,100]"). Returns an ``int`` (MODELS ``score`` is ``integer 0–100``).
+    """
+    raw = 100 + sum(p.points for p in penalties)
+    return max(0, min(100, raw))
+
+
+def band_for(score: int) -> ReadinessBand:
+    """Map the **clamped** score to its band (§6.1 / MODELS).
+
+    Inclusive lower edges: ``score >= 75`` → ``green``; ``50 <= score < 75`` → ``amber``;
+    ``score < 50`` → ``red``. Returns the lowercase MODELS ``ReadinessBand`` (the DB's
+    UPPERCASE persistence is E11's concern — DECISIONS Decision 7).
+    """
+    if score >= GREEN_MIN:
+        return ReadinessBand.green
+    if score >= AMBER_MIN:
+        return ReadinessBand.amber
+    return ReadinessBand.red

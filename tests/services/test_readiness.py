@@ -9,6 +9,7 @@ Every input is a plain number — there is no DB row, no HTTP, no LLM here (epic
 
 from __future__ import annotations
 
+from app.core.enums import ReadinessBand
 from app.services.readiness import (
     HRV_BELOW_BASELINE,
     RHR_ABOVE_BASELINE,
@@ -16,6 +17,8 @@ from app.services.readiness import (
     SLEEP_BELOW_7H,
     YESTERDAY_HARD_DAY,
     ReadinessPenalty,
+    assemble_score,
+    band_for,
     collect_penalties,
     hrv_penalty,
     rhr_penalty,
@@ -249,3 +252,70 @@ def test_collect_penalties_skips_non_firing() -> None:
         yesterday_sleep_h=8.0,
     )
     assert penalties == []
+
+
+# --- assemble_score (100 − Σpoints, clamped [0,100] as the LAST step) ---
+
+
+def test_assemble_score_no_penalties_is_100() -> None:
+    assert assemble_score([]) == 100
+
+
+def test_assemble_score_single_penalty() -> None:
+    assert assemble_score([ReadinessPenalty("x", -10)]) == 90
+
+
+def test_assemble_score_clamps_at_100() -> None:
+    # No input can exceed 100 (MODELS ceiling); the empty list is the maximum.
+    assert assemble_score([]) == 100
+
+
+def test_assemble_score_clamps_at_0() -> None:
+    # Stack summing below −100 → clamped to 0, never negative.
+    stack = [
+        ReadinessPenalty("a", -25),
+        ReadinessPenalty("b", -25),
+        ReadinessPenalty("c", -25),
+        ReadinessPenalty("d", -25),
+        ReadinessPenalty("e", -10),
+    ]  # raw = 100 − 110 = −10 → clamped 0
+    assert assemble_score(stack) == 0
+
+
+def test_assemble_score_returns_int() -> None:
+    for penalties in ([], [ReadinessPenalty("x", -10)], [ReadinessPenalty("y", -200)]):
+        assert isinstance(assemble_score(penalties), int)
+
+
+# --- band_for (green ≥75 · amber 50–74 · red <50, inclusive lower edges) ---
+
+
+def test_band_for_100_is_green() -> None:
+    assert band_for(100) == ReadinessBand.green
+
+
+def test_band_for_75_is_green() -> None:
+    assert band_for(75) == ReadinessBand.green
+
+
+def test_band_for_74_is_amber() -> None:
+    assert band_for(74) == ReadinessBand.amber
+
+
+def test_band_for_50_is_amber() -> None:
+    assert band_for(50) == ReadinessBand.amber
+
+
+def test_band_for_49_is_red() -> None:
+    assert band_for(49) == ReadinessBand.red
+
+
+def test_band_for_0_is_red() -> None:
+    assert band_for(0) == ReadinessBand.red
+
+
+def test_band_values_are_lowercase() -> None:
+    # MODELS lowercase wire values (DECISIONS Decision 7); DB UPPERCASE is E11's concern.
+    assert ReadinessBand.green.value == "green"
+    assert ReadinessBand.amber.value == "amber"
+    assert ReadinessBand.red.value == "red"
