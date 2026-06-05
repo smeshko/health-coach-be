@@ -22,17 +22,29 @@ persistence, no other-node/graph import (mirrors E9·P1).
 """
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
 from app.api.schemas.weekly import WeeklyPlanLLMOutput
 from app.core.agent_node import PydanticAgentNode
-from app.core.constraints import WeeklyBudgets
-from app.core.enums import WorkoutCard
+from app.core.constraints import (
+    ValidationContext,
+    Violation,
+    WeeklyBudgets,
+    validate_weekly,
+)
+from app.core.enums import NarrativeType, WorkoutCard
 from app.core.nodes import AgentConfig
 from app.core.settings import Settings
 from app.core.task_context import TaskContext
+
+# The weekly narrative subset (LLM §1): only these section types may appear in a
+# weekly brief. A `summary`/`caution` section is a hard violation the model retries
+# on — the weekly-only rule E7·P3's (daily-flavoured) narrative checks don't encode.
+_WEEKLY_NARRATIVE_TYPES: frozenset[NarrativeType] = frozenset(
+    {NarrativeType.plan, NarrativeType.session, NarrativeType.nutrition}
+)
 
 
 class WeeklyDeps(BaseModel):
@@ -200,3 +212,49 @@ class GeneratePlanNode(PydanticAgentNode[WeeklyDeps, WeeklyPlanLLMOutput]):
             "nutrition_adherence": _get("nutrition_adherence"),
             "constants": _get("constants"),
         }
+
+    def get_validate_fn(
+        self,
+    ) -> Callable[[WeeklyPlanLLMOutput, ValidationContext], list[Violation]]:
+        """The pure weekly validator E9·P1's `process()` wires as the agent's
+        `@agent.output_validator` (a hard `Violation` ⇒ `ModelRetry` within the
+        ``retries ≤ 2`` budget; a clean plan returns unchanged).
+
+        Returns `validate_weekly_output` — E7·P3's `validate_weekly` (the hard-day
+        count/spacing/strength/count/long-run/quality/dose rules, **including** the
+        2–3 core / 1–2 extras `core_size`/`extras_size` count) **plus** the one
+        weekly-only `plan|session|nutrition` narrative-subset check (LLM §1). The
+        E9·P1 adapter passes the slim `WeeklyPlanLLMOutput` straight through (it is
+        shape-compatible — `core`/`extras` of `{card, suggestedDay, durationMin*}`)
+        and builds the `ValidationContext` from `RunContext[WeeklyDeps].deps`.
+        """
+        return validate_weekly_output
+
+
+def validate_weekly_output(
+    out: WeeklyPlanLLMOutput, ctx: ValidationContext
+) -> list[Violation]:
+    """The weekly output validator — `validate_weekly` (E7·P3) + the narrative subset.
+
+    Pure, LLM-free, same signature as `validate_weekly` so it slots straight into
+    E9·P1's `make_output_validator`. Runs every E7·P3 weekly invariant (hard-day
+    count/spacing, strength count, `core_size`/`extras_size` count, long-run cap,
+    threshold↔VO₂ match, deload cap, dose-in-band) and **appends** one hard
+    `Violation` per narrative section whose `type` is outside the weekly
+    `plan|session|nutrition` subset (LLM §1) — a weekly-only rule E7·P3's
+    daily-flavoured narrative checks don't encode. All hard violations flow through
+    E9·P1's single `ModelRetry` path; an empty list means a clean plan.
+    """
+    violations = list(validate_weekly(out, ctx))
+    for section in out.narrative:
+        if section.type not in _WEEKLY_NARRATIVE_TYPES:
+            violations.append(
+                Violation(
+                    rule="weekly_narrative_type",
+                    message=(
+                        f"narrative section type {section.type.value!r} is not in the "
+                        "weekly subset (plan|session|nutrition)"
+                    ),
+                )
+            )
+    return violations

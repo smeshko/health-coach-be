@@ -119,14 +119,16 @@ def _ctx_with(profile, *, hard_days: int = 2) -> TaskContext:
 
 
 def _valid_plan_args() -> dict:
-    """Valid slim plan tool args: 2 core + 1 extra, spaced hard days, strength == 2."""
+    """A genuinely clean slim plan: 2 core + 1 extra, 1 hard day (≤ budget 2),
+    strength == 2, the quality run is VO2 (matching the deps quality pick), and
+    every filled dose sits inside its CARD_META band."""
     return {
         "core": [
             {"card": "vo2", "suggestedDay": "tue", "durationMinLow": 30, "durationMinHigh": 40},
             {"card": "strength_pull", "suggestedDay": "mon", "durationMinLow": 30, "durationMinHigh": 45},
         ],
         "extras": [
-            {"card": "strength_lower", "suggestedDay": "thu", "durationMinLow": 30, "durationMinHigh": 45},
+            {"card": "strength_lower", "suggestedDay": "thu", "durationMinLow": 30, "durationMinHigh": 35},
         ],
         "narrative": [
             {"type": "plan", "heading": "Week", "body": "One quality day."},
@@ -302,3 +304,204 @@ def test_weekly_agent_module_has_no_route_or_db_or_other_node_import():
         r"select\(|Session\("
     )
     assert not forbidden.search(source), "pure-core boundary breached in weekly_agent.py"
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003 — wired validate_weekly output validator (ModelRetry on hard violation)
+# --------------------------------------------------------------------------- #
+
+
+def _three_hard_days_args() -> dict:
+    """A budget-violating plan: 3 hard cards against budgets.hard_days = 2."""
+    return {
+        "core": [
+            {"card": "vo2", "suggestedDay": "mon", "durationMinLow": 30, "durationMinHigh": 40},
+            {"card": "threshold", "suggestedDay": "wed", "durationMinLow": 30, "durationMinHigh": 45},
+            {"card": "boxing", "suggestedDay": "fri", "durationMinLow": 60, "durationMinHigh": 90},
+        ],
+        "extras": [
+            {"card": "strength_pull", "suggestedDay": "sun", "durationMinLow": 30, "durationMinHigh": 45},
+        ],
+        "narrative": [{"type": "plan", "heading": "W", "body": "Three hard days."}],
+    }
+
+
+def _wrong_count_args() -> dict:
+    """A wrong-count plan: 1 core (< 2) — a judgment miss, not a 422."""
+    return {
+        "core": [
+            {"card": "vo2", "suggestedDay": "tue", "durationMinLow": 30, "durationMinHigh": 40},
+        ],
+        "extras": [
+            {"card": "strength_pull", "suggestedDay": "mon", "durationMinLow": 30, "durationMinHigh": 45},
+            {"card": "strength_lower", "suggestedDay": "thu", "durationMinLow": 30, "durationMinHigh": 35},
+        ],
+        "narrative": [{"type": "plan", "heading": "W", "body": "Only one core."}],
+    }
+
+
+def _caution_narrative_args() -> dict:
+    """A clean plan whose narrative carries an out-of-subset `caution` section."""
+    args = _valid_plan_args()
+    args["narrative"] = [
+        {"type": "plan", "heading": "Week", "body": "One quality day."},
+        {"type": "caution", "heading": "Careful", "body": "Knee is amber."},
+    ]
+    return args
+
+
+def test_get_validate_fn_returns_a_callable():
+    from app.core.weekly_agent import GeneratePlanNode
+
+    fn = GeneratePlanNode().get_validate_fn()
+    assert fn is not None
+    assert callable(fn)
+
+
+def test_validate_fn_calls_validate_weekly_and_reads_deps():
+    """The wired validator builds a ValidationContext from the deps and runs the
+    pure validate_weekly — a 3-hard-day plan against the deps budget is flagged."""
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.constraints import Severity
+    from app.core.weekly_agent import GeneratePlanNode
+
+    node = GeneratePlanNode()
+    fn = node.get_validate_fn()
+    out = WeeklyPlanLLMOutput.model_validate(_three_hard_days_args())
+    deps = node.build_deps(_ctx_with_feeds_only())
+    vctx = _deps_to_validation_context(deps)
+
+    violations = fn(out, vctx)
+    rules = {v.rule for v in violations if v.severity is Severity.hard}
+    # The hard-day count rule fired against the deps-fixture budget (hard_days=2).
+    assert "hard_day_count" in rules
+
+
+def _ctx_with_feeds_only() -> TaskContext:
+    return TaskContext(event=None, metadata={"computed": _feeds()})
+
+
+def test_validate_fn_flags_out_of_subset_narrative_section():
+    """A weekly `caution`/`summary` section is a hard violation (LLM §1 subset)."""
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.constraints import Severity
+    from app.core.weekly_agent import GeneratePlanNode
+
+    node = GeneratePlanNode()
+    fn = node.get_validate_fn()
+    out = WeeklyPlanLLMOutput.model_validate(_caution_narrative_args())
+    vctx = _deps_to_validation_context(node.build_deps(_ctx_with_feeds_only()))
+
+    violations = fn(out, vctx)
+    assert any(v.severity is Severity.hard for v in violations)
+    # And the plan|session|nutrition-only valid plan has no narrative-subset hard.
+    clean = WeeklyPlanLLMOutput.model_validate(_valid_plan_args())
+    assert fn(clean, vctx) == []
+
+
+def test_clean_plan_passes_validator_and_is_stored(_no_anthropic_key, monkeypatch, _profile):
+    from app.core.weekly_agent import GeneratePlanNode
+
+    model, _calls = _function_model_returning(_valid_plan_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile)
+    node = GeneratePlanNode(task_context=ctx)
+    asyncio.run(node.process(ctx))
+
+    stored = node.get_output(GeneratePlanNode)
+    assert isinstance(stored, WeeklyPlanLLMOutput)
+
+
+def test_budget_violating_plan_retries_then_brief_generation_failed(
+    _no_anthropic_key, monkeypatch, _profile
+):
+    from app.core.agent_node import BriefGenerationError
+    from app.core.weekly_agent import GeneratePlanNode
+
+    # A model that PERSISTENTLY emits 3 hard days against budgets.hard_days = 2.
+    model, calls = _function_model_returning(_three_hard_days_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile, hard_days=2)
+    node = GeneratePlanNode(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    # The wired validator ModelRetry'd; exhausting retries=2 → brief_generation_failed.
+    assert excinfo.value.code == "brief_generation_failed"
+    assert calls["n"] >= 2  # initial + at least one retry => the ModelRetry fired
+    assert calls["n"] <= 3  # retries <= 2
+    # No output reached the cache (LLM §4 — a violating plan never persists).
+    assert node.node_name not in ctx.nodes
+
+
+def test_wrong_count_plan_retries_not_422(_no_anthropic_key, monkeypatch, _profile):
+    from app.core.agent_node import BriefGenerationError
+    from app.core.weekly_agent import GeneratePlanNode
+
+    model, calls = _function_model_returning(_wrong_count_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile)
+    node = GeneratePlanNode(task_context=ctx)
+
+    # A wrong count is a ModelRetry (a judgment miss), surfacing as
+    # brief_generation_failed on exhaustion — NOT a Pydantic ValidationError/422.
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+    assert excinfo.value.code == "brief_generation_failed"
+    assert calls["n"] >= 2  # the ModelRetry fired (not parsed-and-failed once)
+    assert node.node_name not in ctx.nodes
+
+
+def test_caution_narrative_section_retries(_no_anthropic_key, monkeypatch, _profile):
+    from app.core.agent_node import BriefGenerationError
+    from app.core.weekly_agent import GeneratePlanNode
+
+    model, calls = _function_model_returning(_caution_narrative_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile)
+    node = GeneratePlanNode(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+    assert excinfo.value.code == "brief_generation_failed"
+    assert calls["n"] >= 2  # the narrative-subset ModelRetry fired
+    assert node.node_name not in ctx.nodes
+
+
+def test_validator_reads_threaded_deps_budget(_no_anthropic_key, monkeypatch, _profile):
+    """The deps-fixture budget is the one the violation references — proving the
+    validator read the deps threaded through RunContext (not a default)."""
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.weekly_agent import GeneratePlanNode
+
+    # hard_days = 4 in the deps → a 3-hard-day plan is now WITHIN budget (no
+    # hard_day_count violation), proving the validator read the fixture's budget.
+    node = GeneratePlanNode()
+    deps = node.build_deps(_ctx_with_feeds_only_hard_days(4))
+    vctx = _deps_to_validation_context(deps)
+    out = WeeklyPlanLLMOutput.model_validate(_three_hard_days_args())
+    rules = {v.rule for v in node.get_validate_fn()(out, vctx)}
+    assert "hard_day_count" not in rules
+    # The deps carry the budget as a real WeeklyBudgets and the quality pick as an enum.
+    assert vctx.budgets.hard_days == 4
+    assert vctx.quality_run_pick is WorkoutCard.vo2
+
+
+def _ctx_with_feeds_only_hard_days(hard_days: int) -> TaskContext:
+    return TaskContext(event=None, metadata={"computed": _feeds(hard_days=hard_days)})
+
+
+def test_deps_carry_budgets_and_quality_pick_as_enum():
+    """The deps contract: budgets is a WeeklyBudgets, quality_run_pick a WorkoutCard."""
+    from app.core.constraints import WeeklyBudgets
+    from app.core.weekly_agent import GeneratePlanNode
+
+    deps = GeneratePlanNode().build_deps(_ctx_with_feeds_only())
+    assert isinstance(deps.budgets, WeeklyBudgets)
+    assert deps.budgets.hard_days == 2
+    assert deps.quality_run_pick is WorkoutCard.vo2
