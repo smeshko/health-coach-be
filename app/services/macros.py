@@ -30,9 +30,11 @@ it, E7's validator floors it).
 from __future__ import annotations
 
 import math
+from typing import Any
 
+from app.api.schemas.base import CamelModel
 from app.core.enums import DayType
-from app.core.profile import CarbsPerKg
+from app.core.profile import Athlete, CarbsPerKg, Nutrition
 
 # --- Pinned constants, transcribed verbatim from CONSTITUTION §7 (single source) ---
 
@@ -162,3 +164,174 @@ def calories_kcal(day_type: DayType, *, tdee_kcal: float, target_avg_kcal: float
     if day_type == DayType.rest:
         return _round_half_up(tdee_kcal * (1 - clamp_deficit(REST_DEFICIT_PCT)))
     return _round_half_up(target_avg_kcal)  # DayType.moderate → the §7.1 avg target
+
+
+def hydration_l_range(low_l: float, high_l: float, *, sweat_l: float = 0.0) -> tuple[float, float]:
+    """Daily hydration target range in litres (CONSTITUTION §7.4; DECISIONS 7).
+
+    The baseline range **plus** an additive sweat-replacement term: ``(low_l +
+    sweat_l, high_l + sweat_l)``. ``sweat_l`` defaults to ``0.0`` → the plain baseline
+    (MODELS ``hydrationLLow: 3.0``/``hydrationLHigh: 3.5``); a caller that knows the
+    session (E11) may pass estimated sweat litres to add on top. Returns **floats** (no
+    rounding — Decision 4; ``3.0`` stays ``3.0``, MODELS types these as ``number``).
+    """
+    return (low_l + sweat_l, high_l + sweat_l)
+
+
+# --- Result models — exactly the MODELS field set, camelCase on the wire (DECISIONS 1/8/10) ---
+
+
+class MacroFocus(CamelModel):
+    """The day's nutrition target (MODELS ``MacroFocus``) — all numbers code-computed.
+
+    Snake_case fields serialize to the MODELS camelCase wire names
+    (``dayType``/``caloriesKcal``/``proteinG``/``carbsG``/``fatGLow``/``fatGHigh``/
+    ``hydrationLLow``/``hydrationLHigh``). Carries exactly the MODELS fields — **no**
+    fiber/sodium target (those are §7.4 narrative/medical filters, not code targets —
+    Decision 10).
+    """
+
+    day_type: DayType
+    calories_kcal: int
+    protein_g: int
+    carbs_g: int
+    fat_g_low: int
+    fat_g_high: int
+    hydration_l_low: float
+    hydration_l_high: float
+
+
+class DayTypePatternEntry(CamelModel):
+    """One planned-session entry of ``WeeklyNutrition.dayTypePattern`` (MODELS).
+
+    ``{suggestedDay, dayType, caloriesKcal, carbsG}`` — the per-session calorie/carb
+    numbers, derived from the same selectors as the daily focus (single source).
+    """
+
+    suggested_day: str
+    day_type: DayType
+    calories_kcal: int
+    carbs_g: int
+
+
+class WeeklyNutrition(CamelModel):
+    """The weekly brief's nutrition half (MODELS ``WeeklyNutrition``) — all code-derived.
+
+    The constant targets (``proteinG``/``fatGLow/High``/``hydrationLLow/High``) + the
+    week-average target (``avgCaloriesKcal`` = the §7.1 ``Target_avg``, the figure the
+    per-day-type calories net to — Decision 5) + the ``dayTypePattern`` from the planned
+    picks. ``lastWeek`` (7-day intake adherence) is **passed through** as an
+    already-built value — its derivation from logged dietary intake is E6·P3/E10
+    (Decision 9), so it is left opaque here.
+    """
+
+    protein_g: int
+    fat_g_low: int
+    fat_g_high: int
+    hydration_l_low: float
+    hydration_l_high: float
+    avg_calories_kcal: int
+    day_type_pattern: list[DayTypePatternEntry]
+    last_week: Any | None = None
+
+
+def compute_macro_focus(
+    *,
+    day_type: DayType,
+    weight_kg: float,
+    nutrition: Nutrition,
+    athlete: Athlete,
+    sweat_l: float = 0.0,
+) -> MacroFocus:
+    """Build the daily ``MacroFocus`` (the entry E11 calls; CONSTITUTION §7).
+
+    Keyword-only so a call site can never pair the wrong constant with a number. Reads
+    already-loaded ``Nutrition``/``Athlete`` sub-models (E11's loader builds them once
+    per brief) + a live ``weight_kg`` — it opens no session and reads no file.
+    ``day_type`` is the **already-chosen, already-floored** input (the LLM picks it,
+    E7's validator floors it); this function classifies nothing.
+    """
+    b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
+    t = tdee(b, nutrition.activity_factor)
+    target = deficit_target(t, nutrition.deficit_pct)
+    fat_low, fat_high = fat_g_range(weight_kg, nutrition.fat_g_per_kg_low, nutrition.fat_g_per_kg_high)
+    hyd_low, hyd_high = hydration_l_range(
+        nutrition.hydration_l_low, nutrition.hydration_l_high, sweat_l=sweat_l
+    )
+    return MacroFocus(
+        day_type=day_type,
+        calories_kcal=calories_kcal(day_type, tdee_kcal=t, target_avg_kcal=target),
+        protein_g=protein_g(weight_kg, nutrition.protein_g_per_kg),
+        carbs_g=carbs_g(weight_kg, day_type, nutrition.carbs_g_per_kg),
+        fat_g_low=fat_low,
+        fat_g_high=fat_high,
+        hydration_l_low=hyd_low,
+        hydration_l_high=hyd_high,
+    )
+
+
+def day_type_pattern(
+    picks: list[tuple[str, DayType]],
+    *,
+    weight_kg: float,
+    nutrition: Nutrition,
+    athlete: Athlete,
+) -> list[DayTypePatternEntry]:
+    """One ``DayTypePatternEntry`` per planned session (MODELS ``dayTypePattern``).
+
+    Reuses the **same** ``carbs_g``/``calories_kcal`` selectors as the daily focus
+    (single source — Decision 5), so a ``hard`` weekly entry and a ``hard``
+    ``MacroFocus`` carry identical ``carbsG``/``caloriesKcal``. The session→``dayType``
+    mapping is the caller's (E10 reads each pick's ``CARD_META.day_type``); this helper
+    takes the resolved ``dayType`` per pick.
+    """
+    b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
+    t = tdee(b, nutrition.activity_factor)
+    target = deficit_target(t, nutrition.deficit_pct)
+    return [
+        DayTypePatternEntry(
+            suggested_day=suggested_day,
+            day_type=dt,
+            calories_kcal=calories_kcal(dt, tdee_kcal=t, target_avg_kcal=target),
+            carbs_g=carbs_g(weight_kg, dt, nutrition.carbs_g_per_kg),
+        )
+        for suggested_day, dt in picks
+    ]
+
+
+def compute_weekly_nutrition(
+    *,
+    picks: list[tuple[str, DayType]],
+    weight_kg: float,
+    nutrition: Nutrition,
+    athlete: Athlete,
+    last_week: Any | None = None,
+    sweat_l: float = 0.0,
+) -> WeeklyNutrition:
+    """Build the weekly ``WeeklyNutrition`` (the entry E10 calls; CONSTITUTION §7).
+
+    The constant ``proteinG``/``fatG*``/``hydration*`` targets, ``avgCaloriesKcal`` =
+    the §7.1 ``Target_avg`` (the week-average target the per-day-type calories net to —
+    Decision 5), and the ``dayTypePattern`` from the picks. ``last_week`` is passed
+    **through** unchanged (or left ``None``) — its derivation from logged intake is
+    E6·P3/E10 (Decision 9). Keyword-only.
+    """
+    b = bmr(weight_kg=weight_kg, height_cm=athlete.height_cm, age=athlete.age, sex=athlete.sex)
+    t = tdee(b, nutrition.activity_factor)
+    target = deficit_target(t, nutrition.deficit_pct)
+    fat_low, fat_high = fat_g_range(weight_kg, nutrition.fat_g_per_kg_low, nutrition.fat_g_per_kg_high)
+    hyd_low, hyd_high = hydration_l_range(
+        nutrition.hydration_l_low, nutrition.hydration_l_high, sweat_l=sweat_l
+    )
+    return WeeklyNutrition(
+        protein_g=protein_g(weight_kg, nutrition.protein_g_per_kg),
+        fat_g_low=fat_low,
+        fat_g_high=fat_high,
+        hydration_l_low=hyd_low,
+        hydration_l_high=hyd_high,
+        avg_calories_kcal=_round_half_up(target),
+        day_type_pattern=day_type_pattern(
+            picks, weight_kg=weight_kg, nutrition=nutrition, athlete=athlete
+        ),
+        last_week=last_week,
+    )

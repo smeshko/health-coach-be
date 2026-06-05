@@ -23,19 +23,24 @@ import math
 import pytest
 
 from app.core.enums import DayType
-from app.core.profile import CarbsPerKg
+from app.core.profile import Athlete, CarbsPerKg, Nutrition
 from app.services.macros import (
     BMR_SEX_CONSTANT,
     MAX_DEFICIT_PCT,
     MAX_PROTEIN_G_PER_KG,
     REST_DEFICIT_PCT,
+    DayTypePatternEntry,
     _round_half_up,
     bmr,
     calories_kcal,
     carbs_g,
     clamp_deficit,
+    compute_macro_focus,
+    compute_weekly_nutrition,
+    day_type_pattern,
     deficit_target,
     fat_g_range,
+    hydration_l_range,
     protein_g,
     tdee,
 )
@@ -51,6 +56,27 @@ _TDEE_AF165 = 2858.625  # 1732.5 × 1.65
 
 # The §5 carb-multiplier block (profile.yaml `nutrition.carbs_g_per_kg`).
 _CARBS = CarbsPerKg(hard_low=4, hard_high=5, moderate=3, rest_low=2, rest_high=2.5)
+
+# The §5 nutrition + athlete blocks, mirroring profile.yaml 1:1 — so the end-to-end
+# compute_* tests reproduce the *real* CONSTITUTION §7.1 chain at activity_factor 1.50
+# (BMR 1732.5 → TDEE 2598.75 → target 2286.9), not the plan's pinned-1.65 figures.
+_NUTRITION = Nutrition(
+    activity_factor=1.50,
+    deficit_pct=0.12,
+    protein_g_per_kg=1.8,
+    fat_g_per_kg_low=0.8,
+    fat_g_per_kg_high=1.0,
+    carbs_g_per_kg=_CARBS,
+    hydration_l_low=3.0,
+    hydration_l_high=3.5,
+    fiber_g_low=25,
+    fiber_g_high=35,
+)
+_ATHLETE = Athlete(age=34, sex="male", height_cm=174, goal_weight_kg=75)
+
+# The §7.1 worked chain at the *profile* activity_factor 1.50.
+_TDEE_AF150 = 2598.75  # 1732.5 × 1.50
+_TARGET_AF150 = _round_half_up(_TDEE_AF150 * (1 - 0.12))  # 2286.9 → 2287
 
 
 # --- bmr (§7.1 Mifflin-St Jeor; DECISIONS 1/2) ---
@@ -228,3 +254,162 @@ def test_protein_and_fat_are_constant_across_day_types():
     cals = {calories_kcal(dt, tdee_kcal=t, target_avg_kcal=target) for dt in DayType}
     assert len(carbs) == 3  # all three differ
     assert len(cals) == 3
+
+
+# --- hydration_l_range (§7.4 baseline + additive sweat; DECISIONS 7) ---
+
+
+def test_hydration_l_range_baseline():
+    assert hydration_l_range(3.0, 3.5) == (3.0, 3.5)
+    low, high = hydration_l_range(3.0, 3.5)
+    assert isinstance(low, float) and isinstance(high, float)  # not rounded to int
+
+
+def test_hydration_l_range_adds_sweat():
+    assert hydration_l_range(3.0, 3.5, sweat_l=1.0) == (4.0, 4.5)
+
+
+# --- MacroFocus assembly (MODELS; reproduces the §7.1 chain at the *profile* AF=1.50) ---
+
+# The exact MODELS MacroFocus field set (camelCase wire names).
+_MACRO_FOCUS_FIELDS = {
+    "dayType",
+    "caloriesKcal",
+    "proteinG",
+    "carbsG",
+    "fatGLow",
+    "fatGHigh",
+    "hydrationLLow",
+    "hydrationLHigh",
+}
+
+
+def test_compute_macro_focus_moderate_reproduces_profile_chain():
+    focus = compute_macro_focus(
+        day_type=DayType.moderate, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    # AF-independent macros match MODELS / the plan exactly.
+    assert focus.protein_g == 146
+    assert focus.carbs_g == 243  # moderate 3 g/kg × 81 (§7.3; the doc's "~245")
+    assert focus.fat_g_low == 65
+    assert focus.fat_g_high == 81  # engine's honest round(81.0); MODELS shows 80 (doc round)
+    assert focus.hydration_l_low == 3.0
+    assert focus.hydration_l_high == 3.5
+    # Calories follow the *real* profile AF=1.50 chain → 2287 (the plan's 2516/2520
+    # assumed AF=1.65; profile.yaml & §7.1 use 1.50, so the engine emits 2287).
+    assert focus.calories_kcal == _TARGET_AF150 == 2287
+    assert focus.day_type == DayType.moderate
+
+
+def test_macro_focus_wire_field_set_matches_models():
+    focus = compute_macro_focus(
+        day_type=DayType.moderate, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    # camelCase serialization == the MODELS MacroFocus field set (no fiber/sodium).
+    assert set(focus.model_dump(by_alias=True)) == _MACRO_FOCUS_FIELDS
+
+
+def test_macro_focus_carb_cycling_across_day_types():
+    hard = compute_macro_focus(
+        day_type=DayType.hard, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    moderate = compute_macro_focus(
+        day_type=DayType.moderate, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    rest = compute_macro_focus(
+        day_type=DayType.rest, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    # carbs + calories carb-load up for hard, pull down for rest.
+    assert rest.carbs_g < moderate.carbs_g < hard.carbs_g
+    assert rest.calories_kcal < moderate.calories_kcal < hard.calories_kcal
+    # protein / fat / hydration held constant across the three.
+    for held in ("protein_g", "fat_g_low", "fat_g_high", "hydration_l_low", "hydration_l_high"):
+        assert getattr(hard, held) == getattr(moderate, held) == getattr(rest, held)
+
+
+def test_compute_macro_focus_passes_sweat_to_hydration():
+    focus = compute_macro_focus(
+        day_type=DayType.moderate,
+        weight_kg=_W,
+        nutrition=_NUTRITION,
+        athlete=_ATHLETE,
+        sweat_l=1.0,
+    )
+    assert focus.hydration_l_low == 4.0
+    assert focus.hydration_l_high == 4.5
+
+
+# --- WeeklyNutrition + dayTypePattern (MODELS; DECISIONS 5/9) ---
+
+_PICKS = [("mon", DayType.moderate), ("tue", DayType.hard), ("fri", DayType.hard)]
+
+
+def test_compute_weekly_nutrition_constant_targets_and_avg():
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    # Constant targets (AF-independent).
+    assert weekly.protein_g == 146
+    assert weekly.fat_g_low == 65
+    assert weekly.fat_g_high == 81
+    assert weekly.hydration_l_low == 3.0
+    assert weekly.hydration_l_high == 3.5
+    # avgCaloriesKcal == the §7.1 Target_avg (the week nets to it) — AF=1.50 → 2287.
+    expected_avg = _round_half_up(
+        deficit_target(
+            tdee(
+                bmr(weight_kg=_W, height_cm=_ATHLETE.height_cm, age=_ATHLETE.age, sex=_ATHLETE.sex),
+                _NUTRITION.activity_factor,
+            ),
+            _NUTRITION.deficit_pct,
+        )
+    )
+    assert weekly.avg_calories_kcal == expected_avg == 2287
+
+
+def test_day_type_pattern_agrees_with_daily_focus():
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    assert len(weekly.day_type_pattern) == 3
+    for (suggested_day, dt), entry in zip(_PICKS, weekly.day_type_pattern, strict=True):
+        assert isinstance(entry, DayTypePatternEntry)
+        assert entry.suggested_day == suggested_day
+        assert entry.day_type == dt
+        # Each pattern entry's {caloriesKcal, carbsG} equals the matching daily focus.
+        focus = compute_macro_focus(
+            day_type=dt, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+        )
+        assert entry.calories_kcal == focus.calories_kcal
+        assert entry.carbs_g == focus.carbs_g
+
+
+def test_day_type_pattern_helper_matches_selectors():
+    pattern = day_type_pattern(_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE)
+    t = tdee(
+        bmr(weight_kg=_W, height_cm=_ATHLETE.height_cm, age=_ATHLETE.age, sex=_ATHLETE.sex),
+        _NUTRITION.activity_factor,
+    )
+    target = deficit_target(t, _NUTRITION.deficit_pct)
+    for (suggested_day, dt), entry in zip(_PICKS, pattern, strict=True):
+        assert entry.carbs_g == carbs_g(_W, dt, _CARBS)
+        assert entry.calories_kcal == calories_kcal(dt, tdee_kcal=t, target_avg_kcal=target)
+
+
+def test_weekly_nutrition_last_week_passes_through():
+    sentinel = object()
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE, last_week=sentinel
+    )
+    assert weekly.last_week is sentinel  # passed through unchanged, not computed
+    weekly_none = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    assert weekly_none.last_week is None  # default → None
+
+
+# --- DayType is an input, never chosen/floored; the accepted value set is the three ---
+
+
+def test_day_type_value_set_is_exactly_three():
+    assert {d.value for d in DayType} == {"hard", "moderate", "rest"}
