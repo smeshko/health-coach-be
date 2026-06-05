@@ -34,6 +34,7 @@ from app.services.daily_metrics_engine import (
     DailyMetricsEngine,
     active_energy,
     body_weight,
+    current_body_weight,
     expand_affected_dates,
     hard_day,
     hrv_baseline,
@@ -447,6 +448,47 @@ def test_body_weight_latest_by_instant_not_lexical(session: Session) -> None:
     )
     assert body_weight(session, D1) == 80.0  # latest INSTANT, not first/avg/raw-text-last
     assert body_weight(session, D2) is None
+
+
+# ---------------------------------------------------------------------------
+# current_body_weight — the multi-day "latest materialised body_weight <= anchor" reader.
+# ---------------------------------------------------------------------------
+def _seed_weight(session: Session, day: date, weight: float | None) -> None:
+    session.add(DailyMetrics(date=day.isoformat(), body_weight=weight))
+
+
+def test_current_body_weight_latest_on_or_before_anchor(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=3), 80.0)
+    _seed_weight(session, anchor - timedelta(days=1), 79.5)
+    _seed_weight(session, anchor, 79.0)
+    session.commit()
+    assert current_body_weight(session, anchor) == 79.0  # the anchor-day reading
+
+
+def test_current_body_weight_walks_back_when_anchor_missing(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=2), 81.5)
+    _seed_weight(session, anchor - timedelta(days=1), None)  # row present, no reading
+    _seed_weight(session, anchor, None)  # anchor day has no scale reading
+    session.commit()
+    assert current_body_weight(session, anchor) == 81.5  # walks back to the latest non-null
+
+
+def test_current_body_weight_none_when_no_history(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), None)
+    _seed_weight(session, anchor, None)
+    session.commit()
+    assert current_body_weight(session, anchor) is None
+
+
+def test_current_body_weight_ignores_future_reading(session: Session) -> None:
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=1), 80.0)
+    _seed_weight(session, anchor + timedelta(days=1), 78.0)  # after the anchor → ignored
+    session.commit()
+    assert current_body_weight(session, anchor) == 80.0
 
 
 @pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])

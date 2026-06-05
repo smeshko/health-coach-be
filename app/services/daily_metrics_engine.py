@@ -498,6 +498,30 @@ def body_weight(session: Session, day: date) -> float | None:
     return max(candidates, key=instant_key).value
 
 
+def current_body_weight(session: Session, anchor: date) -> float | None:
+    """The athlete's **current/live** weight: the latest non-null materialised
+    `daily_metrics.body_weight` on or before `anchor` (E13·P3).
+
+    The multi-day ("≤ anchor") counterpart to `body_weight(session, day)` — where that reads
+    the single day's live weight, this walks back to the most recent day that *has* one, so a
+    week whose anchor day has no scale reading still resolves a real weight. Reads the
+    **materialised** column (the recompute engine already deduped the day's `body_mass` into it
+    — DECISIONS Decision 1), not raw `Records`. `DailyMetrics.date` is TEXT ISO-8601, so a
+    lexical `<=` + `ORDER BY date DESC` selects the chronologically latest reading on/before the
+    anchor. Returns `None` when no non-null reading exists at/before the anchor (caller falls
+    back to `goal_weight_kg`).
+    """
+    return session.scalars(
+        select(DailyMetrics.body_weight)
+        .where(
+            DailyMetrics.body_weight.is_not(None),
+            DailyMetrics.date <= anchor.isoformat(),
+        )
+        .order_by(DailyMetrics.date.desc())
+        .limit(1)
+    ).first()
+
+
 def _duration_minutes(w: Workouts) -> float:
     """Normalize a workout's `duration` to minutes via `duration_unit` (s→/60, min
     pass-through; unknown unit → 0 so only `activity_type` can flag it)."""
