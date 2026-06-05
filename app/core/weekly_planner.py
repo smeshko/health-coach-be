@@ -43,17 +43,29 @@ from app.core.cards import CARD_META
 from app.core.nodes import Node
 from app.core.profile import Profile, load_profile
 from app.core.task_context import TaskContext
-from app.database.models import DailyMetrics
+from app.database.models import DailyMetrics, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
 from app.services.derive.plan import PlannedSession, expand_plan
 from app.services.macros import WeeklyNutrition, compute_weekly_nutrition
+from app.services.recompute import (
+    QualityFocus,
+    StrengthPoint,
+    next_quality_focus,
+    ramp_cadence_for,
+    rederive_zones,
+    smooth_strength_trend,
+)
 from app.services.targets import WeeklyTargets, compute_targets
 
 # §5.1/§9 deload cadence — the 4-week block ``compute_budgets`` reads via its 0-based
 # ``iso_week_index`` (``(idx + 1) % 4 == 0`` → the 4th week deloads). Pinned here so the
 # week-in-block derivation matches the budget kernel's ``DELOAD_EVERY_N_WEEKS``.
 _DELOAD_BLOCK_WEEKS = 4
+
+# §10 monthly constants recompute cadence (DECISIONS D1): ``RecomputeConstants`` fires
+# when the ISO-week distance since the last recompute is ≥ this (4 ≈ monthly), or never.
+RECOMPUTE_EVERY_N_WEEKS = 4
 
 
 class WeeklyPlannerEvent(BaseModel):
@@ -128,6 +140,143 @@ def _aggregates_of(task_context: TaskContext) -> Aggregates:
     if output is None:
         raise ValueError("LoadAggregatesNode output missing — node order is wrong")
     return output.aggregates
+
+
+# ---------------------------------------------------------------------------
+# RecomputeConstants — the §10 monthly recompute orchestrator (E8·P5 helpers).
+# ---------------------------------------------------------------------------
+def _iso_week_monday(iso_week: str) -> date:
+    """The Monday (``date``) of an ISO week key (``YYYY-Www``) — year-boundary-safe."""
+    year_str, week_str = iso_week.split("-W")
+    return date.fromisocalendar(int(year_str), int(week_str), 1)
+
+
+def is_recompute_due(last_week: str | None, current_week: str) -> bool:
+    """Is the §10 monthly constants recompute due this ISO week? (DECISIONS D1).
+
+    ``True`` when never recomputed (``last_week is None``) **or** the real ISO-week
+    distance ``current_week − last_week`` is ``>= RECOMPUTE_EVERY_N_WEEKS`` (4 ≈ monthly).
+    The distance is computed via ``date.fromisocalendar`` on each week's Monday then
+    ``(d_now − d_last).days // 7`` — year-boundary-safe, **never** a lexical string
+    compare. Pure + total: a malformed or future ``last_week`` (distance ≤ 0) is **not**
+    due (idempotent on a same-week ``?refresh``/replay).
+    """
+    if last_week is None:
+        return True
+    distance_weeks = (_iso_week_monday(current_week) - _iso_week_monday(last_week)).days // 7
+    return distance_weeks >= RECOMPUTE_EVERY_N_WEEKS
+
+
+class RecomputeConstantsOutput(BaseModel):
+    """``RecomputeConstants``'s output (DECISIONS D1/D3).
+
+    ``constants_recomputed`` is the ``WeeklyPlan.data.constantsRecomputed`` flag; on a due
+    run it also carries the proposed-fresh ``Profile`` (for ``PersistPlanNode``'s
+    ``write_profile`` + downstream nodes) and the recomputed ``constants`` (for
+    ``inputs_snapshot`` + the quality pick the validator re-reads). On a not-due run only
+    the unchanged ``profile`` rides downstream (``constants_recomputed=False``).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    constants_recomputed: bool
+    profile: Profile | None = None
+    recomputed: dict | None = None
+
+
+def _strength_series(session: Session, column: str) -> list[StrengthPoint]:
+    """The weekly ``strength_tests`` series for one metric (``max_pushups``/``pullups``).
+
+    Reads ``(iso_week, max_*)`` rows ordered by week; a missed test (``NULL`` value) is
+    kept as a ``None``-valued ``StrengthPoint`` (``smooth_strength_trend`` drops it — a
+    missed test is "no data", never read as 0 reps).
+    """
+    col = getattr(StrengthTests, column)
+    rows = session.execute(
+        select(StrengthTests.iso_week, col).order_by(StrengthTests.iso_week)
+    ).all()
+    return [StrengthPoint(iso_week=week, value=value) for week, value in rows]
+
+
+class RecomputeConstants(Node):
+    """The §10 monthly recompute orchestrator — runs the E8·P5 helpers in memory (E8·P5).
+
+    Monthly-gated (``is_recompute_due``): on a **not-due** week it stores the unchanged
+    ``Profile`` for downstream nodes and ``save_output``s ``constants_recomputed=False``
+    (no helper call, no file write). On a **due** week it runs the four E8·P5 helpers
+    (``ramp_cadence``/``next_quality_focus``/``smooth_strength_trend``/``rederive_zones``),
+    **merges** their value-object outputs into a new **validated** ``Profile`` via
+    ``Profile.model_validate({**dump, **updates})`` (a full re-validate — ``model_copy(
+    update=…)`` does **not** re-run Pydantic v2 validators), stamps
+    ``meta.constants_recomputed_week``, and ``save_output``s the proposed-fresh ``Profile``
+    + the recomputed constants. It writes **no** file — ``PersistPlanNode`` does the atomic
+    ``write_profile`` **after** the validated plan row is staged (DECISIONS D3), so a failed
+    brief never advances ``profile.yaml``. The §10 arithmetic is **all** in E8·P5; this node
+    only orchestrates + decides staleness.
+    """
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        event: WeeklyPlannerEvent = task_context.event
+        profile = load_profile()
+
+        if not is_recompute_due(profile.meta.constants_recomputed_week, event.iso_week):
+            self.save_output(
+                RecomputeConstantsOutput(constants_recomputed=False, profile=profile)
+            )
+            return task_context
+
+        session = _session_of(task_context)
+        last_week = profile.meta.constants_recomputed_week
+        weeks_elapsed = (
+            RECOMPUTE_EVERY_N_WEEKS
+            if last_week is None
+            else (_iso_week_monday(event.iso_week) - _iso_week_monday(last_week)).days // 7
+        )
+
+        # --- The four E8·P5 helpers (value objects; this node writes nothing) ---
+        cadence = ramp_cadence_for(profile, weeks_since_last_bump=weeks_elapsed)
+        quality = next_quality_focus(_last_quality_focus(task_context))
+        pushups = smooth_strength_trend(_strength_series(session, "max_pushups"))
+        pullups = smooth_strength_trend(_strength_series(session, "max_pullups"))
+        zones = rederive_zones(
+            current_max_hr=profile.thresholds.max_hr,
+            current_rhr=profile.thresholds.rhr_baseline,
+            new_max_hr=profile.thresholds.max_hr,
+            new_rhr=profile.thresholds.rhr_baseline,
+        )
+
+        # --- Merge into a FULLY RE-VALIDATED Profile (re-runs E3·P1 validators) ---
+        dump = profile.model_dump(mode="json")
+        dump["thresholds"]["cadence_current_spm"] = cadence.new_spm
+        if zones.changed and zones.zones is not None:
+            dump["zones"] = {name: list(bounds) for name, bounds in zones.zones.items()}
+        dump["meta"]["constants_recomputed_week"] = event.iso_week
+        proposed = Profile.model_validate(dump)
+
+        recomputed = {
+            "cadence_spm": cadence.new_spm,
+            "cadence_bumped": cadence.bumped,
+            "quality_focus": quality.value,
+            "strength_pushups": {"smoothed": pushups.smoothed, "direction": pushups.direction},
+            "strength_pullups": {"smoothed": pullups.smoothed, "direction": pullups.direction},
+            "zones_changed": zones.changed,
+        }
+        self.save_output(
+            RecomputeConstantsOutput(
+                constants_recomputed=True, profile=proposed, recomputed=recomputed
+            )
+        )
+        return task_context
+
+
+def _last_quality_focus(task_context: TaskContext) -> QualityFocus | None:
+    """Last week's quality focus to flip off (``None`` cold start → THRESHOLD).
+
+    There is no stored prior-quality history in this phase's scope; the flip opens on
+    ``THRESHOLD`` (the base-phase quality day) and ``next_quality_focus`` is total over a
+    ``None``. A future phase that persists the prior pick threads it through here.
+    """
+    return None
 
 
 # ---------------------------------------------------------------------------

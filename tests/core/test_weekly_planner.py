@@ -26,9 +26,12 @@ from app.core.weekly_planner import (
     ComputeTargetsNode,
     DeriveSessionsNode,
     LoadAggregatesNode,
+    RecomputeConstants,
+    RecomputeConstantsOutput,
     WeeklyPlannerEvent,
+    is_recompute_due,
 )
-from app.database.models import DailyMetrics
+from app.database.models import DailyMetrics, StrengthTests
 
 from tests.core.test_profile import valid_profile_dict
 
@@ -40,16 +43,36 @@ WEEK_START = date(2026, 6, 1)
 # --------------------------------------------------------------------------- #
 # Fixtures: a temp profile.yaml + a seeded daily_metrics window.
 # --------------------------------------------------------------------------- #
-@pytest.fixture
-def profile_path(tmp_path, monkeypatch):
-    """Write the valid §5 profile to a temp file and point the loader at it."""
+def _write_profile_yaml(tmp_path, monkeypatch, *, constants_recomputed_week=None):
     d = valid_profile_dict()
     # `computed_at` is a date; dump as ISO so load round-trips through YAML.
     d["meta"]["computed_at"] = d["meta"]["computed_at"].isoformat()
+    if constants_recomputed_week is not None:
+        d["meta"]["constants_recomputed_week"] = constants_recomputed_week
     path = tmp_path / "profile.yaml"
     path.write_text(yaml.safe_dump(d, sort_keys=False), encoding="utf-8")
     monkeypatch.setenv("PROFILE_PATH", str(path))
     return path
+
+
+@pytest.fixture
+def profile_path(tmp_path, monkeypatch):
+    """Write the valid §5 profile to a temp file and point the loader at it."""
+    return _write_profile_yaml(tmp_path, monkeypatch)
+
+
+def seed_strength_tests(session) -> None:
+    """Seed a few weekly strength_tests rows (a rising push-up/pull-up trend)."""
+    for i, week in enumerate(["2026-W19", "2026-W20", "2026-W21", "2026-W22"]):
+        session.add(
+            StrengthTests(
+                date=f"2026-05-{10 + i:02d}",
+                iso_week=week,
+                max_pushups=40 + i,
+                max_pullups=10 + i,
+            )
+        )
+    session.flush()
 
 
 def seed_window(session, anchor: date, *, days: int = 28) -> None:
@@ -204,3 +227,118 @@ def test_compute_nutrition_node_maps_day_type_and_delegates(session, profile_pat
     assert by_day["tue"] == "hard"  # boxing
     assert by_day["wed"] == "moderate"  # easy_run
     assert nutrition.protein_g > 0
+
+
+# --------------------------------------------------------------------------- #
+# TASK-002: is_recompute_due (the monthly gate) + RecomputeConstants branches.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("last_week", "current_week", "due"),
+    [
+        (None, "2026-W23", True),  # never recomputed → due
+        ("2026-W22", "2026-W23", False),  # distance 1 → not due
+        ("2026-W21", "2026-W23", False),  # distance 2 → not due
+        ("2026-W20", "2026-W23", False),  # distance 3 → not due
+        ("2026-W19", "2026-W23", True),  # distance 4 → due
+        ("2025-W52", "2026-W04", True),  # year boundary: distance 4 → due
+        ("2025-W52", "2026-W02", False),  # year boundary: distance 2 → not due
+        ("2026-W23", "2026-W23", False),  # same week (?refresh replay) → not due
+    ],
+)
+def test_is_recompute_due_is_monthly(last_week, current_week, due):
+    assert is_recompute_due(last_week, current_week) is due
+
+
+def test_recompute_constants_not_due_branch(session, tmp_path, monkeypatch):
+    # Last recompute one week ago → not due: no helper called, no proposed write.
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
+    seed_strength_tests(session)
+
+    import app.core.weekly_planner as wp
+
+    called = []
+    for name in ("ramp_cadence_for", "next_quality_focus", "smooth_strength_trend", "rederive_zones"):
+        monkeypatch.setattr(wp, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} called when not due"))
+    monkeypatch.setattr(
+        __import__("app.core.profile", fromlist=["write_profile"]),
+        "write_profile",
+        lambda *a, **k: called.append("write"),
+    )
+
+    ctx = _ctx(session)
+    out_ctx = asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    output = out_ctx.nodes["RecomputeConstants"]
+    assert output.constants_recomputed is False
+    assert output.profile is not None  # unchanged profile stored for downstream nodes
+    assert output.recomputed is None
+    assert called == []  # no file write proposed
+
+
+def test_recompute_constants_due_branch_runs_helpers_in_memory(session, tmp_path, monkeypatch):
+    # Distance 4 → due: each E8·P5 helper runs (spied), a proposed validated Profile is
+    # stored with the new stamp, and NO file write happens in this node.
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+
+    import app.core.weekly_planner as wp
+
+    spied = {"ramp_cadence_for": 0, "next_quality_focus": 0, "smooth_strength_trend": 0, "rederive_zones": 0}
+    for name in spied:
+        real = getattr(wp, name)
+
+        def _spy(*a, _n=name, _real=real, **k):
+            spied[_n] += 1
+            return _real(*a, **k)
+
+        monkeypatch.setattr(wp, name, _spy)
+
+    # write_profile must NOT be imported/called by RecomputeConstants.
+    monkeypatch.setattr(
+        __import__("app.core.profile", fromlist=["write_profile"]),
+        "write_profile",
+        lambda *a, **k: pytest.fail("RecomputeConstants must not write profile.yaml"),
+    )
+
+    ctx = _ctx(session)
+    out_ctx = asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    output = out_ctx.nodes["RecomputeConstants"]
+
+    assert output.constants_recomputed is True
+    assert output.profile is not None
+    assert output.profile.meta.constants_recomputed_week == ISO_WEEK
+    assert output.recomputed is not None and "quality_focus" in output.recomputed
+    assert spied["ramp_cadence_for"] == 1
+    assert spied["next_quality_focus"] == 1
+    assert spied["smooth_strength_trend"] == 2  # once per metric (pushups + pullups)
+    assert spied["rederive_zones"] == 1
+
+
+def test_recompute_constants_due_merge_re_validates_pydantic(session, tmp_path, monkeypatch):
+    # An invalid helper output (cadence_current > cadence_target) must make the merge RAISE
+    # — Profile.model_validate re-runs the E3·P1 validators (NOT model_copy(update=…)).
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+
+    import app.core.weekly_planner as wp
+    from app.services.recompute import CadenceRamp
+
+    # Force cadence above the target (172) — an invalid Thresholds combination.
+    monkeypatch.setattr(wp, "ramp_cadence_for", lambda *a, **k: CadenceRamp(new_spm=200, bumped=True))
+
+    ctx = _ctx(session)
+    with pytest.raises(Exception):  # pydantic.ValidationError from the re-validate
+        asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    assert "RecomputeConstants" not in ctx.nodes  # nothing stored for PersistPlanNode
+
+
+def test_recompute_no_model_copy_update_in_source():
+    # The merge must use model_validate, never model_copy(update=…) (skips validation).
+    import pathlib
+
+    src = pathlib.Path("app/core/weekly_planner.py").read_text(encoding="utf-8")
+    assert "model_copy(update" not in src
+
+
+def test_recompute_constants_output_is_constructible():
+    # A bare not-due output and a full due output both construct.
+    assert RecomputeConstantsOutput(constants_recomputed=False).constants_recomputed is False
