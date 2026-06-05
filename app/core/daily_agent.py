@@ -292,7 +292,37 @@ def validate_daily_output(
     violations flow through E9·P1's single `ModelRetry` path; an empty list means a
     clean session.
     """
-    violations = list(validate_daily(out, ctx))
+    violations: list[Violation] = []
+
+    # Guard E7·P3's `validate_daily` against the permissive nullable dose: a daily
+    # `SessionPick` may parse with a None `durationMin[Low|High]` (MODELS marks the
+    # dose nullable), but `validate_daily` assumes a concrete `[low, high]` and
+    # would `TypeError` on None (unlike `validate_weekly`, which skips None doses).
+    # A daily pick is for *today* and must carry a concrete dose, so a missing one
+    # is a hard `Violation` the model retries on — not a crash that escapes the
+    # `@agent.output_validator` as an unmapped error. `validate_daily` runs only
+    # once every pick has a dose (else it would raise before returning).
+    incomplete = [
+        (where, pick)
+        for where, pick in (
+            ("session", out.session),
+            *(("alternative", alt) for alt in out.alternatives),
+        )
+        if pick.duration_min_low is None or pick.duration_min_high is None
+    ]
+    for where, pick in incomplete:
+        violations.append(
+            Violation(
+                rule="dose_out_of_band",
+                message=(
+                    f"{where} card {pick.card.value!r} is missing a concrete "
+                    "durationMinLow/durationMinHigh dose"
+                ),
+            )
+        )
+    if not incomplete:
+        violations.extend(validate_daily(out, ctx))
+
     for section in out.narrative:
         if section.type not in _DAILY_NARRATIVE_TYPES:
             violations.append(

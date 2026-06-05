@@ -483,3 +483,52 @@ def test_plan_narrative_section_retries(_no_anthropic_key, monkeypatch, _profile
     assert excinfo.value.code == "brief_generation_failed"
     assert calls["n"] >= 2
     assert node.node_name not in ctx.nodes
+
+
+def _missing_dose_args() -> dict:
+    """A brief whose session omits its dose (permissive nullable type allows it)."""
+    return {
+        "session": {"card": "vo2"},  # no durationMin* → None/None
+        "alternatives": [],
+        "skipOk": False,
+        "dayType": "hard",
+        "narrative": [{"type": "session", "heading": "T", "body": "x"}],
+    }
+
+
+def test_validate_fn_flags_missing_dose_instead_of_crashing():
+    """A None-dose pick is a hard `dose_out_of_band` Violation, NOT a TypeError —
+    the validator guards E7·P3's `validate_daily` (which assumes concrete doses)."""
+    from app.core.agent_node import _deps_to_validation_context
+    from app.core.constraints import Severity
+    from app.core.daily_agent import DailyDeps, validate_daily_output
+
+    out = DailyBriefLLMOutput.model_validate(_missing_dose_args())
+    deps = DailyDeps(
+        band=ReadinessBand.green, week_plan_cards=frozenset({WorkoutCard.vo2})
+    )
+    vctx = _deps_to_validation_context(deps)
+    violations = validate_daily_output(out, vctx)  # must not raise
+    assert any(
+        v.rule == "dose_out_of_band" and v.severity is Severity.hard for v in violations
+    )
+
+
+def test_missing_dose_brief_retries_to_failed_not_a_raw_crash(
+    _no_anthropic_key, monkeypatch, _profile
+):
+    """End-to-end: a model that omits the dose triggers a ModelRetry and surfaces
+    as a clean `brief_generation_failed`, never a raw TypeError out of process()."""
+    from app.core.agent_node import BriefGenerationError
+    from app.core.daily_agent import TuneSessionNode
+
+    model, calls = _function_model_returning(_missing_dose_args())
+    _patch_build_agent(monkeypatch, model)
+
+    ctx = _ctx_with(_profile)
+    node = TuneSessionNode(task_context=ctx)
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+    assert excinfo.value.code == "brief_generation_failed"
+    assert calls["n"] >= 2
+    assert node.node_name not in ctx.nodes
