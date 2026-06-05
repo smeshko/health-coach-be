@@ -93,12 +93,14 @@ check "runs as non-root user" "$(docker exec "$NAME" id -un 2>/dev/null)" "app"
 
 echo "== 4. fail-fast without API_TOKEN =="
 ff_exit=0
-docker run --rm -e APP_DB_PATH=/data/app.db "$IMAGE" >/dev/null 2>&1 || ff_exit=$?
-if [ "$ff_exit" != "0" ]; then
-    echo "  PASS: missing API_TOKEN → non-zero exit ($ff_exit), did not serve"
+ff_out="$(docker run --rm -e APP_DB_PATH=/data/app.db "$IMAGE" 2>&1)" || ff_exit=$?
+# Assert BOTH a non-zero exit AND that the failure is the missing API_TOKEN (the pydantic
+# validation error names the field) — so an unrelated crash can't false-pass this check.
+if [ "$ff_exit" != "0" ] && printf '%s' "$ff_out" | grep -qi "api_token"; then
+    echo "  PASS: missing API_TOKEN → non-zero exit ($ff_exit), did not serve (validation error names api_token)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: missing API_TOKEN booted anyway (exit 0)"
+    echo "  FAIL: missing API_TOKEN did not fail-fast on the token (exit $ff_exit)"
     FAIL=$((FAIL + 1))
 fi
 
