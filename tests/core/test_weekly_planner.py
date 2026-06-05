@@ -243,6 +243,57 @@ def test_compute_nutrition_node_maps_day_type_and_delegates(session, profile_pat
     assert nutrition.protein_g > 0
 
 
+def test_compute_nutrition_node_last_week_null_and_object(session, profile_path):
+    """E13·P1: a no-intake window emits `lastWeek: null`; a logged-intake window emits the
+    camelCase scorecard (averages rounded, counts None pre-P2)."""
+    from datetime import timedelta
+
+    from app.services.aggregates import load_aggregates
+
+    # (a) No dietary intake in the 7d window → lastWeek is null (the empty state).
+    seed_window(session, ANCHOR)  # training rows only, no kcal_in/protein_in_g logged
+    ctx = _ctx(
+        session,
+        LoadAggregatesNode=LoadAggregatesNode.OutputType(aggregates=load_aggregates(session, ANCHOR)),
+        GeneratePlanNode=_clean_llm_output(),
+    )
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    out_ctx = asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+    nutrition = out_ctx.nodes["ComputeNutritionNode"].nutrition
+    assert nutrition.last_week is None
+    assert nutrition.model_dump(mode="json")["lastWeek"] is None
+
+    # (b) A non-overlapping window WITH logged intake → camelCase object, averages rounded.
+    logged_anchor = ANCHOR - timedelta(days=40)
+    for offset, (kcal, protein) in enumerate([(2600.0, 150.0), (2610.0, 138.5)]):
+        session.add(
+            DailyMetrics(
+                date=(logged_anchor - timedelta(days=offset)).isoformat(),
+                kcal_in=kcal,
+                protein_in_g=protein,
+            )
+        )
+    session.flush()
+    ctx2 = _ctx(
+        session,
+        LoadAggregatesNode=LoadAggregatesNode.OutputType(
+            aggregates=load_aggregates(session, logged_anchor)
+        ),
+        GeneratePlanNode=_clean_llm_output(),
+    )
+    asyncio.run(DeriveSessionsNode(task_context=ctx2).process(ctx2))
+    out_ctx2 = asyncio.run(ComputeNutritionNode(task_context=ctx2).process(ctx2))
+    last_week = out_ctx2.nodes["ComputeNutritionNode"].nutrition.model_dump(mode="json")["lastWeek"]
+    assert set(last_week) == {
+        "avgCaloriesKcal", "avgProteinG", "proteinHitDays", "daysOverTarget", "daysUnderTarget",
+    }
+    assert last_week["avgCaloriesKcal"] == 2605  # (2600 + 2610) / 2
+    assert last_week["avgProteinG"] == 144  # (150 + 138.5) / 2 = 144.25 → floor(144.75)
+    assert last_week["proteinHitDays"] is None  # target-gated, None until E13·P2
+    assert last_week["daysOverTarget"] is None
+    assert last_week["daysUnderTarget"] is None
+
+
 # --------------------------------------------------------------------------- #
 # TASK-002: is_recompute_due (the monthly gate) + RecomputeConstants branches.
 # --------------------------------------------------------------------------- #
