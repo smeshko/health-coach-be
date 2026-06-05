@@ -22,6 +22,7 @@ dependencies = [
     # Portable IANA tz database so ZoneInfo("Europe/Sofia") resolves in CI /
     # containers that lack the system copy — period keys must be DST-aware (E2 R2).
     "tzdata>=2024.1",
+    "langfuse>=3",
 ]
 
 [build-system]
