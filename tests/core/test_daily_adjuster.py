@@ -11,6 +11,7 @@ E10·P2 ``test_weekly_planner.py`` pattern.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, timedelta
 
 import pytest
@@ -374,3 +375,118 @@ def test_derive_session_node_floors_day_type_for_hard_card(session, profile_path
     )
     asyncio.run(DeriveSessionNode(task_context=ctx).process(ctx))
     assert ctx.nodes["DeriveSessionNode"].macro_focus.day_type is DayType.hard
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003: ValidateSessionNode + PersistSuggestionNode.
+# --------------------------------------------------------------------------- #
+def _readiness_output(band="green", score=100):
+    from app.core.daily_adjuster import ComputeReadinessNode
+    from app.core.enums import ReadinessBand
+    from app.services.readiness import Readiness
+
+    return ComputeReadinessNode.OutputType(
+        readiness=Readiness(score=score, band=ReadinessBand(band), penalties=[])
+    )
+
+
+def test_validate_session_node_raises_on_hard_violation(session, profile_path):
+    from app.core.agent_node import BriefGenerationError
+    from app.core.daily_adjuster import ValidateSessionNode
+
+    seed_metrics(session)
+    # AMBER band + a full vo2 (z5) card → amber_full_intensity (a hard violation).
+    ctx = _ctx(
+        session,
+        ComputeReadinessNode=_readiness_output(band="amber", score=60),
+        TuneSessionNode=_clean_daily_output(card="vo2", day_type="hard"),
+    )
+    with pytest.raises(BriefGenerationError) as exc:
+        asyncio.run(ValidateSessionNode(task_context=ctx).process(ctx))
+    assert exc.value.code == "brief_generation_failed"
+
+
+def test_validate_session_node_passes_clean_session(session, profile_path):
+    from app.core.daily_adjuster import ValidateSessionNode
+
+    seed_metrics(session)
+    ctx = _ctx(
+        session,
+        ComputeReadinessNode=_readiness_output(band="green"),
+        TuneSessionNode=_clean_daily_output(card="vo2", day_type="hard"),
+    )
+    out_ctx = asyncio.run(ValidateSessionNode(task_context=ctx).process(ctx))
+    assert out_ctx is ctx  # no raise
+
+
+def _clean_persist_ctx(session):
+    """A ctx with readiness bridged + a clean gate + DeriveSessionNode run."""
+    from app.core.daily_adjuster import (
+        ComputeReadinessNode,
+        DeriveSessionNode,
+    )
+    from app.services.safety_gate import SafetyGate
+
+    seed_metrics(
+        session, yesterday_kwargs=dict(kcal_in=2400.0, protein_in_g=150.0)
+    )
+    ctx = _ctx(session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="hard"))
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))  # bridges metadata
+    ctx.nodes["GateTrippedRoute"] = SafetyGate(triggered=False)
+    asyncio.run(DeriveSessionNode(task_context=ctx).process(ctx))
+    return ctx
+
+
+def test_persist_suggestion_node_writes_one_row_with_columns(session, profile_path):
+    from app.core.daily_adjuster import PersistSuggestionNode
+
+    ctx = _clean_persist_ctx(session)
+    asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
+
+    rows = session.execute(select(Suggestions)).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.date == TODAY.isoformat()
+    assert row.readiness_score == 100 and row.band == "green"
+    assert row.safety_gate_tripped == 0 and row.gate_reason is None
+    assert row.model and row.constitution_version and row.created_at
+    # payload is the { data, narrative } wire brief.
+    brief = json.loads(row.payload)
+    assert set(brief) == {"data", "narrative"}
+    data = brief["data"]
+    assert data["session"]["card"] == "vo2"
+    assert "macroFocus" in data and "intakeYesterday" in data and data["skipOk"] is False
+
+
+def test_persist_suggestion_node_writes_back_readiness_band(session, profile_path):
+    from app.core.daily_adjuster import PersistSuggestionNode
+
+    ctx = _clean_persist_ctx(session)
+    asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
+
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score == 100 and dm.band == "green"
+
+
+def test_persist_inputs_snapshot_carries_readiness_gate_band_constants(session, profile_path):
+    from app.core.daily_adjuster import PersistSuggestionNode
+
+    ctx = _clean_persist_ctx(session)
+    asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
+
+    row = session.execute(select(Suggestions)).scalars().one()
+    snapshot = json.loads(row.inputs_snapshot)
+    assert set(snapshot) == {"readiness", "safety_gate", "band", "constants"}
+
+
+def test_persist_suggestion_node_does_not_commit_or_lookup(session, profile_path, monkeypatch):
+    from app.core.daily_adjuster import PersistSuggestionNode
+
+    monkeypatch.setattr(
+        session, "commit", lambda *a, **k: pytest.fail("PersistSuggestionNode committed")
+    )
+    ctx = _clean_persist_ctx(session)
+    asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
+    assert session.execute(select(Suggestions)).scalars().all()  # row staged, uncommitted

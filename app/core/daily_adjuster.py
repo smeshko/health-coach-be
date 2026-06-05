@@ -42,8 +42,10 @@ from sqlalchemy.orm import Session
 
 from app.api.schemas.daily import IntakeSummary, IntakeVsTarget
 from app.api.schemas.narrative import NarrativeSection
+from app.core.agent_node import BriefGenerationError
 from app.core.cards import CARD_META, all_cards, floors_day_type_hard
-from app.core.daily_agent import TuneSessionNode
+from app.core.constraints import Severity, ValidationContext, WeeklyBudgets
+from app.core.daily_agent import TuneSessionNode, validate_daily_output
 from app.core.enums import DayType, NarrativeType, WorkoutCard
 from app.core.nodes import BaseRouter, Node, RouterNode
 from app.core.profile import Profile, load_profile
@@ -597,4 +599,106 @@ class DeriveSessionNode(Node):
                 intake_yesterday=intake_yesterday,
             )
         )
+        return task_context
+
+
+# --------------------------------------------------------------------------- #
+# ValidateSessionNode — the belt-and-suspenders re-check before persist (E7·P3 + E9).
+# --------------------------------------------------------------------------- #
+# `validate_daily` ignores `ctx.budgets`, but `ValidationContext` requires one (it is a
+# weekly field) — a zero sentinel keeps the daily re-check budget-free.
+_SENTINEL_BUDGETS = WeeklyBudgets(
+    hard_days=0, strength_sessions=0, long_run_km=None, deload=False
+)
+
+
+class ValidateSessionNode(Node):
+    """The deterministic belt-and-suspenders re-check before persist (LLM §4).
+
+    The **second** layer of LLM §4's "two layers, one source of truth": the first is
+    ``TuneSessionNode``'s ``@agent.output_validator`` (it ``ModelRetry``s ≤2 inside the
+    agent run — E11·P1/E9); this node re-runs the **same** pure ``validate_daily``
+    (via E11·P1's ``validate_daily_output`` wrapper, so the daily narrative-subset + the
+    None-dose guard apply identically) over the LLM picks, building a ``ValidationContext``
+    from the code-computed ``Readiness.band`` + the day's ``knee_pain`` + the week's plan
+    cards. On **any** ``Severity.hard`` ``Violation`` it raises
+    ``BriefGenerationError(brief_generation_failed)`` — so a constraint-breaking session
+    never reaches ``PersistSuggestionNode``/the cache. It does **not** ``ModelRetry`` and
+    does **not** re-run the agent. Runs **only** on the clean path. Encodes no rule.
+    """
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        session = _session_of(task_context)
+        event: DailyAdjusterEvent = task_context.event
+        out = _llm_output(task_context)
+        readiness = _readiness_of(task_context)
+
+        validation_ctx = ValidationContext(
+            budgets=_SENTINEL_BUDGETS,
+            band=readiness.band,
+            knee_pain=_checkin_flags(session, event.date)["knee_pain"],
+            week_plan_cards=_week_plan_cards(session, event.date),
+        )
+        violations = validate_daily_output(out, validation_ctx)
+        if any(v.severity is Severity.hard for v in violations):
+            raise BriefGenerationError(code="brief_generation_failed")
+        return task_context
+
+
+# --------------------------------------------------------------------------- #
+# PersistSuggestionNode — the clean-path terminal (write suggestions + write-back).
+# --------------------------------------------------------------------------- #
+def _agent_model_id() -> str:
+    """The agent's ``model_id`` for the ``suggestions.model`` column.
+
+    Read from ``Settings`` (the default Opus id) so a Sonnet downshift is a config change.
+    Imported lazily so this module's import doesn't pull the PydanticAI harness at load.
+    """
+    from app.core.settings import Settings
+
+    return Settings.model_fields["model_id"].default
+
+
+def _derived_of(task_context: TaskContext):
+    output = task_context.nodes.get(DeriveSessionNode.__name__)
+    if output is None:
+        raise ValueError("DeriveSessionNode output missing — node order is wrong")
+    return output
+
+
+class PersistSuggestionNode(Node):
+    """The clean-path terminal — write one ``suggestions`` row + the ``daily_metrics``
+    readiness/band snapshot (no commit, no lookup, no wire response).
+
+    Reads the ``Readiness`` (``ComputeReadinessNode``), the ``SafetyGate``
+    (``GateTrippedRoute``), the assembled ``session``/``alternatives``/``skipOk``/
+    ``MacroFocus``/``IntakeSummary``/``narrative`` (``DeriveSessionNode``), and the agent
+    ``model_id``; calls the **shared** ``_persist_brief`` (``model`` = the agent id) and
+    ``save_output``s the structured ``{ data, narrative }`` brief so E11·P3 wraps it. It
+    does **not** lookup-by-``date``, cache-hit short-circuit, ``?refresh``-delete, commit,
+    or build the wire response (all E11·P3). The gated terminal ``SafetyRestNode`` persists
+    itself via the same helper (``model=None``) — there is no edge to this node from there.
+    """
+
+    class OutputType(BaseModel):
+        brief: dict
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        readiness = _readiness_of(task_context)
+        gate = _gate_of(task_context)
+        derived = _derived_of(task_context)
+        brief = _persist_brief(
+            task_context,
+            session_block=derived.session,
+            alternatives=list(derived.alternatives),
+            skip_ok=derived.skip_ok,
+            day_type=derived.day_type,
+            macro_focus=derived.macro_focus,
+            intake_yesterday=derived.intake_yesterday,
+            readiness=readiness,
+            gate=gate,
+            narrative=list(derived.narrative),
+            model=_agent_model_id(),
+        )
+        self.save_output(self.OutputType(brief=brief))
         return task_context
