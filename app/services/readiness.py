@@ -219,3 +219,57 @@ def band_for(score: int) -> ReadinessBand:
     if score >= AMBER_MIN:
         return ReadinessBand.amber
     return ReadinessBand.red
+
+
+@dataclass(frozen=True)
+class Readiness:
+    """The readiness result (MODELS ``Readiness``).
+
+    ``score`` is the clamped ``int`` 0–100; ``band`` is the lowercase
+    ``ReadinessBand``; ``penalties`` is the itemised, fixed-order list of the firing
+    ``ReadinessPenalty`` entries (``score == 100 + Σ points`` before clamping).
+    """
+
+    score: int
+    band: ReadinessBand
+    penalties: list[ReadinessPenalty]
+
+
+def compute_readiness(
+    *,
+    sleep_h: float | None,
+    hrv_sdnn: float | None,
+    hrv_30d_mean: float | None,
+    hrv_30d_sd: float | None,
+    rhr: float | None,
+    rhr_30d_mean: float | None,
+    yesterday_hard_day: bool,
+    yesterday_boxing: bool = False,
+    yesterday_sleep_h: float | None = None,
+) -> Readiness:
+    """Compute the objective-only readiness score, band, and itemised penalties (§6.1).
+
+    The single public entry point E10/E11 call. Start at 100, subtract the five itemised
+    §6.1 penalties, clamp to ``[0, 100]``, and band the result. **Keyword-only,
+    objective-only** — there is **no** energy/soreness/motivation/subjective parameter
+    (MODELS; CONSTITUTION §6.1); the keyword-only signature also prevents pairing the
+    wrong rolling baseline with a reading.
+
+    The HRV/RHR baselines are the **rolling** ``daily_metrics`` values (E6·P2); a null
+    rolling baseline (sparse/day-one window) skips that term. The ``yesterday_*`` inputs
+    are **yesterday's** values — the E11 loader passes the prior day's row, never today's.
+    Pure: no DB read/write, no LLM, no HTTP (E10/E11 own the load + write-back).
+    """
+    penalties = collect_penalties(
+        sleep_h=sleep_h,
+        hrv_sdnn=hrv_sdnn,
+        hrv_30d_mean=hrv_30d_mean,
+        hrv_30d_sd=hrv_30d_sd,
+        rhr=rhr,
+        rhr_30d_mean=rhr_30d_mean,
+        yesterday_hard_day=yesterday_hard_day,
+        yesterday_boxing=yesterday_boxing,
+        yesterday_sleep_h=yesterday_sleep_h,
+    )
+    score = assemble_score(penalties)
+    return Readiness(score=score, band=band_for(score), penalties=penalties)

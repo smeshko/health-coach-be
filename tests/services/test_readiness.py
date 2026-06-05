@@ -16,15 +16,26 @@ from app.services.readiness import (
     SLEEP_BELOW_5H,
     SLEEP_BELOW_7H,
     YESTERDAY_HARD_DAY,
+    Readiness,
     ReadinessPenalty,
     assemble_score,
     band_for,
     collect_penalties,
+    compute_readiness,
     hrv_penalty,
     rhr_penalty,
     sleep_penalty,
     yesterday_hard_penalty,
 )
+
+# The five objective MODELS factor keys — readiness is objective-only (no subjective).
+_FIVE_FACTORS = {
+    SLEEP_BELOW_7H,
+    SLEEP_BELOW_5H,
+    HRV_BELOW_BASELINE,
+    RHR_ABOVE_BASELINE,
+    YESTERDAY_HARD_DAY,
+}
 
 # --- sleep_penalty (§6.1 "−5 per hour below 7 (5 h → −10)"; "<5 h: additional −10") ---
 
@@ -319,3 +330,182 @@ def test_band_values_are_lowercase() -> None:
     assert ReadinessBand.green.value == "green"
     assert ReadinessBand.amber.value == "amber"
     assert ReadinessBand.red.value == "red"
+
+
+# --- compute_readiness — the public, objective-only entry point (TASK-003) ---
+
+
+def test_compute_readiness_epic_section4_worked_example_exact() -> None:
+    # Epic §4 / DECISIONS Decision 2 worked example: sleep 6.5 h + HRV 1 SD low + yesterday
+    # hard, RHR at baseline. round(-5*(7-6.5)) = -2; z == 1 -> -15; hard -> -15.
+    # 100 − 2 − 15 − 15 = 68 → amber.
+    result = compute_readiness(
+        sleep_h=6.5,
+        hrv_sdnn=90.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,  # z == 1.0 -> hrv_below_baseline -15
+        rhr=50.0,
+        rhr_30d_mean=50.0,  # delta 0 -> no rhr penalty
+        yesterday_hard_day=True,
+        yesterday_boxing=False,
+        yesterday_sleep_h=8.0,
+    )
+    assert result.score == 68
+    assert result.band == ReadinessBand.amber
+    assert result.penalties == [
+        ReadinessPenalty(SLEEP_BELOW_7H, -2),
+        ReadinessPenalty(HRV_BELOW_BASELINE, -15),
+        ReadinessPenalty(YESTERDAY_HARD_DAY, -15),
+    ]
+
+
+def test_compute_readiness_models_doc_example_exact() -> None:
+    # MODELS doc example: [sleep_below_7h -10, hrv_below_baseline -15, yesterday_hard_day
+    # -15] -> score 60, band amber. sleep 5.1 h -> round(-5*1.9) = -10 with NO below_5h.
+    result = compute_readiness(
+        sleep_h=5.1,
+        hrv_sdnn=90.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,  # z == 1 -> -15
+        rhr=50.0,
+        rhr_30d_mean=50.0,
+        yesterday_hard_day=True,
+        yesterday_boxing=False,
+        yesterday_sleep_h=8.0,
+    )
+    assert result.score == 60
+    assert result.band == ReadinessBand.amber
+    assert result.penalties == [
+        ReadinessPenalty(SLEEP_BELOW_7H, -10),
+        ReadinessPenalty(HRV_BELOW_BASELINE, -15),
+        ReadinessPenalty(YESTERDAY_HARD_DAY, -15),
+    ]
+
+
+def test_compute_readiness_worst_case_clamps_to_0_red() -> None:
+    # Inputs whose raw penalty sum is exactly −100: 3.0 h sleep (sleep_below_7h -20 +
+    # sleep_below_5h -10) + HRV >1 SD (-25) + RHR >+7 (-20) + boxing & <6 h (-25) = −100.
+    result = compute_readiness(
+        sleep_h=3.0,
+        hrv_sdnn=70.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,  # z = 3 -> -25
+        rhr=60.0,
+        rhr_30d_mean=50.0,  # delta 10 -> -20
+        yesterday_hard_day=True,
+        yesterday_boxing=True,
+        yesterday_sleep_h=5.0,  # boxing & <6 h -> -25
+    )
+    assert result.score == 0
+    assert result.band == ReadinessBand.red
+
+
+def test_compute_readiness_clean_day_is_100_green_no_penalties() -> None:
+    result = compute_readiness(
+        sleep_h=8.0,
+        hrv_sdnn=110.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,  # above baseline -> none
+        rhr=48.0,
+        rhr_30d_mean=50.0,  # below band -> none
+        yesterday_hard_day=False,
+    )
+    assert result.score == 100
+    assert result.band == ReadinessBand.green
+    assert result.penalties == []
+
+
+def test_compute_readiness_objective_only_no_subjective_param() -> None:
+    # The signature exposes no energy/soreness/motivation/RPE-feel parameter.
+    import inspect
+
+    params = set(inspect.signature(compute_readiness).parameters)
+    assert "energy" not in params
+    assert "soreness" not in params
+    assert "motivation" not in params
+    # the parameter universe is purely physiological
+    assert params == {
+        "sleep_h",
+        "hrv_sdnn",
+        "hrv_30d_mean",
+        "hrv_30d_sd",
+        "rhr",
+        "rhr_30d_mean",
+        "yesterday_hard_day",
+        "yesterday_boxing",
+        "yesterday_sleep_h",
+    }
+
+
+def test_compute_readiness_factor_universe_is_the_five_keys() -> None:
+    # Across a representative grid, the only factors ever emitted are the five MODELS keys.
+    emitted: set[str] = set()
+    for sleep_h in (8.0, 6.5, 4.5, 3.0, None):
+        for hrv in ((110.0, 100.0, 10.0), (90.0, 100.0, 10.0), (70.0, 100.0, 10.0), (None, None, None)):
+            for rhr_pair in ((48.0, 50.0), (56.0, 50.0), (60.0, 50.0), (None, None)):
+                for hard, box, ysleep in ((False, False, 8.0), (True, False, 8.0), (True, True, 5.0)):
+                    result = compute_readiness(
+                        sleep_h=sleep_h,
+                        hrv_sdnn=hrv[0],
+                        hrv_30d_mean=hrv[1],
+                        hrv_30d_sd=hrv[2],
+                        rhr=rhr_pair[0],
+                        rhr_30d_mean=rhr_pair[1],
+                        yesterday_hard_day=hard,
+                        yesterday_boxing=box,
+                        yesterday_sleep_h=ysleep,
+                    )
+                    emitted.update(p.factor for p in result.penalties)
+    assert emitted <= _FIVE_FACTORS
+
+
+def test_compute_readiness_day_one_sparse_baseline() -> None:
+    # Null rolling baselines (E6·P2 sparse/day-one window) -> skip HRV/RHR, no exception.
+    # sleep 6.0 -> sleep_below_7h -5; yesterday hard -> -15. 100 − 5 − 15 = 80 → green.
+    result = compute_readiness(
+        sleep_h=6.0,
+        hrv_sdnn=85.0,
+        hrv_30d_mean=None,
+        hrv_30d_sd=None,
+        rhr=58.0,
+        rhr_30d_mean=None,
+        yesterday_hard_day=True,
+    )
+    assert result.score == 80
+    assert result.band == ReadinessBand.green
+    factors = {p.factor for p in result.penalties}
+    assert HRV_BELOW_BASELINE not in factors
+    assert RHR_ABOVE_BASELINE not in factors
+    assert factors == {SLEEP_BELOW_7H, YESTERDAY_HARD_DAY}
+
+
+def test_compute_readiness_boxing_variant_same_factor_key() -> None:
+    result = compute_readiness(
+        sleep_h=8.0,
+        hrv_sdnn=110.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,
+        rhr=48.0,
+        rhr_30d_mean=50.0,
+        yesterday_hard_day=True,
+        yesterday_boxing=True,
+        yesterday_sleep_h=5.0,
+    )
+    hard_entries = [p for p in result.penalties if p.factor == YESTERDAY_HARD_DAY]
+    assert hard_entries == [ReadinessPenalty(YESTERDAY_HARD_DAY, -25)]
+
+
+def test_readiness_result_shape() -> None:
+    result = compute_readiness(
+        sleep_h=8.0,
+        hrv_sdnn=110.0,
+        hrv_30d_mean=100.0,
+        hrv_30d_sd=10.0,
+        rhr=48.0,
+        rhr_30d_mean=50.0,
+        yesterday_hard_day=False,
+    )
+    assert isinstance(result, Readiness)
+    assert isinstance(result.score, int)
+    assert isinstance(result.band, ReadinessBand)
+    assert isinstance(result.penalties, list)
