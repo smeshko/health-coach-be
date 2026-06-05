@@ -17,15 +17,29 @@ The two concrete `*LLMOutput` types, the user-context JSON builder, the
 E11 / E12 — this module stays **generic over the OutputType** and FastAPI-free.
 """
 
+import asyncio
 from abc import abstractmethod
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 
+import httpx
 from pydantic import BaseModel
-from pydantic_ai import Agent, ToolOutput
+from pydantic_ai import (
+    Agent,
+    AgentRunError,
+    ModelHTTPError,
+    ToolOutput,
+)
 from pydantic_ai.settings import ModelSettings
 
 from app.core.nodes import AgentConfig, AgentNode
 from app.core.task_context import TaskContext
+
+# The stable machine codes MODELS "Errors" lists for the LLM failure path (LLM §5).
+ErrorCodeT = Literal["brief_generation_failed", "upstream_timeout"]
+
+# HTTP statuses that mean the upstream timed out (request timeout / gateway timeout),
+# so a timeout-flavoured ModelHTTPError maps to upstream_timeout, not the generic code.
+_TIMEOUT_STATUS_CODES = frozenset({408, 504})
 
 # Real type parameters so a concrete weekly/daily node specialises the base with its
 # own deps + `*LLMOutput` (E10/E11) — the brief-agnostic-but-type-safe contract the
@@ -77,16 +91,46 @@ def build_agent(
     )
 
 
+class BriefGenerationError(Exception):
+    """In-engine signal that an LLM brief call failed (LLM §5; MODELS Errors).
+
+    Carries the stable machine `code` — `brief_generation_failed` or `upstream_timeout`
+    — that the E10/E11 **route** layer later renders into the MODELS
+    `{ error: { code, message, detail } }` envelope. It builds **no** HTTP envelope
+    itself (no FastAPI in `app/core/`); the route layer owns the wire shape + status.
+    """
+
+    def __init__(
+        self,
+        code: ErrorCodeT,
+        message: str | None = None,
+        detail: str | None = None,
+    ):
+        self.code: ErrorCodeT = code
+        self.message: str | None = message
+        self.detail: str | None = detail
+        super().__init__(message or code)
+
+
+def _is_timeout(exc: Exception) -> bool:
+    """True if `exc` is an upstream timeout (vs a generic LLM failure)."""
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException)):
+        return True
+    if isinstance(exc, ModelHTTPError) and exc.status_code in _TIMEOUT_STATUS_CODES:
+        return True
+    return False
+
+
 class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     """A generic, brief-agnostic `AgentNode` wrapping a PydanticAI `Agent` (E9·P1).
 
     Subclasses E1's abstract `AgentNode(Node, ABC)` and fills the `process()` it left
     open — honouring the existing seam (`get_agent_config()`, the `DepsType`/`OutputType`
     class attrs) rather than redefining it; `nodes.py` is **not** edited. It is generic
-    over the deps + output types so E10 (weekly) and E11 (daily) each specialise it with
-    their own `*LLMOutput` and deps:
-
-        class GeneratePlanNode(PydanticAgentNode[WeeklyDeps, WeeklyPlanLLMOutput]): ...
+    over the deps + output types so the E10 (weekly) and E11 (daily) nodes each specialise
+    it with their own deps + output models — e.g. ``class WeeklyNode(PydanticAgentNode[
+    WeeklyDeps, WeeklyOut]): ...`` — keeping this base brief-agnostic (it imports neither
+    concrete output type).
 
     Two seams the **context assembly (E9·P2)** fills are left abstract:
     `build_system_prompt` (the rendered constitution — a default may delegate to E3's
@@ -113,8 +157,14 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
         Runs the agent with **async** `await agent.run(...)` — the workflow runner already
         awaits `process` (E1 `workflow.py`), so a sync `run_sync` here would nest an event
         loop and raise. On success the validated `OutputType` lands in
-        `task_context.nodes[node_name]` via E1's `save_output`. The failure mapping
-        (timeout / retry exhaustion → `BriefGenerationError`) is added in TASK-003.
+        `task_context.nodes[node_name]` via E1's `save_output`.
+
+        On failure it raises a mapped `BriefGenerationError` (LLM §5; MODELS Errors) — a
+        **timeout** → `upstream_timeout`, exhausted retries / invalid structure / any other
+        model-HTTP failure → `brief_generation_failed`, with the cause chained. There is
+        **no synthetic fallback**: a failure raises and `save_output` never runs, so nothing
+        half-baked lands in `task_context.nodes` for a downstream node to read (LLM §2/§5
+        "Fallback: none").
         """
         config = self.get_agent_config()
         agent = build_agent(
@@ -122,9 +172,19 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             system_prompt=self.build_system_prompt(task_context),
             deps_type=self.DepsType,
         )
-        result = await agent.run(
-            self.build_run_input(task_context),
-            deps=self.build_deps(task_context),
-        )
+        try:
+            result = await agent.run(
+                self.build_run_input(task_context),
+                deps=self.build_deps(task_context),
+            )
+        except Exception as exc:
+            if _is_timeout(exc):
+                raise BriefGenerationError(code="upstream_timeout") from exc
+            # Exhausted retries (UnexpectedModelBehavior), invalid structure, and every
+            # other model/HTTP failure (ModelHTTPError/ModelAPIError) derive from
+            # AgentRunError → the generic LLM-failure code.
+            if isinstance(exc, AgentRunError):
+                raise BriefGenerationError(code="brief_generation_failed") from exc
+            raise
         self.save_output(result.output)
         return task_context

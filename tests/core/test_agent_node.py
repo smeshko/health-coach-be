@@ -190,14 +190,16 @@ def _toy_agent_node_cls(out_type: type[BaseModel], *, run_input_marker: str = "U
     return _ToyAgentNode
 
 
-def _patch_build_agent(monkeypatch: pytest.MonkeyPatch, model) -> None:
+def _patch_build_agent(monkeypatch: pytest.MonkeyPatch, model, *, validator=None) -> None:
     """Drive `process()`'s inner agent with a mock `model` via the official override seam.
 
     `process()` builds its agent internally, so the test calls the **real** `build_agent`
     (keeping every LLM §2 setting under test) and wraps the agent's `run` so the call
     happens inside `agent.override(model=…)` — PydanticAI's supported in-process test
     seam. Entering the override **inside** the run coroutine keeps its `ContextVar` in the
-    run's own event loop. No live Anthropic call, no network, no key.
+    run's own event loop. An optional `validator` registers a trivial test-only
+    `@agent.output_validator` (standing in for E9·P2's real one) to exercise the
+    retry-exhaustion path. No live Anthropic call, no network, no key.
     """
     import app.core.agent_node as agent_node_mod
 
@@ -205,6 +207,8 @@ def _patch_build_agent(monkeypatch: pytest.MonkeyPatch, model) -> None:
 
     def _build_with_mock_model(*args, **kwargs):
         agent = real_build(*args, **kwargs)
+        if validator is not None:
+            agent.output_validator(validator)
         original_run = agent.run
 
         async def _run_under_override(*run_args, **run_kwargs):
@@ -329,3 +333,193 @@ def test_process_reads_build_run_input_seam(
     asyncio.run(node.process(ctx))
 
     assert seen.get("user") == "UNIQUE-USER-CONTEXT-123"
+
+
+# --------------------------------------------------------------------------- #
+# E9·P1 — failure mapping (TASK-003): retry exhaustion / timeout / HTTP → codes
+# --------------------------------------------------------------------------- #
+
+
+def _valid_tool_call_model():
+    """A FunctionModel that always calls the output tool with valid args, counting calls."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    calls = {"n": 0}
+
+    def _always_call(messages, info: AgentInfo) -> ModelResponse:
+        calls["n"] += 1
+        tool = info.output_tools[0]
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name=tool.name, args={"pick": "x", "note": "y"})]
+        )
+
+    return FunctionModel(_always_call), calls
+
+
+def test_exhausted_retries_map_to_brief_generation_failed(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai import ModelRetry
+
+    from app.core.agent_node import BriefGenerationError
+
+    model, calls = _valid_tool_call_model()
+
+    # A trivial test-only validator that always rejects, standing in for E9·P2's real
+    # @agent.output_validator — it consumes the retries=2 budget then surfaces an error.
+    def _always_retry(ctx, output):
+        raise ModelRetry("always reject")
+
+    _patch_build_agent(monkeypatch, model, validator=_always_retry)
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "brief_generation_failed"
+    # 1 initial + 2 retries = at most 3 model invocations (retries <= 2).
+    assert calls["n"] <= 3
+    # No synthetic fallback: nothing stored for the node on failure.
+    assert node.node_name not in ctx.nodes
+
+
+def test_timeout_maps_to_upstream_timeout(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.core.agent_node import BriefGenerationError
+
+    def _raise_timeout(messages, info: AgentInfo) -> ModelResponse:
+        raise TimeoutError("upstream hung")
+
+    _patch_build_agent(monkeypatch, FunctionModel(_raise_timeout))
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "upstream_timeout"
+    assert node.node_name not in ctx.nodes
+
+
+def test_timeout_status_http_error_maps_to_upstream_timeout(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai import ModelHTTPError
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.core.agent_node import BriefGenerationError
+
+    def _raise_504(messages, info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(status_code=504, model_name="m", body="gateway timeout")
+
+    _patch_build_agent(monkeypatch, FunctionModel(_raise_504))
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "upstream_timeout"
+
+
+def test_model_http_error_maps_to_brief_generation_failed_with_cause(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai import ModelHTTPError
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.core.agent_node import BriefGenerationError
+
+    def _raise_500(messages, info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(status_code=500, model_name="m", body="boom")
+
+    _patch_build_agent(monkeypatch, FunctionModel(_raise_500))
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "brief_generation_failed"
+    # The original cause is chained for the (E12) trace.
+    assert isinstance(excinfo.value.__cause__, ModelHTTPError)
+    assert node.node_name not in ctx.nodes
+
+
+def test_failure_never_fabricates_a_synthetic_output(
+    _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
+):
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+    from app.core.agent_node import BriefGenerationError
+
+    def _raise_timeout(messages, info: AgentInfo) -> ModelResponse:
+        raise TimeoutError("hung")
+
+    _patch_build_agent(monkeypatch, FunctionModel(_raise_timeout))
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    # Every failing run raises (never returns a fabricated OutputType) and stores nothing.
+    with pytest.raises(BriefGenerationError):
+        asyncio.run(node.process(ctx))
+    assert ctx.nodes == {}
+    assert node.get_output(node_cls) is None
+
+
+def test_brief_generation_error_codes_are_stable_and_http_free():
+    from app.core.agent_node import BriefGenerationError
+
+    err = BriefGenerationError(code="brief_generation_failed", message="m", detail="d")
+    assert err.code in {"brief_generation_failed", "upstream_timeout"}
+    assert err.message == "m"
+    assert err.detail == "d"
+    # The in-engine error has no FastAPI/HTTP dependency.
+    assert issubclass(BriefGenerationError, Exception)
+
+
+def test_no_synthetic_fallback_return_inside_except():
+    """A grep guard: no `return <OutputType>` sits inside an `except` in the module."""
+    import re
+    from pathlib import Path
+
+    import app.core.agent_node as agent_node_mod
+
+    source = Path(agent_node_mod.__file__).read_text()
+    # No `return` statement anywhere inside an except block (every failure path raises).
+    in_except = False
+    except_indent = 0
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if in_except and indent <= except_indent and not stripped.startswith(("raise", "except")):
+            in_except = False
+        if re.match(r"except\b", stripped):
+            in_except = True
+            except_indent = indent
+            continue
+        if in_except and indent > except_indent:
+            assert not stripped.startswith("return "), (
+                f"synthetic fallback return inside except: {stripped!r}"
+            )
