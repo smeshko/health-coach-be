@@ -67,6 +67,14 @@ class Settings(BaseSettings):
 
     # --- LLM / coaching ---
     model_id: str = Field("claude-opus-4-8", description="Default Claude model id for AgentNodes (E9).")
+    # The Anthropic API key for the PydanticAI agent (E9). Optional so non-LLM
+    # entrypoints boot without it (tests override the model; /sync and /health need
+    # no key). pydantic-settings loads it from .env / a real env var into THIS field
+    # but does not export it to os.environ, where pydantic-ai's AnthropicProvider
+    # reads it — the uvicorn entrypoint (app/main.py) bridges that gap at startup.
+    anthropic_api_key: str | None = Field(
+        None, description="Anthropic API key for the LLM agent (E9); env ANTHROPIC_API_KEY."
+    )
     constitution_version: str = Field("v1", description="Active health-constitution version tag (E3).")
     # Optional override for the profile.yaml location (E3·P1). Defaults (when
     # unset) to the repo-root file resolved in `app/core/profile.py`. A deployed
