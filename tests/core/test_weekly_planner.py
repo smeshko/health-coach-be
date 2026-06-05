@@ -11,27 +11,33 @@ constants. Mirrors the E1·P3 ``tests/core/`` workflow pattern.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 
 import pytest
 import yaml
+from sqlalchemy import select
 
 from app.api.schemas.weekly import NarrativeSection, PlannedPick, WeeklyPlanLLMOutput
 from app.core.enums import NarrativeType, Weekday, WorkoutCard
 from app.core.profile import load_profile
 from app.core.task_context import TaskContext
+from app.core.agent_node import BriefGenerationError
+from app.core.constraints import WeeklyBudgets
 from app.core.weekly_planner import (
     ComputeBudgetsNode,
     ComputeNutritionNode,
     ComputeTargetsNode,
     DeriveSessionsNode,
     LoadAggregatesNode,
+    PersistPlanNode,
     RecomputeConstants,
     RecomputeConstantsOutput,
+    ValidatePlanNode,
     WeeklyPlannerEvent,
     is_recompute_due,
 )
-from app.database.models import DailyMetrics, StrengthTests
+from app.database.models import DailyMetrics, Plans, StrengthTests
 
 from tests.core.test_profile import valid_profile_dict
 
@@ -342,3 +348,142 @@ def test_recompute_no_model_copy_update_in_source():
 def test_recompute_constants_output_is_constructible():
     # A bare not-due output and a full due output both construct.
     assert RecomputeConstantsOutput(constants_recomputed=False).constants_recomputed is False
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003: ValidatePlanNode (belt-and-suspenders) + PersistPlanNode.
+# --------------------------------------------------------------------------- #
+def _budgets_output(*, hard_days=2, strength=2, deload=False):
+    return ComputeBudgetsNode.OutputType(
+        budgets=WeeklyBudgets(
+            hard_days=hard_days, strength_sessions=strength, long_run_km=11.0, deload=deload
+        )
+    )
+
+
+def _breaking_llm_output() -> WeeklyPlanLLMOutput:
+    """A budget-breaking plan: 4 hard cards on adjacent days, wrong strength count."""
+    return WeeklyPlanLLMOutput(
+        core=[
+            PlannedPick(card=WorkoutCard.vo2, suggested_day=Weekday.mon, duration_min_low=30, duration_min_high=40),
+            PlannedPick(card=WorkoutCard.threshold, suggested_day=Weekday.tue, duration_min_low=30, duration_min_high=50),
+            PlannedPick(card=WorkoutCard.boxing, suggested_day=Weekday.wed, duration_min_low=60, duration_min_high=90),
+        ],
+        extras=[
+            PlannedPick(card=WorkoutCard.hiit, suggested_day=Weekday.thu, duration_min_low=15, duration_min_high=25),
+        ],
+        narrative=[NarrativeSection(type=NarrativeType.plan, heading="h", body="b")],
+    )
+
+
+def test_validate_plan_node_raises_on_hard_violation(session, profile_path):
+    ctx = _ctx(
+        session,
+        ComputeBudgetsNode=_budgets_output(),
+        GeneratePlanNode=_breaking_llm_output(),
+    )
+    with pytest.raises(BriefGenerationError) as exc:
+        asyncio.run(ValidatePlanNode(task_context=ctx).process(ctx))
+    assert exc.value.code == "brief_generation_failed"
+
+
+def test_validate_plan_node_passes_clean_plan(session, profile_path):
+    ctx = _ctx(
+        session,
+        ComputeBudgetsNode=_budgets_output(),
+        GeneratePlanNode=_clean_llm_output(),
+    )
+    # No raise — returns the context.
+    out_ctx = asyncio.run(ValidatePlanNode(task_context=ctx).process(ctx))
+    assert out_ctx is ctx
+
+
+def _seed_full_ctx_for_persist(session, *, recompute_output=None):
+    """Build a ctx with every upstream output populated, ready for PersistPlanNode."""
+    from app.services.aggregates import load_aggregates
+
+    seed_window(session, ANCHOR)
+    nodes = {
+        "LoadAggregatesNode": LoadAggregatesNode.OutputType(aggregates=load_aggregates(session, ANCHOR)),
+        "ComputeBudgetsNode": _budgets_output(),
+        "GeneratePlanNode": _clean_llm_output(),
+    }
+    if recompute_output is not None:
+        nodes["RecomputeConstants"] = recompute_output
+    ctx = _ctx(session, **nodes)
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    asyncio.run(ComputeTargetsNode(task_context=ctx).process(ctx))
+    asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+    return ctx
+
+
+def test_persist_plan_node_writes_one_row_with_all_columns(session, profile_path):
+    ctx = _seed_full_ctx_for_persist(session)
+    asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
+
+    rows = session.execute(select(Plans)).scalars().all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.iso_week == ISO_WEEK
+    assert row.payload and row.rationale and row.inputs_snapshot
+    assert row.model and row.constitution_version == "v1" and row.created_at
+
+    payload = json.loads(row.payload)
+    assert payload["isoWeek"] == ISO_WEEK
+    assert payload["weekStart"] == WEEK_START.isoformat()
+    assert "budgets" in payload and "targets" in payload and "nutrition" in payload
+    assert len(payload["core"]) == 3 and len(payload["extras"]) == 2
+    assert payload["constantsRecomputed"] is False
+
+
+def test_persist_inputs_snapshot_carries_aggregates_and_constants(session, profile_path):
+    ctx = _seed_full_ctx_for_persist(session)
+    asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
+    row = session.execute(select(Plans)).scalars().one()
+    snapshot = json.loads(row.inputs_snapshot)
+    assert set(snapshot) == {"aggregates", "constants"}
+    assert snapshot["aggregates"]["anchor"] == ANCHOR.isoformat()
+
+
+def test_persist_does_not_commit_or_lookup(session, profile_path, monkeypatch):
+    # The node must not commit (the endpoint owns the txn). Patch commit to fail-if-called.
+    monkeypatch.setattr(session, "commit", lambda *a, **k: pytest.fail("PersistPlanNode committed"))
+    ctx = _seed_full_ctx_for_persist(session)
+    asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
+    # The row exists in this session (uncommitted), and save_output carried the data.
+    assert session.execute(select(Plans)).scalars().all()
+    data = ctx.nodes["PersistPlanNode"].data
+    assert data["isoWeek"] == ISO_WEEK and "targets" in data
+
+
+def test_persist_writes_profile_after_row_on_due_recompute(session, tmp_path, monkeypatch):
+    # A due-recompute ctx: PersistPlanNode writes the row THEN rewrites profile.yaml.
+    path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    recompute_out = ctx.nodes["RecomputeConstants"]
+    assert recompute_out.constants_recomputed is True
+
+    before = path.read_text(encoding="utf-8")
+    full_ctx = _seed_full_ctx_for_persist(session, recompute_output=recompute_out)
+    asyncio.run(PersistPlanNode(task_context=full_ctx).process(full_ctx))
+
+    # Row written and profile.yaml rewritten with the merged stamp.
+    assert session.execute(select(Plans)).scalars().all()
+    after = path.read_text(encoding="utf-8")
+    assert after != before
+    assert load_profile(path).meta.constants_recomputed_week == ISO_WEEK
+
+
+def test_persist_does_not_write_profile_when_not_due(session, profile_path, monkeypatch):
+    # A not-due ctx (no RecomputeConstants proposing constants): no write_profile call.
+    import app.core.weekly_planner as wp
+
+    monkeypatch.setattr(wp, "write_profile", lambda *a, **k: pytest.fail("write_profile called when not due"))
+    ctx = _seed_full_ctx_for_persist(
+        session,
+        recompute_output=RecomputeConstantsOutput(constants_recomputed=False),
+    )
+    asyncio.run(PersistPlanNode(task_context=ctx).process(ctx))
+    assert session.execute(select(Plans)).scalars().all()

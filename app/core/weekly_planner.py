@@ -33,17 +33,26 @@ Pure ``app/core`` module otherwise: no FastAPI route, no endpoint, no get-or-gen
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from app.core.cards import CARD_META
+from app.core.agent_node import BriefGenerationError
+from app.core.cards import CARD_META, all_cards
+from app.core.constraints import (
+    Severity,
+    ValidationContext,
+    validate_weekly,
+)
+from app.core.enums import WorkoutCard
 from app.core.nodes import Node
-from app.core.profile import Profile, load_profile
+from app.core.profile import Profile, load_profile, write_profile
 from app.core.task_context import TaskContext
-from app.database.models import DailyMetrics, StrengthTests
+from app.core.time import now_sofia
+from app.database.models import DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates
 from app.services.budgets import compute_budgets
 from app.services.derive.plan import PlannedSession, expand_plan
@@ -481,3 +490,171 @@ class ComputeNutritionNode(Node):
         )
         self.save_output(self.OutputType(nutrition=nutrition))
         return task_context
+
+
+# ---------------------------------------------------------------------------
+# Shared readers for the validate/persist tail.
+# ---------------------------------------------------------------------------
+def _recompute_output(task_context: TaskContext) -> RecomputeConstantsOutput | None:
+    output = task_context.nodes.get(RecomputeConstants.__name__)
+    return output if isinstance(output, RecomputeConstantsOutput) else None
+
+
+def _recomputed_constants(task_context: TaskContext) -> dict | None:
+    """The recomputed-constant bundle (or ``None`` on a not-due week)."""
+    output = _recompute_output(task_context)
+    return output.recomputed if output is not None else None
+
+
+def _quality_run_pick(task_context: TaskContext) -> WorkoutCard | None:
+    """The code-decided threshold↔VO₂ pick the validator re-reads (round-2 M2).
+
+    Reads the ``quality_focus`` cue off ``RecomputeConstants``'s recomputed constants —
+    the **same** source E10·P1's ``WeeklyDeps.quality_run_pick`` uses — so both validation
+    layers see one ``quality_run_pick``. ``None`` (no quality run expected → the validator
+    skips the threshold↔VO₂ rule) when absent/unrecognised or not a recompute week.
+    """
+    constants = _recomputed_constants(task_context)
+    if not constants:
+        return None
+    focus = constants.get("quality_focus")
+    focus = getattr(focus, "value", focus)
+    if focus in (WorkoutCard.threshold.value, WorkoutCard.vo2.value):
+        return WorkoutCard(focus)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# ValidatePlanNode — the belt-and-suspenders re-check before persist (E7·P3 + E9).
+# ---------------------------------------------------------------------------
+class ValidatePlanNode(Node):
+    """The deterministic belt-and-suspenders re-check before persist (LLM.md §4).
+
+    Builds a ``ValidationContext`` from the code-computed ``WeeklyBudgets``
+    (``ComputeBudgetsNode``) + the ``quality_run_pick`` (the ``RecomputeConstants``
+    ``next_quality_focus`` cue — the same source the agent-side validator used) + the
+    full card pool, re-runs the **pure** ``validate_weekly`` over the **LLM picks**
+    (``GeneratePlanNode``'s ``WeeklyPlanLLMOutput``), and on **any hard** ``Violation``
+    raises ``BriefGenerationError(code="brief_generation_failed")`` — so a
+    constraint-breaking plan never reaches ``PersistPlanNode``/the cache.
+
+    It does **not** ``ModelRetry`` and does **not** re-run the agent: the ``ModelRetry ≤2``
+    budget was already spent **inside** ``GeneratePlanNode``'s ``@agent.output_validator``
+    (E9·P2). This is the second, deterministic layer of LLM.md §4's "two layers, one
+    source of truth". A clean plan (``[]`` or only ``soft``) falls through unchanged.
+    """
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        out = _llm_output(task_context)
+        ctx = ValidationContext(
+            budgets=_budgets_of(task_context),
+            quality_run_pick=_quality_run_pick(task_context),
+            week_plan_cards=frozenset(meta.card for meta in all_cards()),
+        )
+        violations = validate_weekly(out, ctx)
+        if any(v.severity is Severity.hard for v in violations):
+            raise BriefGenerationError(code="brief_generation_failed")
+        return task_context
+
+
+# ---------------------------------------------------------------------------
+# PersistPlanNode — stage one `plans` row, then atomically write profile.yaml.
+# ---------------------------------------------------------------------------
+def _targets_of(task_context: TaskContext) -> WeeklyTargets:
+    output = task_context.nodes.get(ComputeTargetsNode.__name__)
+    if output is None:
+        raise ValueError("ComputeTargetsNode output missing — node order is wrong")
+    return output.targets
+
+
+def _nutrition_of(task_context: TaskContext) -> WeeklyNutrition:
+    output = task_context.nodes.get(ComputeNutritionNode.__name__)
+    if output is None:
+        raise ValueError("ComputeNutritionNode output missing — node order is wrong")
+    return output.nutrition
+
+
+class PersistPlanNode(Node):
+    """Stage one ``plans`` row, then atomically (re)write ``profile.yaml`` (DB.md §4; §10).
+
+    Assembles the persistable payload and ``session.execute(insert(Plans))`` **without
+    committing** (the endpoint owns the txn — E10·P3): ``iso_week``; ``payload`` (the
+    structured data — budgets + expanded ``core``/``extras`` + targets + nutrition +
+    ``constantsRecomputed``/``weekStart``/``isoWeek``); ``rationale`` (the LLM narrative);
+    ``inputs_snapshot`` (``{aggregates, constants}`` — the aggregates **and** constants the
+    LLM saw, for reproducibility); ``model`` (the agent ``model_id``);
+    ``constitution_version``; ``created_at`` (``now_sofia()``).
+
+    **After** staging the row, if ``RecomputeConstants`` proposed fresh constants it calls
+    ``write_profile(<proposed Profile>)`` (atomic) — so the durable ``profile.yaml`` write
+    and the plan row land in the **same** uncommitted unit of work: a downstream failure
+    short-circuits before this node, so the file is never advanced for a brief that did not
+    persist (DECISIONS D3). It does **no** commit, no lookup-by-``iso_week``, no
+    ``?refresh`` delete, and builds no wire response (all E10·P3). ``save_output``s the
+    assembled structured ``data`` so E10·P3 wraps it into the ``WeeklyPlan`` response.
+    """
+
+    class OutputType(BaseModel):
+        data: dict
+
+    async def process(self, task_context: TaskContext) -> TaskContext:
+        session = _session_of(task_context)
+        event: WeeklyPlannerEvent = task_context.event
+        profile = _fresh_profile(task_context)
+
+        derived = task_context.nodes[DeriveSessionsNode.__name__]
+        budgets = _budgets_of(task_context)
+        targets = _targets_of(task_context)
+        nutrition = _nutrition_of(task_context)
+        aggregates = _aggregates_of(task_context)
+        recompute = _recompute_output(task_context)
+        constants = recompute.recomputed if recompute is not None else None
+        out = _llm_output(task_context)
+
+        data = {
+            "isoWeek": event.iso_week,
+            "weekStart": event.week_start.isoformat(),
+            "budgets": dataclasses.asdict(budgets),
+            "core": [s.model_dump(mode="json") for s in derived.core],
+            "extras": [s.model_dump(mode="json") for s in derived.extras],
+            "targets": targets.model_dump(mode="json"),
+            "nutrition": nutrition.model_dump(mode="json"),
+            "constantsRecomputed": bool(recompute.constants_recomputed) if recompute else False,
+        }
+        inputs_snapshot = {
+            "aggregates": aggregates.to_dict(),
+            "constants": constants,
+        }
+        narrative = [n.model_dump(mode="json") for n in out.narrative]
+
+        session.execute(
+            insert(Plans).values(
+                iso_week=event.iso_week,
+                payload=json.dumps(data),
+                rationale=json.dumps(narrative),
+                inputs_snapshot=json.dumps(inputs_snapshot),
+                model=_agent_model_id(),
+                constitution_version=profile.constitution_version,
+                created_at=now_sofia().isoformat(),
+            )
+        )
+
+        # The atomic profile.yaml write happens ONLY AFTER the validated row is staged, and
+        # only on a due-recompute week — same uncommitted unit of work (DECISIONS D3).
+        if recompute is not None and recompute.constants_recomputed and recompute.profile is not None:
+            write_profile(recompute.profile)
+
+        self.save_output(self.OutputType(data=data))
+        return task_context
+
+
+def _agent_model_id() -> str:
+    """The agent's ``model_id`` for the ``plans.model`` column.
+
+    Read from ``GeneratePlanNode``'s ``AgentConfig`` (the default Opus id from
+    ``Settings``) so a Sonnet downshift is a config change, not a node edit. Imported
+    lazily so this module's import doesn't pull the PydanticAI harness (E9) at load time.
+    """
+    from app.core.settings import Settings
+
+    return Settings.model_fields["model_id"].default
