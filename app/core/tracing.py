@@ -30,10 +30,15 @@ from app.core.settings import Settings, get_settings
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from langfuse import Langfuse
 
-# Process singleton, keyed by (public_key, secret_key, host) so the client + its OTel
-# TracerProvider are built once per config (and tests with distinct keys stay isolated).
-# Each value is a ``(client, tracer_provider)`` tuple.
-_CLIENTS: dict[tuple[str, str, str | None], tuple[Any, Any]] = {}
+# Process singleton, keyed by ``public_key`` — matching Langfuse's OWN
+# ``LangfuseResourceManager`` singleton (which caches by ``public_key`` only and ignores a
+# changed ``secret_key``/``host`` once a key is first seen). Keying the seam the same way
+# keeps the cache honest: once a public key is cached, the same client + its OTel
+# ``TracerProvider`` are reused (so `traced_run`'s spans and Langfuse's exporter stay on
+# **one** provider), rather than the seam silently building a second provider whose spans
+# Langfuse would never export (review #1). Single-process/single-config in production, so
+# one entry; distinct test keys stay isolated. Each value is a ``(client, provider)`` tuple.
+_CLIENTS: dict[str, tuple[Any, Any]] = {}
 
 
 def is_tracing_enabled(settings: Settings | None = None) -> bool:
@@ -60,20 +65,16 @@ def _client_and_provider(settings: Settings | None = None) -> tuple[Any, Any]:
     s = settings or get_settings()
     if not is_tracing_enabled(s):
         return None, None
-    key = (
-        (s.langfuse_public_key or "").strip(),
-        (s.langfuse_secret_key or "").strip(),
-        (s.langfuse_host or None),
-    )
+    key = (s.langfuse_public_key or "").strip()  # langfuse caches by public_key only
     if key not in _CLIENTS:
         from langfuse import Langfuse
         from opentelemetry.sdk.trace import TracerProvider
 
         provider = TracerProvider()
         client = Langfuse(
-            public_key=key[0],
-            secret_key=key[1],
-            host=key[2],
+            public_key=key,
+            secret_key=(s.langfuse_secret_key or "").strip(),
+            host=(s.langfuse_host or None),
             tracer_provider=provider,
         )
         _CLIENTS[key] = (client, provider)
