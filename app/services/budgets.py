@@ -38,9 +38,12 @@ __all__ = [
     "DELOAD_HARD_DAYS",
     "STRENGTH_SESSIONS",
     "HARD3_SLEEP_MIN_H",
+    "RAMP_CAP",
+    "DELOAD_VOLUME_FACTOR",
     "WeeklyBudgets",
     "hard_day_budget",
     "strength_sessions",
+    "long_run_cap_km",
 ]
 
 # --- Pinned hard-day budget magnitudes, transcribed verbatim from §5.1 ---
@@ -55,6 +58,12 @@ DELOAD_HARD_DAYS = 1
 STRENGTH_SESSIONS = 2
 # §5.1 the 3-hard-day gate sleep threshold — "7-day avg sleep ≥6.5 h" (inclusive).
 HARD3_SLEEP_MIN_H = 6.5
+
+# --- Pinned long-run ramp / deload-volume magnitudes (§9 / §5.1) ---
+# §9 "Running volume: ≤10%/wk increase" — the long-run cap is ≤110 % of the prior week.
+RAMP_CAP = 1.10
+# §5.1 deload "cut volume ~40 %" — a deload down-ramps the long run to ~60 % of prior.
+DELOAD_VOLUME_FACTOR = 0.60
 
 # Rolling baselines are floats, so an exact §5.1 INCLUSIVE boundary (sleep == 6.5 h, the
 # 7-day HRV avg == its rolling baseline) can land a hair off after binary float arithmetic.
@@ -119,3 +128,26 @@ def strength_sessions() -> int:
     constant + call-site parity with the other helpers.
     """
     return STRENGTH_SESSIONS
+
+
+def long_run_cap_km(prior_week_long_run_km: float | None, *, deload: bool) -> float | None:
+    """The §9 ≤10%/wk long-run ramp cap (or the deload down-ramp), off the **prior week**.
+
+    ``prior_week_long_run_km is None`` (no history — week one / no prior long run) →
+    ``None`` (MODELS ``longRunKm`` is nullable; the planner is unconstrained — Decision 2).
+    Else compute the raw target — **on a deload** the long run is cut ~40 % (§5.1) →
+    ``prior × DELOAD_VOLUME_FACTOR`` (0.60), a deload ramps **down**, not up (Decision 3);
+    otherwise the cap is ``prior × RAMP_CAP`` (≤110 %, the §9 ≤10%/wk ceiling) — then
+    **floor**-round to one decimal via ``math.floor(raw * 10) / 10``. **Floor, never
+    nearest** (review round-2 #3): nearest-rounding can overshoot the hard cap
+    (``round(10.05 × 1.10, 1) = 11.1 > 11.055``), a >10%/wk jump violating the flat-feet
+    ≤10%/wk safeguard (§8.3/§9). Flooring guarantees the returned value is **always ≤
+    ``prior × 1.10``**. The base is the **prior week**, never the 28-day average
+    (Decision 2). The returned value is the **ceiling** the LLM plans within (a one-decimal
+    km ``float``, e.g. ``11.0``), not a prescription.
+    """
+    if prior_week_long_run_km is None:
+        return None
+    factor = DELOAD_VOLUME_FACTOR if deload else RAMP_CAP
+    raw = prior_week_long_run_km * factor
+    return math.floor(raw * 10) / 10

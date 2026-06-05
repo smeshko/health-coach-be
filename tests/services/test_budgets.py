@@ -14,10 +14,13 @@ from __future__ import annotations
 from app.services.budgets import (
     BASE_HARD_DAYS,
     DELOAD_HARD_DAYS,
+    DELOAD_VOLUME_FACTOR,
     HARD3_SLEEP_MIN_H,
     MAX_HARD_DAYS,
+    RAMP_CAP,
     STRENGTH_SESSIONS,
     hard_day_budget,
+    long_run_cap_km,
     strength_sessions,
 )
 
@@ -140,3 +143,46 @@ def test_hard_day_budget_fails_closed_on_missing_inputs():
 def test_strength_sessions_is_always_two():
     # §5.1 "protected as core"; MODELS "protected at 2"; no deload/GI parameter lowers it.
     assert strength_sessions() == 2
+
+
+# --------------------------------------------------------------------------
+# TASK-002 — long_run_cap_km (the §9 ≤10%/wk ramp cap + the deload down-ramp).
+# --------------------------------------------------------------------------
+def test_ramp_constants_match_constitution():
+    assert RAMP_CAP == 1.10  # §9 "≤10%/wk increase"
+    assert DELOAD_VOLUME_FACTOR == 0.60  # §5.1 deload "cut volume ~40 %"
+
+
+def test_long_run_cap_none_history_is_none():
+    # No prior history → unconstrained (MODELS longRunKm nullable; Decision 2).
+    assert long_run_cap_km(None, deload=False) is None
+
+
+def test_long_run_cap_tidy_prior_is_110_percent():
+    # ×1.10 — the §4 "≤110% of the prior week".
+    assert long_run_cap_km(10.0, deload=False) == 11.0
+
+
+def test_long_run_cap_floor_rounds_non_tidy_prior_never_overshoots():
+    # 10.05 × 1.10 = 11.055 → floors to 11.0, NOT round()-to-11.1 (review round-2 #3):
+    # nearest-rounding would push the cap over 110 %, a >10%/wk jump (§8.3/§9).
+    assert long_run_cap_km(10.05, deload=False) == 11.0
+
+
+def test_long_run_cap_never_exceeds_110_percent_property():
+    # The cap is a flat-feet safety ceiling — it must NEVER exceed prior × 1.10.
+    for prior in (10.0, 10.05, 11.0, 28.0, 13.37):
+        cap = long_run_cap_km(prior, deload=False)
+        assert cap is not None
+        assert cap <= prior * 1.10
+        assert cap != prior  # never a raw-prior pass-through on a build week
+
+
+def test_long_run_cap_deload_down_ramps_40_percent():
+    # On a deload the long run is CUT ~40 % (§5.1), not ramped up (Decision 3).
+    assert long_run_cap_km(10.0, deload=True) == 6.0
+
+
+def test_long_run_cap_deload_none_history_is_none():
+    # No history → still None on a deload, no fabricated cap (Decision 5).
+    assert long_run_cap_km(None, deload=True) is None
