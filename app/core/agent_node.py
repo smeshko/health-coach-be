@@ -18,8 +18,9 @@ E11 / E12 — this module stays **generic over the OutputType** and FastAPI-free
 """
 
 import asyncio
-from abc import abstractmethod
-from typing import Generic, Literal, TypeVar
+import json
+from enum import Enum
+from typing import Any, Generic, Literal, TypeVar
 
 import anthropic
 import httpx
@@ -28,11 +29,16 @@ from pydantic_ai import (
     Agent,
     AgentRunError,
     ModelHTTPError,
+    ModelRetry,
+    RunContext,
     ToolOutput,
 )
 from pydantic_ai.settings import ModelSettings
 
+from app.core.constitution import constitution_version, render_constitution
+from app.core.constraints import Severity, ValidationContext, WeeklyBudgets
 from app.core.nodes import AgentConfig, AgentNode
+from app.core.profile import Profile
 from app.core.task_context import TaskContext
 
 # The stable machine codes MODELS "Errors" lists for the LLM failure path (LLM §5).
@@ -70,6 +76,78 @@ LOW_TEMPERATURE: float = 0.1
 MAX_RETRIES: int = 2
 # Per-call request timeout so a hung upstream surfaces as `upstream_timeout` (LLM §5).
 CALL_TIMEOUT_S: float = 60.0
+
+# The two agent shapes the one builder serves — "same shape for both agents, only
+# the context payload and the OutputType differ" (LLM §2). Weekly adds `budgets`;
+# daily adds the active `weekPlan` + `MacroFocus`.
+ModeT = Literal["weekly", "daily"]
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerce `value` to a JSON-serialisable form for the USER message.
+
+    Pydantic `BaseModel`s → `model_dump(mode="json")` (enums become their wire
+    string, dates ISO-format); `Enum`s → their `.value`; everything else passes
+    through `json.dumps`'s native handling. Used as `json.dumps(..., default=…)`
+    so any nested computed value (an E6/E8 result model, a card enum) serialises
+    deterministically without this builder knowing its concrete type.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
+
+
+def build_user_context(profile: Profile, *, computed: Any, mode: ModeT) -> dict:
+    """Assemble the per-period computed USER context as a JSON-able dict (LLM §2).
+
+    This is the "USER computed context for THIS period" the model picks *within*
+    (derive-don't-emit): it **collects + serialises** values the E6/E8 engines
+    already computed (read off `computed`) and stamps `constitution_version` — it
+    computes **no** numbers itself. The single `mode`-parameterised builder serves
+    **both** agents ("same shape for both agents — only the context payload
+    differs", LLM §2), so the shared harness stays brief-agnostic.
+
+    `computed` is the period bundle the node assembled off the `TaskContext`
+    (forward dep — E6 7/28-day rollups, E8 `compute_readiness`/`compute_budgets`/
+    `compute_macros`); it is read **structurally** via `_get` (a key on a dict or
+    an attribute on an object) so this module binds no concrete E6/E8 type.
+
+    Common fields (both modes): `constitution_version`, `live_weight_kg`,
+    `readiness`/`band`/`safetyGate`, `aggregates` (7/28-day training **and**
+    nutrition intake), `flags` (knee, gi), `constants`. `mode="weekly"` adds
+    `budgets` (E8 `WeeklyBudgets`) + last-week nutrition adherence; `mode="daily"`
+    adds the active `weekPlan`, the `safetyGate` result, and `MacroFocus` +
+    yesterday's `IntakeSummary`.
+
+    The live weight is a **user-context** field (`live_weight_kg`), never baked
+    into the system prompt (LLM §2 "live weight is fed in the user context").
+    """
+
+    def _get(key: str, default: Any = None) -> Any:
+        if isinstance(computed, dict):
+            return computed.get(key, default)
+        return getattr(computed, key, default)
+
+    context: dict[str, Any] = {
+        "constitution_version": constitution_version(profile),
+        "live_weight_kg": _get("live_weight_kg"),
+        "readiness": _get("readiness"),
+        "band": _get("band"),
+        "safetyGate": _get("safety_gate"),
+        "aggregates": _get("aggregates"),
+        "flags": _get("flags"),
+        "constants": _get("constants"),
+    }
+    if mode == "weekly":
+        context["budgets"] = _get("budgets")
+        context["nutritionAdherence"] = _get("nutrition_adherence")
+    else:
+        context["weekPlan"] = _get("week_plan")
+        context["macroFocus"] = _get("macro_focus")
+        context["intakeSummary"] = _get("intake_summary")
+    return context
 
 
 def build_agent(
@@ -145,6 +223,123 @@ def _is_timeout(exc: Exception) -> bool:
     return False
 
 
+# --------------------------------------------------------------------------
+# Output-validation wiring (E9·P2). The pure E7·P3 `validate_weekly`/`validate_daily`
+# are wired here as a PydanticAI `@agent.output_validator`: a hard `Violation` does
+# `raise ModelRetry(...)` (the model sees exactly what it broke); a soft-only/empty
+# result is accepted. No invariant logic lives here — the pure validators stay the
+# single source of truth (LLM §4). The harness is brief-agnostic: `make_output_validator`
+# takes `validate_fn` as an argument, so the shared module binds neither concrete
+# validator name nor any `*LLMOutput` type (E10/E11 pass `validate_weekly`/`validate_daily`).
+# --------------------------------------------------------------------------
+
+
+def _deps_to_validation_context(deps: Any) -> ValidationContext:
+    """Adapt the node's `RunContext` deps → the E7·P3 `ValidationContext` (the
+    "interface requirement on E9" E7·P3 named as this phase's acceptance).
+
+    Reads the computed values the deps carry (the budgets / band / safety-gate /
+    week-plan-cards / knee / quality-pick the pure validator policies against) and
+    builds the PydanticAI-free `ValidationContext` **field-by-field**. The single
+    place the PydanticAI `RunContext` deps meet E7·P3's frozen-dataclass context —
+    so a drift is a failing adapter test, not a silent mismatch. E10/E11 specialise
+    this for their concrete deps shapes; the shared version maps the documented
+    fields, reading each structurally (a `getattr` off the deps `BaseModel`).
+    """
+
+    def _get(name: str, default: Any = None) -> Any:
+        return getattr(deps, name, default)
+
+    budgets = _get("budgets")
+    if budgets is None:
+        # ValidationContext.budgets is required; a deps without it can't be
+        # validated against the weekly invariants. E10/E11 always populate it.
+        raise ValueError("deps must carry `budgets` (WeeklyBudgets) for validation")
+    if not isinstance(budgets, WeeklyBudgets):
+        budgets = WeeklyBudgets(
+            hard_days=budgets["hard_days"],
+            strength_sessions=budgets["strength_sessions"],
+            long_run_km=budgets.get("long_run_km"),
+            deload=budgets["deload"],
+        )
+
+    kwargs: dict[str, Any] = {"budgets": budgets}
+    for name in (
+        "quality_run_pick",
+        "band",
+        "knee_pain",
+        "week_plan_cards",
+        "safety_gate_triggered",
+    ):
+        value = _get(name)
+        if value is not None:
+            kwargs[name] = value
+    return ValidationContext(**kwargs)
+
+
+def _format_violations(violations: list) -> str:
+    """Join hard `Violation`s into one human-readable `ModelRetry` message.
+
+    One message of **all** hard violations' `rule` + `message` (DECISIONS Decision
+    2) so a single retry can repair the whole brief within the ≤ 2 budget — the
+    model "sees exactly what it broke" (LLM §4).
+    """
+    return "; ".join(f"{v.rule}: {v.message}" for v in violations)
+
+
+def make_output_validator(validate_fn):
+    """Build a PydanticAI `@agent.output_validator` wrapping the pure `validate_fn`.
+
+    Brief-agnostic: `validate_fn` is the pure E7·P3 `validate_weekly`/`validate_daily`
+    (or any `(output, ctx) -> list[Violation]`) the concrete node passes in, so the
+    shared harness binds no concrete validator name. The returned async callable has
+    PydanticAI's output-validator signature `(ctx: RunContext[Deps], output) -> output`
+    (verified 1.105.0 surface): it (1) adapts `ctx.deps` → `ValidationContext`, (2)
+    calls the pure `validate_fn` (which returns `list[Violation]`, never raises), (3)
+    on **any** `Severity.hard` violation `raise ModelRetry(joined_message)`; a
+    soft-only / empty result is **accepted** — the validator returns `output`
+    unchanged (PydanticAI requires the validator to return the validated value).
+    """
+
+    async def _validate(ctx: RunContext[Any], output: Any) -> Any:
+        validation_ctx = _deps_to_validation_context(ctx.deps)
+        violations = validate_fn(output, validation_ctx)
+        hard = [v for v in violations if v.severity is Severity.hard]
+        if hard:
+            raise ModelRetry(_format_violations(hard))
+        return output
+
+    return _validate
+
+
+def register_output_validator(agent: Agent, validate_fn) -> None:
+    """Register `make_output_validator(validate_fn)` on `agent` (the E10/E11 hook).
+
+    The shared registration seam: a concrete node's `validate_fn` (the pure E7·P3
+    `validate_weekly`/`validate_daily`) is wired onto the agent E9·P1 built, so the
+    validator runs inside the `retries=MAX_RETRIES` (=2) budget. `process()` calls
+    this before `agent.run` when the node exposes a validator (below).
+    """
+    agent.output_validator(make_output_validator(validate_fn))
+
+
+def recheck_output(output: Any, validate_fn, validation_ctx: ValidationContext) -> None:
+    """The belt-and-suspenders re-check before persist (LLM §4; DECISIONS Decision 3).
+
+    After a **clean** `agent.run` returns the validated `output`, run the **same**
+    pure `validate_fn` once more against the **same** `ValidationContext` — if it now
+    reports a `Severity.hard` `Violation` (the LLM slipped one past, or a final
+    adapter mismatch), `raise BriefGenerationError(code="brief_generation_failed")`
+    so a constraint-breaking brief **never reaches the cache**. Deterministic and
+    **LLM-free**: it runs the validator once and **errors**; it does **not**
+    `ModelRetry` / re-invoke the model (the retries were the agent's job inside
+    `agent.run`). This is the last gate before `save_output`.
+    """
+    violations = validate_fn(output, validation_ctx)
+    if any(v.severity is Severity.hard for v in violations):
+        raise BriefGenerationError(code="brief_generation_failed")
+
+
 class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     """A generic, brief-agnostic `AgentNode` wrapping a PydanticAI `Agent` (E9·P1).
 
@@ -156,24 +351,85 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
     WeeklyDeps, WeeklyOut]): ...`` — keeping this base brief-agnostic (it imports neither
     concrete output type).
 
-    Two seams the **context assembly (E9·P2)** fills are left abstract:
-    `build_system_prompt` (the rendered constitution — a default may delegate to E3's
-    `render_constitution`) and `build_run_input` (the computed-context user message — a
-    stub here; the real per-period JSON builder is E9·P2). No `@agent.output_validator`
-    is registered here; the `deps_type` + `retries` budget are the seams E9·P2 consumes.
+    E9·P2 fills the two context seams `build_system_prompt` (the rendered
+    constitution for the live period) and `build_run_input` (the computed-context
+    USER JSON via `build_user_context`), reading the live `Profile` + the computed
+    bundle off the `TaskContext` through the `_profile`/`_computed` extraction
+    seams E10/E11 specialise. The `mode` (`"weekly"`/`"daily"`) parameterises the
+    one builder so it serves both agents. The `@agent.output_validator` wiring +
+    the pre-persist re-check are E9·P2 (below); the `deps_type` + `retries` budget
+    are the E9·P1 seams that wiring consumes.
     """
 
-    @abstractmethod
-    def build_system_prompt(self, task_context: TaskContext) -> str:
-        """Return the rendered-constitution system prompt (E3; the live wiring is E9·P2)."""
+    #: The agent shape ("weekly"/"daily") the one `build_user_context` builder
+    #: serves; E10/E11 pin it on their concrete node so the harness stays
+    #: brief-agnostic (LLM §2 "same shape for both agents").
+    mode: ModeT = "weekly"
 
-    @abstractmethod
+    def _profile(self, task_context: TaskContext) -> Profile:
+        """The live per-period `Profile` (constants) the workflow loaded.
+
+        Read off `task_context.metadata["profile"]` by default — the seam the
+        workflow populates; E10/E11 may override to source it differently. Used by
+        both `build_system_prompt` (the rendered constitution) and
+        `build_user_context` (the `constitution_version` stamp).
+        """
+        profile = task_context.metadata.get("profile")
+        if not isinstance(profile, Profile):
+            raise ValueError(
+                "task_context.metadata['profile'] must be a Profile for the agent call"
+            )
+        return profile
+
+    def _computed(self, task_context: TaskContext) -> Any:
+        """The per-period computed bundle (E6/E8 numbers) the USER context carries.
+
+        Read off `task_context.metadata["computed"]` by default; E10/E11 specialise
+        where their period's computed values live. `build_user_context` reads it
+        structurally (dict key or attribute) so this base binds no concrete E6/E8
+        type. Defaults to an empty dict so a missing bundle yields null fields
+        rather than raising.
+        """
+        return task_context.metadata.get("computed", {})
+
+    def build_system_prompt(self, task_context: TaskContext) -> str:
+        """Return the rendered-constitution system prompt for the live `Profile` (E3).
+
+        Calls `render_constitution(profile)` **fresh** each `process()` — caching is
+        off (LLM §2/§5; E3 "no cache"), so nothing memoizes the prompt. Takes only
+        the `Profile` (constants); the live weight enters via the USER context, not
+        the prompt (LLM §2).
+        """
+        return render_constitution(self._profile(task_context))
+
     def build_run_input(self, task_context: TaskContext) -> str:
-        """Return the computed-context user message (a stub in P1; the JSON builder is E9·P2)."""
+        """Serialise the per-period USER context to the deterministic JSON USER message.
+
+        Assembles `build_user_context(profile, computed=…, mode=self.mode)` and
+        dumps it with `sort_keys=True` so traces and tests are stable across runs.
+        Nested computed `BaseModel`/`Enum` values serialise via `_jsonable`.
+        """
+        context = build_user_context(
+            self._profile(task_context),
+            computed=self._computed(task_context),
+            mode=self.mode,
+        )
+        return json.dumps(context, sort_keys=True, default=_jsonable)
 
     def build_deps(self, task_context: TaskContext) -> DepsTypeT:
         """Build the `RunContext` deps for the run; default is a bare `DepsType` (E9·P2 enriches)."""
         return self.DepsType()
+
+    def get_validate_fn(self):
+        """The pure `(output, ValidationContext) -> list[Violation]` validator, or `None`.
+
+        The brief-agnostic registration seam: E10/E11 return the pure E7·P3
+        `validate_weekly`/`validate_daily` so `process()` wires it as the agent's
+        `@agent.output_validator` (a hard `Violation` ⇒ `ModelRetry`). The shared
+        base binds no concrete validator name; the default `None` leaves the agent
+        un-validated (the E9·P1 behaviour).
+        """
+        return None
 
     async def process(self, task_context: TaskContext) -> TaskContext:
         """Build the agent, run it over the context, and store the typed `OutputType`.
@@ -196,19 +452,30 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             system_prompt=self.build_system_prompt(task_context),
             deps_type=self.DepsType,
         )
+        validate_fn = self.get_validate_fn()
+        if validate_fn is not None:
+            register_output_validator(agent, validate_fn)
+        deps = self.build_deps(task_context)
         try:
             result = await agent.run(
                 self.build_run_input(task_context),
-                deps=self.build_deps(task_context),
+                deps=deps,
             )
         except Exception as exc:
             if _is_timeout(exc):
                 raise BriefGenerationError(code="upstream_timeout") from exc
-            # Exhausted retries (UnexpectedModelBehavior), invalid structure, and every
+            # Exhausted retries (UnexpectedModelBehavior) — the E9·P2 output-validator
+            # ModelRetry'd past the retries=2 budget — invalid structure, and every
             # other model/HTTP failure (ModelHTTPError/ModelAPIError) derive from
             # AgentRunError → the generic LLM-failure code.
             if isinstance(exc, AgentRunError):
                 raise BriefGenerationError(code="brief_generation_failed") from exc
             raise
+        # Belt-and-suspenders re-check before persist (E9·P2; LLM §4): re-run the
+        # SAME pure validator against the SAME deps-derived ValidationContext once
+        # more. A hard violation raises and stores NOTHING, so a constraint-breaking
+        # brief never reaches the cache. Deterministic + LLM-free — no model re-run.
+        if validate_fn is not None:
+            recheck_output(result.output, validate_fn, _deps_to_validation_context(deps))
         self.save_output(result.output)
         return task_context
