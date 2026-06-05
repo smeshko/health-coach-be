@@ -64,8 +64,9 @@ class _WeeklyPlannerGenerator:
 
     Closes over the **request session**: it builds ``ctx = TaskContext(event=
     WeeklyPlannerEvent(...), metadata={"session": session})`` and runs
-    ``WeeklyPlanner().run_async(context=ctx)`` — **not** ``run_async(event)``, which would
-    build a *fresh* ``TaskContext`` and drop the session (E10·P2). The workflow's
+    ``WeeklyPlanner().run(context=ctx)`` — **not** ``run(event)``, which would
+    build a *fresh* ``TaskContext`` and drop the session (E10·P2). (``run`` is the sync
+    wrapper the sync route handler needs; it drives the same async graph.) The workflow's
     ``PersistPlanNode`` writes the ``Plans`` row through that session (no commit) and parks
     any proposed ``profile.yaml`` rewrite under ``PENDING_PROFILE_WRITE_KEY``; this
     generator surfaces that staged ``Profile`` on ``pending_profile`` so the route applies

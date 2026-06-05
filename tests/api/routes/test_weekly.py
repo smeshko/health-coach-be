@@ -418,3 +418,59 @@ def test_commit_failure_leaves_profile_untouched_and_no_row(ctx, tmp_path, monke
     assert load_profile(path=target).meta.constants_recomputed_week == base.meta.constants_recomputed_week
     # ... and no plan row persisted (the commit failed / rolled back).
     assert _count(db_path) == 0
+
+
+def test_real_generator_bridges_staged_profile_write(monkeypatch) -> None:
+    """The REAL _WeeklyPlannerGenerator captures the E10·P2 staged profile write —
+    out_ctx.metadata[PENDING_PROFILE_WRITE_KEY] -> self.pending_profile — so the route
+    applies it post-commit. The other route tests mock the generator seam, so this is the
+    only regression coverage of the load-bearing bridge (review). WeeklyPlanner.run is
+    stubbed to return a controlled context (no DB/LLM)."""
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.api.routes.weekly import _WeeklyPlannerGenerator
+    from app.core.profile import load_profile
+    from app.core.task_context import TaskContext
+    from app.core.weekly_planner import (
+        PENDING_PROFILE_WRITE_KEY,
+        WeeklyPlanner,
+        WeeklyPlannerEvent,
+    )
+
+    sentinel = load_profile()  # any valid Profile stands in for the staged rewrite
+    out = TaskContext(
+        event=WeeklyPlannerEvent(anchor=date(2026, 6, 1), iso_week="2026-W23", week_start=date(2026, 6, 1)),
+        metadata={PENDING_PROFILE_WRITE_KEY: sentinel},
+    )
+    out.nodes["PersistPlanNode"] = SimpleNamespace(data={"isoWeek": "2026-W23"})
+    monkeypatch.setattr(WeeklyPlanner, "run", lambda self, context: out)
+
+    gen = _WeeklyPlannerGenerator(session=None)
+    result = gen("2026-W23")
+
+    # The bridge: the staged Profile from metadata is surfaced on pending_profile.
+    assert gen.pending_profile is sentinel
+    assert result.data["isoWeek"] == "2026-W23"
+
+
+def test_real_generator_no_staged_write_when_metadata_absent(monkeypatch) -> None:
+    """When the workflow stages nothing (not-due week), pending_profile stays None so the
+    route writes no file (review)."""
+    from datetime import date
+    from types import SimpleNamespace
+
+    from app.api.routes.weekly import _WeeklyPlannerGenerator
+    from app.core.task_context import TaskContext
+    from app.core.weekly_planner import WeeklyPlanner, WeeklyPlannerEvent
+
+    out = TaskContext(
+        event=WeeklyPlannerEvent(anchor=date(2026, 6, 1), iso_week="2026-W23", week_start=date(2026, 6, 1)),
+        metadata={},  # nothing staged
+    )
+    out.nodes["PersistPlanNode"] = SimpleNamespace(data={"isoWeek": "2026-W23"})
+    monkeypatch.setattr(WeeklyPlanner, "run", lambda self, context: out)
+
+    gen = _WeeklyPlannerGenerator(session=None)
+    gen("2026-W23")
+    assert gen.pending_profile is None
