@@ -26,11 +26,48 @@ E7·P1's `WorkoutCard`/`DayType`/`NarrativeType` enums and redefine none.
 PydanticAI/LLM import.
 """
 
+from datetime import date
+
 from app.api.schemas.base import CamelModel
 from app.api.schemas.narrative import NarrativeSection
 from app.core.enums import DayType, WorkoutCard
 
-__all__ = ["SessionPick", "DailyBriefLLMOutput", "NarrativeSection"]
+__all__ = [
+    "SessionPick",
+    "DailyBriefLLMOutput",
+    "NarrativeSection",
+    "IntakeVsTarget",
+    "IntakeSummary",
+]
+
+
+class IntakeVsTarget(CamelModel):
+    """Yesterday's logged intake vs the day's target (MODELS `IntakeSummary.vsTarget`).
+
+    `caloriesPct` = consumed ÷ target calories; `proteinHit` = the logged protein met
+    the day's protein floor. Both code-derived (no LLM).
+    """
+
+    calories_pct: float
+    protein_hit: bool
+
+
+class IntakeSummary(CamelModel):
+    """What was actually **logged** for a day, vs target (MODELS `IntakeSummary`).
+
+    Code-derived from `daily_metrics` (the ingested HealthKit dietary records); the
+    daily brief ships **yesterday's**. Every macro total is nullable (`null` when
+    nothing was logged); `vsTarget` reports the calorie ratio + protein-floor hit.
+    """
+
+    date: date
+    calories_kcal: int | None = None
+    protein_g: int | None = None
+    carbs_g: int | None = None
+    fat_g: int | None = None
+    fiber_g: int | None = None
+    water_l: float | None = None
+    vs_target: IntakeVsTarget
 
 
 class SessionPick(CamelModel):
