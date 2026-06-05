@@ -632,21 +632,22 @@ def test_per_day_nutrition_target_matches_displayed_targets():
     week-average target `compute_weekly_nutrition` rounds into avgCaloriesKcal, and protein_g
     is the displayed proteinG floor — same weight basis."""
     target = per_day_nutrition_target(weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE)
-    expected_kcal = deficit_target(
+    raw_kcal = deficit_target(
         tdee(
             bmr(weight_kg=_W, height_cm=_ATHLETE.height_cm, age=_ATHLETE.age, sex=_ATHLETE.sex),
             _NUTRITION.activity_factor,
         ),
         _NUTRITION.deficit_pct,
     )
-    assert target.kcal == expected_kcal  # unrounded — adherence compares raw floats
+    assert target.kcal == _round_half_up(raw_kcal)  # rounded to the displayed integer (review #2)
     assert target.protein_g == protein_g(_W, _NUTRITION.protein_g_per_kg)
-    # The displayed avgCaloriesKcal is just this kcal, rounded — same source number.
+    # The adherence target is exactly the displayed avgCaloriesKcal/proteinG the user sees —
+    # so strict >/< comparisons measure against the shown number, not a sub-kcal remainder.
     displayed = compute_weekly_nutrition(
         picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
     )
-    assert displayed.avg_calories_kcal == _round_half_up(expected_kcal)
-    assert displayed.protein_g == target.protein_g
+    assert target.kcal == displayed.avg_calories_kcal
+    assert target.protein_g == displayed.protein_g
 
 
 def test_per_day_nutrition_target_leaves_other_fields_none():

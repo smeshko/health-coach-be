@@ -483,13 +483,17 @@ def per_day_nutrition_target(
 
     Reuses the **same** §7.1 chain `compute_weekly_nutrition` uses for the *displayed* targets
     — `bmr → tdee → deficit_target` for the week-average daily calorie target, and `protein_g`
-    for the protein floor — so the adherence denominator is numerically identical to the
-    shown `avgCaloriesKcal`/`proteinG` (DECISIONS Decision 1). The `kcal` is the **unrounded**
-    `deficit_target` (the adherence math in `nutrition_adherence` compares against raw floats).
-    Only `kcal`/`protein_g` are set; `carbs_g`/fat/water stay `None` — they are not part of the
-    `lastWeek` vs-target contract (`NutritionTarget` fields are individually optional). The
-    weight basis is `goal_weight_kg` for now; E13·P3 swaps it (and the displayed weight) to the
-    current/live weight in lock-step.
+    for the protein floor — so the adherence denominator is numerically **identical** to the
+    shown `avgCaloriesKcal`/`proteinG` (DECISIONS Decision 1). Both targets are rounded the same
+    way they are displayed: `kcal` via `_round_half_up` (the exact `avgCaloriesKcal` integer) and
+    `protein_g` via the `protein_g` helper (already the rounded `proteinG`). Matching the shown
+    integers matters because `nutrition_adherence` uses strict `>`/`<`: comparing against the
+    raw `deficit_target` float (e.g. 2207.7 displayed as 2208) would count an intake logged at
+    the displayed target as *over* by the sub-kcal remainder (review #2). Only `kcal`/`protein_g`
+    are set; `carbs_g`/fat/water stay `None` — they are not part of the `lastWeek` vs-target
+    contract (`NutritionTarget` fields are individually optional). The weight basis is
+    `goal_weight_kg` for now; E13·P3 swaps it (and the displayed weight) to the current/live
+    weight in lock-step.
     """
     _require_positive_weight(weight_kg)
     t = tdee(
@@ -497,6 +501,6 @@ def per_day_nutrition_target(
         nutrition.activity_factor,
     )
     return NutritionTarget(
-        kcal=deficit_target(t, nutrition.deficit_pct),
+        kcal=float(_round_half_up(deficit_target(t, nutrition.deficit_pct))),
         protein_g=protein_g(weight_kg, nutrition.protein_g_per_kg),
     )
