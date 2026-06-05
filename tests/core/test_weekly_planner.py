@@ -244,11 +244,14 @@ def test_compute_nutrition_node_maps_day_type_and_delegates(session, profile_pat
 
 
 def test_compute_nutrition_node_last_week_null_and_object(session, profile_path):
-    """E13·P1: a no-intake window emits `lastWeek: null`; a logged-intake window emits the
-    camelCase scorecard (averages rounded, counts None pre-P2)."""
+    """E13·P1/P2: a no-intake window emits `lastWeek: null`; a logged-intake window emits the
+    camelCase scorecard with averages rounded and — once E13·P2 injects the per-day target —
+    the three vs-target counts populated."""
     from datetime import timedelta
 
-    from app.services.aggregates import load_aggregates
+    from app.core.profile import load_profile
+    from app.services.aggregates import load_aggregates, nutrition_adherence
+    from app.services.macros import per_day_nutrition_target
 
     # (a) No dietary intake in the 7d window → lastWeek is null (the empty state).
     seed_window(session, ANCHOR)  # training rows only, no kcal_in/protein_in_g logged
@@ -263,7 +266,14 @@ def test_compute_nutrition_node_last_week_null_and_object(session, profile_path)
     assert nutrition.last_week is None
     assert nutrition.model_dump(mode="json")["lastWeek"] is None
 
-    # (b) A non-overlapping window WITH logged intake → camelCase object, averages rounded.
+    # (b) A non-overlapping window WITH logged intake + the per-day target injected (as the
+    #     node now does) → camelCase object, averages rounded, vs-target counts populated.
+    profile = load_profile()
+    target = per_day_nutrition_target(
+        weight_kg=profile.athlete.goal_weight_kg,
+        nutrition=profile.nutrition,
+        athlete=profile.athlete,
+    )
     logged_anchor = ANCHOR - timedelta(days=40)
     for offset, (kcal, protein) in enumerate([(2600.0, 150.0), (2610.0, 138.5)]):
         session.add(
@@ -277,7 +287,7 @@ def test_compute_nutrition_node_last_week_null_and_object(session, profile_path)
     ctx2 = _ctx(
         session,
         LoadAggregatesNode=LoadAggregatesNode.OutputType(
-            aggregates=load_aggregates(session, logged_anchor)
+            aggregates=load_aggregates(session, logged_anchor, nutrition_target_7d=target)
         ),
         GeneratePlanNode=_clean_llm_output(),
     )
@@ -289,9 +299,79 @@ def test_compute_nutrition_node_last_week_null_and_object(session, profile_path)
     }
     assert last_week["avgCaloriesKcal"] == 2605  # (2600 + 2610) / 2
     assert last_week["avgProteinG"] == 144  # (150 + 138.5) / 2 = 144.25 → floor(144.75)
-    assert last_week["proteinHitDays"] is None  # target-gated, None until E13·P2
-    assert last_week["daysOverTarget"] is None
-    assert last_week["daysUnderTarget"] is None
+    # The three counts now populate (E13·P2) and match the adherence with the same target.
+    expected = nutrition_adherence(session, logged_anchor, 7, target=target)
+    assert last_week["proteinHitDays"] == expected.protein_hit_days
+    assert last_week["daysOverTarget"] == expected.days_over_target
+    assert last_week["daysUnderTarget"] == expected.days_under_target
+    assert last_week["proteinHitDays"] is not None  # non-null with target + logged protein
+    assert 0 <= last_week["daysOverTarget"] <= 2  # bounded by the 2 logged days
+    assert 0 <= last_week["daysUnderTarget"] <= 2
+
+
+def test_load_aggregates_node_injects_target_counts_populate(session, profile_path):
+    """E13·P2: the real LoadAggregatesNode builds a per-day target from the profile and injects
+    it as nutrition_target_7d, so the lastWeek vs-target counts populate; the 28d window stays
+    target-less."""
+    from datetime import timedelta
+
+    from app.core.profile import load_profile
+    from app.services.aggregates import nutrition_adherence
+    from app.services.macros import per_day_nutrition_target
+
+    # 3 logged-intake days in the 7d window ending at ANCHOR.
+    for offset in range(3):
+        session.add(
+            DailyMetrics(
+                date=(ANCHOR - timedelta(days=offset)).isoformat(),
+                kcal_in=2200.0,
+                protein_in_g=160.0,
+            )
+        )
+    session.flush()
+
+    ctx = _ctx(session, GeneratePlanNode=_clean_llm_output())
+    # The real node — it builds the per-day target from load_profile() and injects it.
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    out_ctx = asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+
+    last_week = out_ctx.nodes["ComputeNutritionNode"].nutrition.last_week
+    assert last_week is not None
+    assert last_week.protein_hit_days is not None
+    assert last_week.days_over_target is not None
+    assert last_week.days_under_target is not None
+
+    # The counts match the adherence computed with the same per-day target the node built.
+    profile = load_profile()
+    target = per_day_nutrition_target(
+        weight_kg=profile.athlete.goal_weight_kg,
+        nutrition=profile.nutrition,
+        athlete=profile.athlete,
+    )
+    expected = nutrition_adherence(session, ANCHOR, 7, target=target)
+    assert last_week.protein_hit_days == expected.protein_hit_days
+    assert last_week.days_over_target == expected.days_over_target
+    assert last_week.days_under_target == expected.days_under_target
+    assert 0 <= last_week.protein_hit_days <= 3  # bounded by the 3 logged days
+
+    # The 28d window stays target-less — its comparison fields remain None.
+    aggregates = out_ctx.nodes["LoadAggregatesNode"].aggregates
+    assert aggregates.nutrition_28d.protein_hit_days is None
+    assert aggregates.nutrition_28d.days_over_target is None
+    assert aggregates.nutrition_28d.days_under_target is None
+    assert aggregates.nutrition_28d.kcal_pct is None
+
+
+def test_load_aggregates_node_no_intake_still_null(session, profile_path):
+    """E13·P2: injecting the target never fabricates a scorecard — a training-only window with
+    no logged intake still yields lastWeek: null."""
+    seed_window(session, ANCHOR)  # training rows only, no dietary logged
+    ctx = _ctx(session, GeneratePlanNode=_clean_llm_output())
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(DeriveSessionsNode(task_context=ctx).process(ctx))
+    out_ctx = asyncio.run(ComputeNutritionNode(task_context=ctx).process(ctx))
+    assert out_ctx.nodes["ComputeNutritionNode"].nutrition.last_week is None
 
 
 # --------------------------------------------------------------------------- #
