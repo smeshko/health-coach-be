@@ -527,3 +527,26 @@ def test_readiness_result_shape() -> None:
     assert isinstance(result.score, int)
     assert isinstance(result.band, ReadinessBand)
     assert isinstance(result.penalties, list)
+
+
+# --- Review round 2: tolerant float boundaries for HRV/RHR exact tiers (#2) ---
+
+
+def test_hrv_penalty_exact_1sd_with_fractional_baseline_is_minus_15() -> None:
+    # z is mathematically exactly 1.0 but float arithmetic gives 0.999999999999943;
+    # the tolerant boundary keeps it in the 1-SD (-15) tier, not None (review #2).
+    assert hrv_penalty(hrv_sdnn=99.9, hrv_30d_mean=100.0, hrv_30d_sd=0.1) == ReadinessPenalty(
+        HRV_BELOW_BASELINE, -15
+    )
+
+
+def test_rhr_penalty_exact_plus5_with_fractional_baseline_is_minus_10() -> None:
+    # delta is mathematically exactly +5 bpm but float arithmetic drifts; the +5 tier
+    # (-10) must still fire (review #2).
+    assert rhr_penalty(rhr=64.1, rhr_30d_mean=59.1) == ReadinessPenalty(RHR_ABOVE_BASELINE, -10)
+
+
+def test_rhr_penalty_exact_plus7_with_fractional_baseline_stays_minus_10() -> None:
+    # delta is mathematically exactly +7 bpm (boundary belongs to the +5..+7 -10 band);
+    # float drift must not escalate it to the >+7 (-20) tier (review #2).
+    assert rhr_penalty(rhr=64.4, rhr_30d_mean=57.4) == ReadinessPenalty(RHR_ABOVE_BASELINE, -10)

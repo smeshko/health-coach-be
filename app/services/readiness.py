@@ -21,9 +21,32 @@ source) so a mis-transcription is caught by a per-factor test at the §6.1 worke
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from app.core.enums import ReadinessBand
+
+# Rolling baselines are floats, so an exact §6.1 boundary (z == 1 SD, Δ == +5 / +7 bpm)
+# can land a hair off after binary float arithmetic — e.g. 99.9/100.0/0.1 yields
+# z = 0.999999999999943 instead of 1.0. These tolerant comparisons pin the exact
+# mathematical boundary into its constitutionally-correct tier (review #2, round 2).
+_BOUNDARY_REL_TOL = 1e-9
+_BOUNDARY_ABS_TOL = 1e-12
+
+
+def _at_boundary(value: float, boundary: float) -> bool:
+    """``value`` equals ``boundary`` within float noise."""
+    return math.isclose(value, boundary, rel_tol=_BOUNDARY_REL_TOL, abs_tol=_BOUNDARY_ABS_TOL)
+
+
+def _strictly_above(value: float, boundary: float) -> bool:
+    """``value > boundary``, but an exact boundary (within float noise) is **not** above."""
+    return value > boundary and not _at_boundary(value, boundary)
+
+
+def _at_or_above(value: float, boundary: float) -> bool:
+    """``value >= boundary``, including an exact boundary masked by float noise."""
+    return value >= boundary or _at_boundary(value, boundary)
 
 # --- The five MODELS `factor` keys (MODELS § Readiness / ReadinessPenalty) ---
 SLEEP_BELOW_7H = "sleep_below_7h"
@@ -110,9 +133,9 @@ def hrv_penalty(
     if hrv_sdnn is None or hrv_30d_mean is None or hrv_30d_sd is None or hrv_30d_sd <= 0:
         return None
     z = (hrv_30d_mean - hrv_sdnn) / hrv_30d_sd
-    if z > HRV_SD_THRESHOLD:
+    if _strictly_above(z, HRV_SD_THRESHOLD):
         return ReadinessPenalty(HRV_BELOW_BASELINE, HRV_OVER_1SD_POINTS)
-    if z >= HRV_SD_THRESHOLD:  # z == 1.0 exactly
+    if _at_or_above(z, HRV_SD_THRESHOLD):  # z == 1 SD (the milder tier owns the boundary)
         return ReadinessPenalty(HRV_BELOW_BASELINE, HRV_1SD_POINTS)
     return None
 
@@ -131,9 +154,9 @@ def rhr_penalty(
     if rhr is None or rhr_30d_mean is None:
         return None
     delta = rhr - rhr_30d_mean
-    if delta > RHR_BAND_HIGH:
+    if _strictly_above(delta, RHR_BAND_HIGH):  # > +7 bpm (exact +7 stays in the −10 band)
         return ReadinessPenalty(RHR_ABOVE_BASELINE, RHR_OVER_BAND_POINTS)
-    if delta >= RHR_BAND_LOW:
+    if _at_or_above(delta, RHR_BAND_LOW):  # +5..+7 bpm inclusive
         return ReadinessPenalty(RHR_ABOVE_BASELINE, RHR_BAND_POINTS)
     return None
 
