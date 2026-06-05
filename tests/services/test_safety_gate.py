@@ -12,6 +12,7 @@ edges, the null/skip cases (a sparse/day-one E6·P2 baseline), and the most-rest
 
 from __future__ import annotations
 
+from app.core.enums import WorkoutCard
 from app.services.safety_gate import (
     GI_FLARE,
     HRV_CRASH,
@@ -21,13 +22,21 @@ from app.services.safety_gate import (
     RHR_SPIKE,
     RHR_SPIKE_BPM,
     SLEEP_BELOW_4H,
+    collect_reasons,
     gi_flare_reason,
     hrv_crash_reason,
     illness_reason,
     knee_pain_high_reason,
+    override_for,
     rhr_spike_reason,
     sleep_below_4h_reason,
 )
+
+# The six MODELS machine reason keys, in the fixed §6.2 / MODELS listing order.
+_SIX_REASONS = [GI_FLARE, SLEEP_BELOW_4H, ILLNESS, KNEE_PAIN_HIGH, RHR_SPIKE, HRV_CRASH]
+
+# The three forced-card tokens (the MODELS `overrideTo` universe).
+_FORCED_CARDS = {WorkoutCard.rest, WorkoutCard.active_recovery, WorkoutCard.mobility}
 
 
 # --- gi_flare_reason (§6.2 "GI symptoms → no hard training; easy/mobility only") ---
@@ -149,3 +158,99 @@ def test_hrv_crash_uses_rolling_mean_not_sd_zscore():
     # A "1 SD low but <40 % below" reading must NOT trip the crash (that's the §6.1
     # readiness term, E8·P1). With mean 60 and a reading 50 (≈16.7 % below), no trip.
     assert hrv_crash_reason(50.0, 60.0) is None
+
+
+# --- collect_reasons (epic §3 — firing keys in the fixed MODELS order) ---
+
+
+def test_collect_reasons_all_firing_in_fixed_order():
+    # every reason fires: gi=1; sleep 3 h; illness=1; knee 5; rhr delta 15; hrv 50 % below
+    reasons = collect_reasons(
+        gi_symptoms=1,
+        illness=1,
+        knee_pain=5,
+        sleep_h=3.0,
+        rhr=70.0,
+        rhr_30d_mean=55.0,
+        hrv_sdnn=30.0,
+        hrv_30d_mean=60.0,
+    )
+    assert reasons == _SIX_REASONS
+    assert reasons == [
+        "gi_flare",
+        "sleep_below_4h",
+        "illness",
+        "knee_pain_high",
+        "rhr_spike",
+        "hrv_crash",
+    ]
+
+
+def test_collect_reasons_subset_preserves_relative_order():
+    # only sleep + knee fire — they keep their relative MODELS order
+    reasons = collect_reasons(
+        gi_symptoms=0,
+        illness=0,
+        knee_pain=5,
+        sleep_h=3.0,
+        rhr=None,
+        rhr_30d_mean=None,
+        hrv_sdnn=None,
+        hrv_30d_mean=None,
+    )
+    assert reasons == [SLEEP_BELOW_4H, KNEE_PAIN_HIGH]
+
+
+def test_collect_reasons_none_firing_is_empty():
+    reasons = collect_reasons(
+        gi_symptoms=0,
+        illness=0,
+        knee_pain=0,
+        sleep_h=8.0,
+        rhr=55.0,
+        rhr_30d_mean=55.0,
+        hrv_sdnn=60.0,
+        hrv_30d_mean=60.0,
+    )
+    assert reasons == []
+
+
+# --- override_for (§6.2 per-reason cards + most-restrictive precedence) ---
+
+
+def test_override_for_empty_is_none():
+    assert override_for([]) is None
+
+
+def test_override_for_single_reason_cards_match_constitution():
+    # §6.2: illness / no-sleep → rest
+    assert override_for([ILLNESS]) == WorkoutCard.rest
+    assert override_for([SLEEP_BELOW_4H]) == WorkoutCard.rest
+    # §6.2: red / no-impact → active_recovery (MODELS knee example)
+    assert override_for([KNEE_PAIN_HIGH]) == WorkoutCard.active_recovery
+    assert override_for([RHR_SPIKE]) == WorkoutCard.active_recovery
+    assert override_for([HRV_CRASH]) == WorkoutCard.active_recovery
+    # §6.2: lone GI flare → easy/mobility only
+    assert override_for([GI_FLARE]) == WorkoutCard.mobility
+
+
+def test_override_for_single_reason_cards_round_trip_to_wire_string():
+    # WorkoutCard is a str-Enum: members equal their MODELS wire token
+    assert override_for([ILLNESS]) == "rest"
+    assert override_for([KNEE_PAIN_HIGH]) == "active_recovery"
+    assert override_for([GI_FLARE]) == "mobility"
+
+
+def test_override_for_multi_reason_most_restrictive_wins():
+    # rest > active_recovery > mobility (DECISIONS 7)
+    assert override_for([GI_FLARE, ILLNESS]) == WorkoutCard.rest
+    assert override_for([GI_FLARE, KNEE_PAIN_HIGH]) == WorkoutCard.active_recovery
+    assert override_for([KNEE_PAIN_HIGH, ILLNESS]) == WorkoutCard.rest
+
+
+def test_override_for_returns_only_the_three_forced_cards_or_none():
+    # every non-empty firing subset maps into the three-card universe (or None when empty)
+    assert override_for([]) is None
+    for reason in _SIX_REASONS:
+        assert override_for([reason]) in _FORCED_CARDS
+    assert override_for(_SIX_REASONS) in _FORCED_CARDS

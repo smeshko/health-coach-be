@@ -27,6 +27,8 @@ mis-transcription is caught by a per-reason boundary test at the exact §6.2 edg
 
 from __future__ import annotations
 
+from app.core.enums import WorkoutCard
+
 # --- The six MODELS machine reason keys (MODELS § SafetyGate), in fixed listing order ---
 GI_FLARE = "gi_flare"
 SLEEP_BELOW_4H = "sleep_below_4h"
@@ -117,3 +119,57 @@ def hrv_crash_reason(hrv_sdnn: float | None, hrv_30d_mean: float | None) -> str 
         return None
     crash_threshold = hrv_30d_mean * (1 - HRV_CRASH_FRACTION)
     return HRV_CRASH if hrv_sdnn < crash_threshold else None
+
+
+def collect_reasons(
+    *,
+    gi_symptoms: int | None,
+    illness: int | None,
+    knee_pain: int | None,
+    sleep_h: float | None,
+    rhr: float | None,
+    rhr_30d_mean: float | None,
+    hrv_sdnn: float | None,
+    hrv_30d_mean: float | None,
+) -> list[str]:
+    """Collect the firing reason keys in the **fixed MODELS order** (epic §3 ``reasons[]``).
+
+    Calls the six per-reason predicates in the documented order — ``gi_flare``,
+    ``sleep_below_4h``, ``illness``, ``knee_pain_high``, ``rhr_spike``, ``hrv_crash`` —
+    and concatenates the non-``None`` results, so the list is stable and reproducible and
+    every trip is traceable to a named §6.2 reason. Keyword-only so the call site can
+    never pair the wrong rolling baseline with a reading.
+    """
+    candidates = (
+        gi_flare_reason(gi_symptoms),
+        sleep_below_4h_reason(sleep_h),
+        illness_reason(illness),
+        knee_pain_high_reason(knee_pain),
+        rhr_spike_reason(rhr, rhr_30d_mean),
+        hrv_crash_reason(hrv_sdnn, hrv_30d_mean),
+    )
+    return [reason for reason in candidates if reason is not None]
+
+
+def override_for(reasons: list[str]) -> WorkoutCard | None:
+    """Map the firing reason set to the single most-restrictive forced card (§6.2).
+
+    ``[]`` → ``None`` (not triggered). Otherwise the **most-restrictive-wins** precedence
+    ``rest > active_recovery > mobility`` (DECISIONS Decision 7), with each single-reason
+    card matching §6.2 verbatim:
+
+    - ``illness`` (§6.2 → rest) or ``sleep_below_4h`` (§6.2 → "rest or Z1 active
+      recovery") present ⇒ ``rest`` (the hardest stop — full rest).
+    - else ``knee_pain_high`` (§6.2 → no impact) / ``rhr_spike`` / ``hrv_crash`` (§6.2 →
+      "treat as red"; §6.1 RED = active-recovery/rest) ⇒ ``active_recovery`` (matches the
+      MODELS ``["knee_pain_high"] → "active_recovery"`` example).
+    - else ``gi_flare`` alone (§6.2 → "no hard training; easy/mobility only") ⇒
+      ``mobility`` (the least-restrictive of the three forced cards).
+    """
+    if not reasons:
+        return None
+    if ILLNESS in reasons or SLEEP_BELOW_4H in reasons:
+        return WorkoutCard.rest
+    if KNEE_PAIN_HIGH in reasons or RHR_SPIKE in reasons or HRV_CRASH in reasons:
+        return WorkoutCard.active_recovery
+    return WorkoutCard.mobility
