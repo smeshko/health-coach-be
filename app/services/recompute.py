@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from app.api.schemas.sync import SyncRequest
@@ -118,3 +119,32 @@ def ramp_cadence_for(profile: Profile, *, weeks_since_last_bump: int) -> Cadence
         target_spm=profile.thresholds.cadence_target_spm,
         weeks_since_last_bump=weeks_since_last_bump,
     )
+
+
+# --- Quality alternation (constitution §9; LLM §3 "deterministic flip off last week") ---
+
+
+class QualityFocus(StrEnum):
+    """The weekly run-quality kind — the closed two-value set §9 alternates between.
+
+    Lowercase wire values (`"threshold"`/`"vo2"`) match the docs; fed to the LLM as a
+    fixed constraint (LLM §3), never computed by it (DECISIONS 8).
+    """
+
+    THRESHOLD = "threshold"
+    VO2 = "vo2"
+
+
+def next_quality_focus(last_week: QualityFocus | None) -> QualityFocus:
+    """Flip the weekly quality focus off last week's plan (§9; LLM §3).
+
+    A pure, stateless **involution**: `threshold → vo2`, `vo2 → threshold`. A cold start
+    (`last_week is None` — no prior plan to flip off) opens on `THRESHOLD`, the milder,
+    base-phase quality day (§3 prioritises aerobic base before top-end VO₂; DECISIONS 9).
+    Total + exhaustive over the enum.
+    """
+    if last_week is QualityFocus.THRESHOLD:
+        return QualityFocus.VO2
+    if last_week is QualityFocus.VO2:
+        return QualityFocus.THRESHOLD
+    return QualityFocus.THRESHOLD

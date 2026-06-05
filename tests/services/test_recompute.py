@@ -17,7 +17,9 @@ from app.services.recompute import (
     CADENCE_RAMP_MIN_WEEKS,
     CADENCE_STEP_SPM,
     CadenceRamp,
+    QualityFocus,
     affected_dates,
+    next_quality_focus,
     noop_recompute,
     ramp_cadence,
     ramp_cadence_for,
@@ -263,3 +265,31 @@ def test_ramp_cadence_for_reads_live_profile() -> None:
     via_profile = ramp_cadence_for(profile, weeks_since_last_bump=2)
     via_keyword = ramp_cadence(current_spm=160, target_spm=172, weeks_since_last_bump=2)
     assert via_profile == via_keyword == CadenceRamp(new_spm=165, bumped=True)
+
+
+# --- TASK-002: quality alternation (threshold ↔ vo2) ---
+
+
+def test_next_quality_focus_threshold_flips_to_vo2() -> None:
+    assert next_quality_focus(QualityFocus.THRESHOLD) == QualityFocus.VO2
+
+
+def test_next_quality_focus_vo2_flips_to_threshold() -> None:
+    assert next_quality_focus(QualityFocus.VO2) == QualityFocus.THRESHOLD
+
+
+def test_next_quality_focus_cold_start_defaults_to_threshold() -> None:
+    # No prior plan (week one) → base-phase threshold, not VO₂ (DECISIONS 9).
+    assert next_quality_focus(None) == QualityFocus.THRESHOLD
+
+
+def test_next_quality_focus_is_an_involution() -> None:
+    # threshold → vo2 → threshold: consecutive weeks never repeat a focus (§9).
+    assert (
+        next_quality_focus(next_quality_focus(QualityFocus.THRESHOLD)) == QualityFocus.THRESHOLD
+    )
+    assert next_quality_focus(next_quality_focus(QualityFocus.VO2)) == QualityFocus.VO2
+
+
+def test_quality_focus_universe_is_exactly_two_lowercase_values() -> None:
+    assert {f.value for f in QualityFocus} == {"threshold", "vo2"}
