@@ -224,6 +224,21 @@ class DayTypePatternEntry(CamelModel):
     carbs_g: int
 
 
+class RestDayNutrition(CamelModel):
+    """The representative **rest-day** cut of the carb cycle (MODELS ``WeeklyNutrition.restDay``;
+    E13·P4).
+
+    ``{caloriesKcal, carbsG}`` — the deepest of the three day-type levels (``rest < moderate <
+    hard``), so the app can render the rest-day carb/calorie cut (PRD §7.5.4). Rest days are
+    never a *planned session*, so they carry no ``dayTypePattern`` entry; this single field
+    surfaces their numbers, computed from the **same** ``calories_kcal``/``carbs_g`` rest-day
+    selectors the per-session pattern uses (single source — DECISIONS Decision 2).
+    """
+
+    calories_kcal: int
+    carbs_g: int
+
+
 class LastWeekNutrition(CamelModel):
     """The 7-day intake scorecard MODELS' ``WeeklyNutrition.lastWeek`` carries (E13·P1).
 
@@ -289,9 +304,12 @@ class WeeklyNutrition(CamelModel):
     The constant targets (``proteinG``/``fatGLow/High``/``hydrationLLow/High``) + the
     week-average target (``avgCaloriesKcal`` = the §7.1 ``Target_avg``, the figure the
     per-day-type calories net to — Decision 5) + the ``dayTypePattern`` from the planned
-    picks. ``lastWeek`` (7-day intake adherence) is a typed ``LastWeekNutrition`` (E13·P1)
-    or ``None`` (no logged dietary coverage); ``ComputeNutritionNode`` builds it via
-    ``LastWeekNutrition.from_adherence``.
+    picks. ``restDay`` (E13·P4) is the representative rest-day cut completing the carb cycle —
+    rest days are not planned sessions, so they have no ``dayTypePattern`` entry. ``lastWeek``
+    (7-day intake adherence) is a typed ``LastWeekNutrition`` (E13·P1) or ``None`` (no logged
+    dietary coverage); ``ComputeNutritionNode`` builds it via ``LastWeekNutrition.from_adherence``.
+    ``restDay``/``lastWeek`` are optional (``None`` default) so a legacy cached payload still
+    re-validates on cache hit.
     """
 
     protein_g: int
@@ -301,6 +319,7 @@ class WeeklyNutrition(CamelModel):
     hydration_l_high: float
     avg_calories_kcal: int
     day_type_pattern: list[DayTypePatternEntry]
+    rest_day: RestDayNutrition | None = None
     last_week: LastWeekNutrition | None = None
 
     @field_validator("last_week", mode="before")
@@ -468,6 +487,12 @@ def compute_weekly_nutrition(
         avg_calories_kcal=_round_half_up(target),
         day_type_pattern=day_type_pattern(
             picks, weight_kg=weight_kg, nutrition=nutrition, athlete=athlete
+        ),
+        # The representative rest-day cut (E13·P4), from the SAME rest-day selectors the
+        # per-session pattern uses (so a `rest` entry and `restDay` carry identical numbers).
+        rest_day=RestDayNutrition(
+            calories_kcal=calories_kcal(DayType.rest, tdee_kcal=t, target_avg_kcal=target),
+            carbs_g=carbs_g(weight_kg, DayType.rest, nutrition.carbs_g_per_kg),
         ),
         last_week=last_week,
     )
