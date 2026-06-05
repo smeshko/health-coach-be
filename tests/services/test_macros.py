@@ -22,13 +22,21 @@ import math
 
 import pytest
 
+from app.core.enums import DayType
+from app.core.profile import CarbsPerKg
 from app.services.macros import (
     BMR_SEX_CONSTANT,
     MAX_DEFICIT_PCT,
+    MAX_PROTEIN_G_PER_KG,
+    REST_DEFICIT_PCT,
     _round_half_up,
     bmr,
+    calories_kcal,
+    carbs_g,
     clamp_deficit,
     deficit_target,
+    fat_g_range,
+    protein_g,
     tdee,
 )
 
@@ -40,6 +48,9 @@ _AGE = 34
 # The §7.1 worked chain *at the plan's pinned activity_factor 1.65* (pure-arithmetic pins).
 _BMR_81 = 1732.5
 _TDEE_AF165 = 2858.625  # 1732.5 × 1.65
+
+# The §5 carb-multiplier block (profile.yaml `nutrition.carbs_g_per_kg`).
+_CARBS = CarbsPerKg(hard_low=4, hard_high=5, moderate=3, rest_low=2, rest_high=2.5)
 
 
 # --- bmr (§7.1 Mifflin-St Jeor; DECISIONS 1/2) ---
@@ -114,3 +125,106 @@ def test_round_half_up_pins_the_point_five_edge():
     assert _round_half_up(145.8) == 146
     assert _round_half_up(81.0) == 81
     assert _round_half_up(64.8) == 65
+
+
+# --- protein_g (§7.2 constant protein, kidney-stone cap ≤2.0; DECISIONS 3) ---
+
+
+def test_protein_g_at_worked_point():
+    # §7.2 "≈ 146 g" — 81 × 1.8 = 145.8 → 146 (MODELS proteinG: 146).
+    assert protein_g(_W, 1.8) == 146
+
+
+def test_protein_g_re_asserts_the_2_0_cap():
+    assert MAX_PROTEIN_G_PER_KG == 2.0
+    # 81 × 2.0 = 162; an over-cap g/kg is clamped to 2.0, never 2.5.
+    assert protein_g(_W, 2.5) == _round_half_up(_W * 2.0) == 162
+    assert protein_g(_W, 2.0) == 162  # exact cap → 162
+    assert protein_g(_W, 2.5) != _round_half_up(_W * 2.5)  # never the un-capped value
+
+
+def test_protein_g_returns_int():
+    assert isinstance(protein_g(_W, 1.8), int)
+
+
+# --- fat_g_range (§7.2 fat 0.8–1.0 g/kg) ---
+
+
+def test_fat_g_range_at_worked_point():
+    # §7.2 "≈ 65–80 g": 81 × 0.8 = 64.8 → 65; 81 × 1.0 = 81.0 → 81 (engine's honest
+    # round; MODELS shows fatGHigh: 80, the doc's down-round — a noted divergence).
+    assert fat_g_range(_W, 0.8, 1.0) == (65, 81)
+    low, high = fat_g_range(_W, 0.8, 1.0)
+    assert isinstance(low, int) and isinstance(high, int)
+
+
+# --- carbs_g (§7.3 day-type carb cycling; band midpoint × W; DECISIONS 5) ---
+
+
+def test_carbs_g_by_day_type_worked_points():
+    # hard mid(4,5)=4.5 → 81 × 4.5 = 364.5 → 365 (MODELS hard carbsG: 365).
+    assert carbs_g(_W, DayType.hard, _CARBS) == 365
+    # moderate 3 → 243 (§7.3 "~245 g" is the doc's round figure).
+    assert carbs_g(_W, DayType.moderate, _CARBS) == 243
+    # rest mid(2,2.5)=2.25 → 81 × 2.25 = 182.25 → 182 (inside §7.3 "~165–200 g").
+    assert carbs_g(_W, DayType.rest, _CARBS) == 182
+
+
+def test_carbs_g_strictly_increasing_rest_moderate_hard():
+    rest = carbs_g(_W, DayType.rest, _CARBS)
+    moderate = carbs_g(_W, DayType.moderate, _CARBS)
+    hard = carbs_g(_W, DayType.hard, _CARBS)
+    assert rest < moderate < hard
+
+
+def test_carbs_g_accepts_the_wire_string_values():
+    # DayType is a str-Enum, so the MODELS wire strings work directly.
+    assert carbs_g(_W, "hard", _CARBS) == carbs_g(_W, DayType.hard, _CARBS)
+    assert carbs_g(_W, "moderate", _CARBS) == carbs_g(_W, DayType.moderate, _CARBS)
+    assert carbs_g(_W, "rest", _CARBS) == carbs_g(_W, DayType.rest, _CARBS)
+
+
+# --- calories_kcal (§7.3 TDEE × day-type; rest cap-routed ≤0.20; DECISIONS 5) ---
+
+
+def test_calories_kcal_by_day_type_worked_points():
+    # At the plan's AF=1.65 worked chain (TDEE 2858.625, target 2515.59):
+    t, target = _TDEE_AF165, 2515.59
+    assert calories_kcal(DayType.hard, tdee_kcal=t, target_avg_kcal=target) == 2859  # ~TDEE
+    assert calories_kcal(DayType.moderate, tdee_kcal=t, target_avg_kcal=target) == 2516
+    # rest = TDEE × (1 − 0.20) = 2286.9 → 2287 (cap-safe; §7.3's "~2,200" is illustrative).
+    assert calories_kcal(DayType.rest, tdee_kcal=t, target_avg_kcal=target) == 2287
+
+
+def test_calories_kcal_rest_routes_through_the_deficit_cap():
+    assert REST_DEFICIT_PCT == 0.20
+    t = _TDEE_AF165
+    # The rest deficit is cap-routed, so the rest total can never dip below 0.80·TDEE.
+    assert calories_kcal(DayType.rest, tdee_kcal=t, target_avg_kcal=2515.59) == _round_half_up(
+        t * (1 - clamp_deficit(REST_DEFICIT_PCT))
+    )
+
+
+def test_calories_kcal_strictly_increasing_rest_moderate_hard():
+    t, target = _TDEE_AF165, 2515.59
+    rest = calories_kcal(DayType.rest, tdee_kcal=t, target_avg_kcal=target)
+    moderate = calories_kcal(DayType.moderate, tdee_kcal=t, target_avg_kcal=target)
+    hard = calories_kcal(DayType.hard, tdee_kcal=t, target_avg_kcal=target)
+    assert rest < moderate < hard
+
+
+# --- the carb-cycling contract: only carbs + calories move with dayType ---
+
+
+def test_protein_and_fat_are_constant_across_day_types():
+    # protein_g / fat_g_range take no dayType — they are identical for every day type,
+    # while carbs_g / calories_kcal differ (§7.2 "Protein stays ~constant every day").
+    proteins = {protein_g(_W, 1.8) for _ in DayType}
+    fats = {fat_g_range(_W, 0.8, 1.0) for _ in DayType}
+    assert len(proteins) == 1
+    assert len(fats) == 1
+    t, target = _TDEE_AF165, 2515.59
+    carbs = {carbs_g(_W, dt, _CARBS) for dt in DayType}
+    cals = {calories_kcal(dt, tdee_kcal=t, target_avg_kcal=target) for dt in DayType}
+    assert len(carbs) == 3  # all three differ
+    assert len(cals) == 3
