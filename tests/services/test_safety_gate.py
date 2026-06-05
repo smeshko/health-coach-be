@@ -455,3 +455,18 @@ def test_safety_gate_rejects_unknown_reason_key():
     # a valid known key still constructs fine
     ok = SafetyGate(triggered=True, reasons=(ILLNESS,), overrideTo=WorkoutCard.rest)
     assert ok.reasons == (ILLNESS,)
+
+
+# --- Review round 4: tolerant strict float boundaries for RHR/HRV gates ---
+
+
+def test_rhr_spike_exact_plus12_with_decimal_baseline_does_not_trip():
+    # 67.4 - 55.4 = 12.000000000000007 in binary float, but mathematically exactly +12,
+    # which is the strict no-trip boundary (review #4).
+    assert rhr_spike_reason(67.4, 55.4) is None
+
+
+def test_hrv_crash_exact_40pct_with_decimal_baseline_does_not_trip():
+    # 33.7 * 0.6 = 20.220000000000002 in binary float; an HRV reading of exactly 20.22 is
+    # exactly 40 % below (the strict no-trip boundary), so it must NOT trip (review #4).
+    assert hrv_crash_reason(20.22, 33.7) is None

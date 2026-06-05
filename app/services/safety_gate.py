@@ -27,6 +27,7 @@ mis-transcription is caught by a per-reason boundary test at the exact §6.2 edg
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -55,6 +56,29 @@ KNEE_PAIN_FLOOR = 3
 RHR_SPIKE_BPM = 12.0
 # §6.2 "HRV crash >40 % → treat as red"  (strict `> 40 %` below the rolling mean)
 HRV_CRASH_FRACTION = 0.40
+
+# `daily_metrics` readings and rolling means are floats, so an exact §6.2 boundary
+# (Δ == +12 bpm, a 40 %-below HRV crash threshold) can land a hair off after binary float
+# arithmetic — e.g. 67.4 − 55.4 = 12.000000000000007 — and wrongly trip a STRICT gate.
+# These tolerant strict comparisons keep an exact boundary on the no-trip side, matching
+# the §6.2 strict-`>` contract and the same pattern used in readiness.py (review round 4).
+_BOUNDARY_REL_TOL = 1e-9
+_BOUNDARY_ABS_TOL = 1e-12
+
+
+def _at_boundary(value: float, boundary: float) -> bool:
+    """``value`` equals ``boundary`` within float noise."""
+    return math.isclose(value, boundary, rel_tol=_BOUNDARY_REL_TOL, abs_tol=_BOUNDARY_ABS_TOL)
+
+
+def _strictly_above(value: float, boundary: float) -> bool:
+    """``value > boundary``, but an exact boundary (within float noise) is **not** above."""
+    return value > boundary and not _at_boundary(value, boundary)
+
+
+def _strictly_below(value: float, boundary: float) -> bool:
+    """``value < boundary``, but an exact boundary (within float noise) is **not** below."""
+    return value < boundary and not _at_boundary(value, boundary)
 
 
 def gi_flare_reason(gi_symptoms: int | None) -> str | None:
@@ -109,7 +133,7 @@ def rhr_spike_reason(rhr: float | None, rhr_30d_mean: float | None) -> str | Non
     if rhr is None or rhr_30d_mean is None:
         return None
     delta = rhr - rhr_30d_mean
-    return RHR_SPIKE if delta > RHR_SPIKE_BPM else None
+    return RHR_SPIKE if _strictly_above(delta, RHR_SPIKE_BPM) else None
 
 
 def hrv_crash_reason(hrv_sdnn: float | None, hrv_30d_mean: float | None) -> str | None:
@@ -127,7 +151,7 @@ def hrv_crash_reason(hrv_sdnn: float | None, hrv_30d_mean: float | None) -> str 
     if hrv_sdnn is None or hrv_30d_mean is None or hrv_30d_mean <= 0:
         return None
     crash_threshold = hrv_30d_mean * (1 - HRV_CRASH_FRACTION)
-    return HRV_CRASH if hrv_sdnn < crash_threshold else None
+    return HRV_CRASH if _strictly_below(hrv_sdnn, crash_threshold) else None
 
 
 def collect_reasons(
