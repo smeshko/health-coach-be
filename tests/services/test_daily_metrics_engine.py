@@ -491,6 +491,26 @@ def test_current_body_weight_ignores_future_reading(session: Session) -> None:
     assert current_body_weight(session, anchor) == 80.0
 
 
+def test_current_body_weight_skips_non_positive_garbage(session: Session) -> None:
+    """A materialised 0/negative body_weight is garbage (bad HealthKit body_mass), not a usable
+    weight — it is skipped and the walk-back finds the latest valid positive reading, so a bad
+    metric never reaches the macro engine's positive-weight guard (review)."""
+    anchor = date(2026, 6, 10)
+    _seed_weight(session, anchor - timedelta(days=2), 80.0)
+    _seed_weight(session, anchor - timedelta(days=1), -5.0)  # garbage → skipped
+    _seed_weight(session, anchor, 0.0)  # garbage → skipped
+    session.commit()
+    assert current_body_weight(session, anchor) == 80.0  # walks back to the latest positive
+
+    # An anchor whose window has ONLY non-positive readings (before the 80.0 above) → None,
+    # so the caller falls back to goal_weight_kg.
+    bad_only_anchor = date(2026, 6, 5)  # precedes the 80.0 reading on 2026-06-08
+    _seed_weight(session, date(2026, 6, 4), 0.0)
+    _seed_weight(session, date(2026, 6, 5), -1.0)
+    session.commit()
+    assert current_body_weight(session, bad_only_anchor) is None
+
+
 @pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])
 def test_hard_day_per_hard_activity_type(session: Session, activity: str) -> None:
     _seed(session, _workout(activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))

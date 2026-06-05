@@ -499,7 +499,7 @@ def body_weight(session: Session, day: date) -> float | None:
 
 
 def current_body_weight(session: Session, anchor: date) -> float | None:
-    """The athlete's **current/live** weight: the latest non-null materialised
+    """The athlete's **current/live** weight: the latest **positive** materialised
     `daily_metrics.body_weight` on or before `anchor` (E13·P3).
 
     The multi-day ("≤ anchor") counterpart to `body_weight(session, day)` — where that reads
@@ -508,13 +508,19 @@ def current_body_weight(session: Session, anchor: date) -> float | None:
     **materialised** column (the recompute engine already deduped the day's `body_mass` into it
     — DECISIONS Decision 1), not raw `Records`. `DailyMetrics.date` is TEXT ISO-8601, so a
     lexical `<=` + `ORDER BY date DESC` selects the chronologically latest reading on/before the
-    anchor. Returns `None` when no non-null reading exists at/before the anchor (caller falls
-    back to `goal_weight_kg`).
+    anchor.
+
+    Only **positive** weights qualify (`body_weight > 0`): a materialised `0`/negative from bad
+    HealthKit `body_mass` is garbage, not a usable weight, so it is **skipped** — the walk-back
+    continues to the latest valid reading rather than letting a non-positive value reach the
+    macro engine's positive-weight guard (which would 5xx the brief — review). (`> 0` also
+    excludes NULL and NaN.) Returns `None` when no positive reading exists at/before the anchor
+    (caller falls back to `goal_weight_kg`).
     """
     return session.scalars(
         select(DailyMetrics.body_weight)
         .where(
-            DailyMetrics.body_weight.is_not(None),
+            DailyMetrics.body_weight > 0,
             DailyMetrics.date <= anchor.isoformat(),
         )
         .order_by(DailyMetrics.date.desc())
