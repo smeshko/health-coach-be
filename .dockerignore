@@ -32,14 +32,14 @@ epics/
 baseline.db
 export.xml
 
-# Tests + host-side tooling (not needed in the runtime image)
+# Tests (not needed in the runtime image). NOTE: `scripts/` IS shipped — the app imports
+# `scripts.compute_zones` at runtime (app/services/recompute.py); its read-only build
+# corpus (baseline.db/export.xml) is excluded above.
 tests/
-scripts/
 
-# Container/build files themselves
+# Container/build files themselves (docker-entrypoint.sh IS copied into the image)
 Dockerfile
 .dockerignore
-docker-entrypoint.sh
 
 # Misc
 .DS_Store

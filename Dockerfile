@@ -35,14 +35,40 @@ RUN uv sync --frozen --no-dev --no-install-project
 # volume on start — added in the entrypoint below).
 COPY app ./app
 COPY alembic ./alembic
+# `scripts/` is a RUNTIME import (app/services/recompute.py → `scripts.compute_zones`),
+# not just a build tool — ship it (its baseline.db/export.xml corpus is .dockerignore'd).
+COPY scripts ./scripts
 # `README.md` is referenced by pyproject's `readme = …`, so the hatchling wheel build needs it.
 COPY alembic.ini profile.yaml README.md ./
 
 # Install the project itself (the `app` package) into the venv now the source is present.
 RUN uv sync --frozen --no-dev
 
+# The migrate-on-start entrypoint (POSIX shell): alembic upgrade head → exec one uvicorn.
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+
+# Run as a NON-ROOT user. Create the volume mount point and hand /app (incl. the venv) +
+# /data to the unprivileged user so `uv run` + the SQLite/WAL writes work without root.
+RUN chmod +x /app/docker-entrypoint.sh \
+    && groupadd --system app \
+    && useradd --system --gid app --home-dir /app app \
+    && mkdir -p /data \
+    && chown -R app:app /app /data
+
+# One durable `app.db` (+ -wal/-shm) on a VOLUME so it survives container recreation.
+# Document APP_DB_PATH=/data/app.db and run with `-v <vol>:/data`.
+VOLUME ["/data"]
+ENV APP_DB_PATH=/data/app.db \
+    HOME=/app
+
 EXPOSE 8000
 
-# Single synchronous process — NO --workers, NO --reload (`--reload` is local-dev only).
-# The migrate-on-start ENTRYPOINT + HEALTHCHECK + non-root USER + VOLUME land in TASK-002.
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Liveness via the UNAUTHENTICATED GET /health (the boot/HEALTHCHECK probe by design).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)"]
+
+USER app
+
+# A single synchronous process — NO --workers, NO --reload (local-dev only). The
+# entrypoint runs `alembic upgrade head` then `exec`s the one uvicorn process (PID 1).
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
