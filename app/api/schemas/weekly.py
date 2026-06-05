@@ -24,8 +24,15 @@ for the weekly output; E11's daily output imports or re-homes it — RESEARCH
 Uncertainty.)
 """
 
+from datetime import date, datetime
+
+from pydantic import field_validator
+
 from app.api.schemas.base import CamelModel
 from app.core.enums import NarrativeType, Weekday, WorkoutCard
+from app.services.derive.plan import PlannedSession
+from app.services.macros import WeeklyNutrition
+from app.services.targets import WeeklyTargets
 
 
 class NarrativeSection(CamelModel):
@@ -70,4 +77,77 @@ class WeeklyPlanLLMOutput(CamelModel):
 
     core: list[PlannedPick]
     extras: list[PlannedPick]
+    narrative: list[NarrativeSection]
+
+
+# --------------------------------------------------------------------------- #
+# POST /brief/weekly — request + response wire models (E10·P3; MODELS).
+# --------------------------------------------------------------------------- #
+class WeeklyBriefRequest(CamelModel):
+    """The ``POST /brief/weekly`` request body (MODELS ``WeeklyBriefRequest``).
+
+    ``iso_week`` is ``YYYY-Www`` or ``None`` (absent → the current Europe/Sofia ISO week,
+    resolved server-side in the route — never trusted from the client). The validator
+    **parses** the week with ``date.fromisocalendar`` (not a shape-only regex), so a
+    malformed shape **or** an out-of-range week (``2026-W00``/``2026-W54``/an invalid
+    ``W53`` for a 52-week year) raises at request-validation time → ``422``
+    ``validation_error`` via the E1 handler, never reaching the route's later
+    ``date.fromisocalendar`` (which would otherwise ``ValueError`` → ``500``) — codex
+    round-1 #4.
+    """
+
+    iso_week: str | None = None
+
+    @field_validator("iso_week")
+    @classmethod
+    def _validate_iso_week(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        year_str, _, week_str = value.partition("-W")
+        if not year_str or not week_str or not week_str.isdigit() or not year_str.isdigit():
+            raise ValueError("isoWeek must be 'YYYY-Www'")
+        # Parsing the Monday rejects out-of-range weeks (W00, W54, an invalid W53).
+        date.fromisocalendar(int(year_str), int(week_str), 1)
+        return value
+
+
+class WeeklyBudgets(CamelModel):
+    """The §5.1 weekly budget envelope (MODELS ``WeeklyBudgets``) — the wire shape.
+
+    ``WeeklyBudgets`` is a frozen ``app.core.constraints`` dataclass (not a wire model),
+    serialised into ``plans.payload`` via ``dataclasses.asdict`` (snake_case keys); this
+    ``CamelModel`` accepts that snake_case input (``populate_by_name``) and re-emits
+    camelCase on the wire. ``long_run_km`` is nullable (no prior long-run history).
+    """
+
+    hard_days: int
+    strength_sessions: int
+    long_run_km: float | None = None
+    deload: bool
+
+
+class WeeklyPlanData(CamelModel):
+    """The ``WeeklyPlan.data`` sub-object (MODELS ``WeeklyPlan`` ``data``).
+
+    The code budgets + the LLM picks expanded (``core``/``extras``) + derived
+    targets/nutrition + the endpoint-stamped ``isoWeek``/``weekStart`` (Monday of the ISO
+    week, Europe/Sofia)/``generatedAt``/``cached``/``constantsRecomputed``.
+    """
+
+    iso_week: str
+    week_start: date
+    budgets: WeeklyBudgets
+    core: list[PlannedSession]
+    extras: list[PlannedSession]
+    targets: WeeklyTargets
+    nutrition: WeeklyNutrition
+    constants_recomputed: bool
+    generated_at: datetime
+    cached: bool
+
+
+class WeeklyPlan(CamelModel):
+    """The ``POST /brief/weekly`` response (MODELS ``WeeklyPlan``) — ``{ data, narrative }``."""
+
+    data: WeeklyPlanData
     narrative: list[NarrativeSection]
