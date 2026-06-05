@@ -32,6 +32,7 @@ from app.services.macros import (
     REST_DEFICIT_PCT,
     DayTypePatternEntry,
     LastWeekNutrition,
+    RestDayNutrition,
     WeeklyNutrition,
     _round_half_up,
     bmr,
@@ -662,6 +663,72 @@ def test_per_day_nutrition_target_leaves_other_fields_none():
 def test_per_day_nutrition_target_rejects_non_positive_weight():
     with pytest.raises(ValueError, match="weight_kg"):
         per_day_nutrition_target(weight_kg=0.0, nutrition=_NUTRITION, athlete=_ATHLETE)
+
+
+# --- E13·P4: WeeklyNutrition.restDay (the rest-day cut of the carb cycle) ---
+
+
+def _t_and_target() -> tuple[float, float]:
+    """The in-scope `t`/`target` `compute_weekly_nutrition` derives for the fixture athlete."""
+    t = tdee(
+        bmr(weight_kg=_W, height_cm=_ATHLETE.height_cm, age=_ATHLETE.age, sex=_ATHLETE.sex),
+        _NUTRITION.activity_factor,
+    )
+    return t, deficit_target(t, _NUTRITION.deficit_pct)
+
+
+def test_rest_day_matches_rest_selectors():
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    t, target = _t_and_target()
+    assert weekly.rest_day is not None
+    # Single-sourced with the per-session selectors: a `rest` dayTypePattern entry would match.
+    assert weekly.rest_day.calories_kcal == calories_kcal(
+        DayType.rest, tdee_kcal=t, target_avg_kcal=target
+    )
+    assert weekly.rest_day.carbs_g == carbs_g(_W, DayType.rest, _CARBS)
+
+
+def test_rest_day_is_below_moderate():
+    """The rest-day cut is the deepest level — `rest < moderate` (the carb-cycle visual). Pinned
+    at the production sub-cap deficit (0.12) where the ordering is strict (at the 0.20 cap
+    calories_kcal makes rest == moderate, the documented relaxed ordering)."""
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    t, target = _t_and_target()
+    moderate_cal = calories_kcal(DayType.moderate, tdee_kcal=t, target_avg_kcal=target)
+    moderate_carbs = carbs_g(_W, DayType.moderate, _CARBS)
+    assert weekly.rest_day is not None
+    assert weekly.rest_day.calories_kcal < moderate_cal
+    assert weekly.rest_day.carbs_g < moderate_carbs
+
+
+def test_weekly_nutrition_restday_serialises_camel_and_optional():
+    # Populated → restDay { caloriesKcal, carbsG } in camelCase.
+    weekly = compute_weekly_nutrition(
+        picks=_PICKS, weight_kg=_W, nutrition=_NUTRITION, athlete=_ATHLETE
+    )
+    dumped = weekly.model_dump(mode="json")["restDay"]
+    assert set(dumped) == {"caloriesKcal", "carbsG"}
+    assert isinstance(dumped["caloriesKcal"], int) and isinstance(dumped["carbsG"], int)
+
+    # A direct RestDayNutrition round-trips camelCase.
+    assert RestDayNutrition(calories_kcal=2240, carbs_g=180).model_dump(mode="json") == {
+        "caloriesKcal": 2240, "carbsG": 180,
+    }
+
+    # A legacy cached payload WITHOUT restDay validates (→ rest_day is None), so the cache-hit
+    # re-validation path won't 500.
+    legacy = {
+        "proteinG": 146, "fatGLow": 65, "fatGHigh": 80,
+        "hydrationLLow": 3.0, "hydrationLHigh": 3.5,
+        "avgCaloriesKcal": 2520, "dayTypePattern": [], "lastWeek": None,
+    }
+    revalidated = WeeklyNutrition.model_validate(legacy)
+    assert revalidated.rest_day is None
+    assert revalidated.model_dump(mode="json")["restDay"] is None
 
 
 # --- DayType is an input, never chosen/floored; the accepted value set is the three ---
