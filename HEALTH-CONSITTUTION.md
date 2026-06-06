@@ -266,7 +266,7 @@ baselines** (30-day HRV mean, RHR mean), not population norms.
      GREEN → as planned (option to pull in an extra if week is behind)
      AMBER → reduce/downgrade per §6.1 (or swap to low-impact)
      RED   → active-recovery/rest card
-5. Attach cadence target (runs), HR caps, and **pick the day's carb `dayType`** (within the guardrail) → code computes the macro focus (§7).
+5. Attach cadence target (runs), HR caps, and **pick the day's carb `dayType`** (within the guardrail) → code computes the macro focus (§7). **Weigh yesterday's logged intake (`intakeSummary` in the context — null if nothing was logged): if protein missed target or calories ran notably low/high, nudge the `dayType` accordingly (e.g. low-fuel + a rest/easy day → don't push the deficit further) and call it out briefly in a `nutrition` narrative section.** Speak to it qualitatively (e.g. "protein ran a little low yesterday") rather than quoting an exact percentage — the authoritative adherence figure is the one shown in `intakeYesterday`.
 6. Emit suggestion + 1–2 alternatives + a skip-OK flag.
 ```
 

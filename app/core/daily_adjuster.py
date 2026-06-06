@@ -222,14 +222,29 @@ class ComputeReadinessNode(Node):
         # `metadata["computed"]` (daily_agent._daily_feeds → the USER context + DailyDeps).
         # `safety_gate` is injected by GateTrippedRoute (computed during routing, below).
         profile = load_profile()
+        live_weight = _live_weight(today, profile)
+        # Yesterday's logged intake, so the LLM actually sees fuelling history (constitution
+        # §6 lists it as a daily input; §7 "the daily loop reports yesterday's adherence").
+        # `vsTarget` needs a target, but today's day-type is the LLM's own pick (resolved
+        # later in DeriveSessionNode) — so reference it against a neutral `moderate` day.
+        # Protein is day-type-invariant (§7.2) so `proteinHit` is exact; `caloriesPct` is an
+        # approximate situational cue (the response's authoritative figure is the one
+        # DeriveSessionNode derives against the chosen day-type's macro focus).
+        reference_target = compute_macro_focus(
+            day_type=DayType.moderate,
+            weight_kg=live_weight,
+            nutrition=profile.nutrition,
+            athlete=profile.athlete,
+        )
         task_context.metadata["profile"] = profile
         task_context.metadata["computed"] = {
             "readiness": readiness,
             "band": readiness.band,
             "week_plan_cards": _week_plan_cards(session, event.date),
             "flags": _checkin_flags(session, event.date),
-            "live_weight_kg": _live_weight(today, profile),
+            "live_weight_kg": live_weight,
             "constants": _daily_constants(profile),
+            "intake_summary": derive_intake_summary(yesterday, reference_target),
         }
         return task_context
 

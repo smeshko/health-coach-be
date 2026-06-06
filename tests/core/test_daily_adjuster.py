@@ -147,6 +147,59 @@ def test_compute_readiness_node_does_not_write_back_daily_metrics(session, profi
     assert row.band is None
 
 
+def test_compute_readiness_node_bridges_yesterday_intake(session, profile_path):
+    """ComputeReadinessNode surfaces yesterday's logged intake into the agent context, so
+    the LLM actually sees fuelling history (constitution §6/§7). `proteinHit` is exact (the
+    protein target is day-type-invariant); the reference target is a neutral `moderate` day."""
+    from app.api.schemas.daily import IntakeSummary
+    from app.core.daily_adjuster import ComputeReadinessNode
+
+    # Yesterday: clearly over the protein target, ~maintenance calories logged.
+    seed_metrics(
+        session,
+        yesterday_kwargs=dict(kcal_in=2300.0, protein_in_g=250.0, carbs_in_g=280.0),
+    )
+    ctx = _ctx(session)
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))
+
+    intake = ctx.metadata["computed"]["intake_summary"]
+    assert isinstance(intake, IntakeSummary)
+    assert intake.date == YESTERDAY
+    assert intake.calories_kcal == 2300
+    assert intake.protein_g == 250
+    assert intake.vs_target.protein_hit is True
+    assert intake.vs_target.calories_pct > 0
+
+
+def test_compute_readiness_node_intake_summary_none_when_yesterday_unlogged(
+    session, profile_path
+):
+    """No nutrition logged yesterday → `intake_summary` is None (never a fabricated zero)."""
+    from app.core.daily_adjuster import ComputeReadinessNode
+
+    seed_metrics(session)  # base rows carry no nutrition columns
+    ctx = _ctx(session)
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))
+
+    assert ctx.metadata["computed"]["intake_summary"] is None
+
+
+def test_yesterday_intake_reaches_the_llm_user_context(session, profile_path):
+    """End-to-end of the seam: after ComputeReadinessNode bridges the feeds, the daily
+    agent's serialized USER context carries a non-null `intakeSummary` (was always null)."""
+    from app.core.daily_adjuster import ComputeReadinessNode
+    from app.core.daily_agent import TuneSessionNode
+
+    seed_metrics(session, yesterday_kwargs=dict(kcal_in=2100.0, protein_in_g=120.0))
+    ctx = _ctx(session)
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))
+
+    user_context = json.loads(TuneSessionNode(task_context=ctx).build_run_input(ctx))
+    assert user_context["intakeSummary"] is not None
+    assert user_context["intakeSummary"]["caloriesKcal"] == 2100
+    assert user_context["intakeSummary"]["proteinG"] == 120
+
+
 # --------------------------------------------------------------------------- #
 # GateTrippedRoute + SafetyGateRouter.
 # --------------------------------------------------------------------------- #
