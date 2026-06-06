@@ -1,0 +1,1606 @@
+openapi: 3.1.0
+info:
+  title: Coach App Backend
+  summary: Deterministic + LLM health-coaching briefs.
+  version: 0.1.0
+  description: "Backend for the Coach App — deterministic health-metric ingestion plus LLM-authored\n\
+    training/nutrition briefs. This spec is the contract for the iOS client.\n\n## Conventions\n\n- **JSON\
+    \ casing** — every field on the wire is **camelCase**. Input is accepted in\n  either casing, but\
+    \ responses are always camelCase.\n- **Authentication** — every route except `GET /health` requires\n\
+    \  `Authorization: Bearer <token>`, a single long-lived token shared by the one user\n  (no per-user\
+    \ accounts). A missing or wrong token returns `401` with the error\n  envelope and a `WWW-Authenticate:\
+    \ Bearer` header.\n- **Errors** — every non-2xx response is the single envelope\n  `{ \"error\": {\
+    \ \"code\", \"message\", \"detail\" } }`. `code` is a closed enum\n  (`validation_error`, `unauthorized`,\
+    \ `not_found`, `brief_generation_failed`,\n  `upstream_timeout`, `internal_error`); `message` is a\
+    \ safe public string;\n  `detail` is an optional extra string (populated for validation errors, otherwise\n\
+    \  `null`). Internal exception text is never put on the wire.\n- **Timestamps** — `serverTime` / `generatedAt`\
+    \ are ISO-8601 instants rendered in\n  **Europe/Sofia** local time (DST-aware: +02:00 winter, +03:00\
+    \ summer).\n- **Nulls vs absent** — optional fields may be omitted or sent as explicit `null`;\n \
+    \ the two are treated identically.\n\n## Briefs: get-or-generate + caching\n\n`POST /brief/weekly`\
+    \ and `POST /brief/daily` are **get-or-generate**: they return a\ncached brief for the requested period\
+    \ if one exists, otherwise generate (LLM) and\npersist it. Send `{}` as the body to target the current\
+    \ Europe/Sofia period, or set\n`isoWeek` / `date` to target a specific one. Pass `?refresh=true` to\
+    \ force\nregeneration. The response's `data.cached` flag tells you which path ran.\n\nA **tripped\
+    \ safety gate** on the daily brief is a normal `200` response\n(`data.safetyGate.triggered = true`\
+    \ with an override session), never an error.\nBrief generation failures surface as `502` (`brief_generation_failed`)\
+    \ or `504`\n(`upstream_timeout`).\n"
+paths:
+  /health:
+    get:
+      summary: Liveness ping (unauthenticated)
+      operationId: getHealth
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      tags:
+      - System
+  /probe:
+    get:
+      summary: Auth probe — 200 with a valid token, 401 without
+      operationId: probeAuth
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: boolean
+                type: object
+                title: Response Probe Probe Get
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+      - HTTPBearer: []
+      tags:
+      - System
+  /sync:
+    post:
+      summary: Ingest HealthKit records, workouts, activity, check-in & strength test
+      description: Run the ingest upserts in one transaction, recompute affected days, respond.
+      operationId: syncHealthData
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SyncRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncResponse'
+        '422':
+          $ref: '#/components/responses/RequestValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+      - HTTPBearer: []
+      tags:
+      - Ingest
+  /brief/weekly:
+    post:
+      summary: Get or generate the weekly training/nutrition brief
+      description: 'Get-or-generate the weekly brief for the resolved ISO week; assemble ``WeeklyPlan``.
+
+
+        Resolves the period key (``body.iso_week`` or the current Europe/Sofia week), runs the
+
+        get-or-generate service (which commits on a miss/refresh), applies the staged
+
+        ``profile.yaml`` rewrite **only after** that commit succeeded, and assembles the
+
+        ``{ data, narrative }`` envelope with ``weekStart``/``generatedAt``/``cached`` set.'
+      operationId: getWeeklyBrief
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: refresh
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WeeklyBriefRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeeklyPlan'
+        '422':
+          $ref: '#/components/responses/RequestValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BriefGenerationFailed'
+        '504':
+          $ref: '#/components/responses/UpstreamTimeout'
+      tags:
+      - Briefs
+  /brief/daily:
+    post:
+      summary: Get or generate the daily brief (readiness + tuned session)
+      description: 'Get-or-generate the daily brief for the resolved date; assemble `DailyBrief`.
+
+
+        Resolves the period key (`body.date` or the current Europe/Sofia date), runs the
+
+        get-or-generate service (which commits on a miss/refresh), and assembles the
+
+        `{ data, narrative }` envelope with `date`/`generatedAt`/`cached`/`constitutionVersion`
+
+        set. A tripped safety gate is served `200` as a normal brief (never raised).'
+      operationId: getDailyBrief
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: refresh
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Refresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailyBriefRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyBrief'
+        '422':
+          $ref: '#/components/responses/RequestValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '502':
+          $ref: '#/components/responses/BriefGenerationFailed'
+        '504':
+          $ref: '#/components/responses/UpstreamTimeout'
+      tags:
+      - Briefs
+  /profile:
+    get:
+      summary: Read profile constants (athlete, HR zones, thresholds, meta)
+      operationId: getProfile
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+      security:
+      - HTTPBearer: []
+      tags:
+      - Profile
+components:
+  schemas:
+    ActivitySummary:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        activeEnergyKcal:
+          type: number
+          title: Activeenergykcal
+        exerciseMinutes:
+          type: integer
+          title: Exerciseminutes
+        standHours:
+          type: integer
+          title: Standhours
+        steps:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Steps
+      type: object
+      required:
+      - date
+      - activeEnergyKcal
+      - exerciseMinutes
+      - standHours
+      title: ActivitySummary
+      description: A per-day activity-ring summary (MODELS ActivitySummary).
+    AthleteOut:
+      properties:
+        age:
+          type: integer
+          title: Age
+        sex:
+          type: string
+          title: Sex
+        heightCm:
+          type: integer
+          title: Heightcm
+        goalWeightKg:
+          type: number
+          title: Goalweightkg
+      type: object
+      required:
+      - age
+      - sex
+      - heightCm
+      - goalWeightKg
+      title: AthleteOut
+      description: The static athlete block → ``{age, sex, heightCm, goalWeightKg}``.
+    DailyBrief:
+      properties:
+        data:
+          $ref: '#/components/schemas/DailyBriefData'
+        narrative:
+          items:
+            $ref: '#/components/schemas/NarrativeSection'
+          type: array
+          title: Narrative
+      type: object
+      required:
+      - data
+      - narrative
+      title: DailyBrief
+      description: 'The ``POST /brief/daily`` response (MODELS ``DailyBrief``) — ``{ data, narrative }``.
+
+
+        A tripped safety gate is a **normal** ``DailyBrief`` (``safetyGate.triggered=true``, a
+
+        code-written ``narrative``, the override ``session``, empty ``alternatives``) — never an
+
+        error envelope.'
+    DailyBriefData:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        readiness:
+          $ref: '#/components/schemas/Readiness'
+        safetyGate:
+          $ref: '#/components/schemas/SafetyGate'
+        session:
+          $ref: '#/components/schemas/SessionBlock'
+        alternatives:
+          items:
+            $ref: '#/components/schemas/SessionBlock'
+          type: array
+          title: Alternatives
+        skipOk:
+          type: boolean
+          title: Skipok
+        macroFocus:
+          $ref: '#/components/schemas/MacroFocus'
+        intakeYesterday:
+          anyOf:
+          - $ref: '#/components/schemas/IntakeSummary'
+          - type: 'null'
+        generatedAt:
+          type: string
+          format: date-time
+          title: Generatedat
+        cached:
+          type: boolean
+          title: Cached
+        constitutionVersion:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Constitutionversion
+      type: object
+      required:
+      - date
+      - readiness
+      - safetyGate
+      - session
+      - alternatives
+      - skipOk
+      - macroFocus
+      - generatedAt
+      - cached
+      title: DailyBriefData
+      description: 'The ``DailyBrief.data`` sub-object (MODELS ``DailyBrief`` ``data``).
+
+
+        Every field except the endpoint-stamped ``date``/``generatedAt``/``cached``/
+
+        ``constitutionVersion`` is carried through from the workflow-produced/cached structured
+
+        data; ``intakeYesterday`` was derived by the E11·P2 ``DeriveSessionNode``.'
+    DailyBriefRequest:
+      properties:
+        date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date
+      type: object
+      title: DailyBriefRequest
+      description: 'The ``POST /brief/daily`` request body (MODELS ``DailyBriefRequest``).
+
+
+        ``date`` is a native Pydantic ``date`` — a malformed value (``"2026-13-40"``,
+
+        ``"garbage"``) raises at request validation → ``422`` ``validation_error`` (no regex
+
+        needed, unlike the weekly ``YYYY-Www`` string). ``None``/absent means "today",
+
+        resolved server-side (Europe/Sofia).'
+    DailyCheckin:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        giSymptoms:
+          type: boolean
+          title: Gisymptoms
+        kneePain:
+          type: integer
+          maximum: 10.0
+          minimum: 0.0
+          title: Kneepain
+        illness:
+          type: boolean
+          title: Illness
+      type: object
+      required:
+      - date
+      - giSymptoms
+      - kneePain
+      - illness
+      title: DailyCheckin
+      description: 'The objective-only daily check-in (epic R7; MODELS DailyCheckin).
+
+
+        **No body-weight field** — weight arrives as a `body_mass` HealthRecord
+
+        (single live-weight source, DB.md §1). `knee_pain` is bounded 0–10.'
+    DayType:
+      type: string
+      enum:
+      - hard
+      - moderate
+      - rest
+      title: DayType
+      description: Nutrition carb-cycling axis (MODELS § Enums; §7.3).
+    DayTypePatternEntry:
+      properties:
+        suggestedDay:
+          type: string
+          title: Suggestedday
+        dayType:
+          $ref: '#/components/schemas/DayType'
+        caloriesKcal:
+          type: integer
+          title: Calorieskcal
+        carbsG:
+          type: integer
+          title: Carbsg
+      type: object
+      required:
+      - suggestedDay
+      - dayType
+      - caloriesKcal
+      - carbsG
+      title: DayTypePatternEntry
+      description: 'One planned-session entry of ``WeeklyNutrition.dayTypePattern`` (MODELS).
+
+
+        ``{suggestedDay, dayType, caloriesKcal, carbsG}`` — the per-session calorie/carb
+
+        numbers, derived from the same selectors as the daily focus (single source).'
+    HealthRecord:
+      properties:
+        uuid:
+          type: string
+          title: Uuid
+        type:
+          $ref: '#/components/schemas/RecordType'
+        start:
+          type: string
+          format: date-time
+          title: Start
+        end:
+          type: string
+          format: date-time
+          title: End
+        value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Value
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        category:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Category
+        source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+      type: object
+      required:
+      - uuid
+      - type
+      - start
+      - end
+      title: HealthRecord
+      description: 'A single HealthKit sample — **quantity** (`value`+`unit`) **or** category
+
+        (`category`, e.g. a sleep stage). All sample-shape fields are optional
+
+        `T | None = None` so both shapes validate (MODELS "HealthRecord"; "Nulls vs
+
+        absent"). No cross-field "exactly one of" validator — MODELS does not mandate
+
+        it and a category sample may also carry a `value`.'
+    HealthResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        serverTime:
+          type: string
+          format: date-time
+          title: Servertime
+      type: object
+      required:
+      - status
+      - serverTime
+      title: HealthResponse
+    IntakeSummary:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        caloriesKcal:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Calorieskcal
+        proteinG:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proteing
+        carbsG:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carbsg
+        fatG:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Fatg
+        fiberG:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Fiberg
+        waterL:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Waterl
+        vsTarget:
+          $ref: '#/components/schemas/IntakeVsTarget'
+      type: object
+      required:
+      - date
+      - vsTarget
+      title: IntakeSummary
+      description: 'What was actually **logged** for a day, vs target (MODELS `IntakeSummary`).
+
+
+        Code-derived from `daily_metrics` (the ingested HealthKit dietary records); the
+
+        daily brief ships **yesterday''s**. Every macro total is nullable (`null` when
+
+        nothing was logged); `vsTarget` reports the calorie ratio + protein-floor hit.'
+    IntakeVsTarget:
+      properties:
+        caloriesPct:
+          type: number
+          title: Caloriespct
+        proteinHit:
+          type: boolean
+          title: Proteinhit
+      type: object
+      required:
+      - caloriesPct
+      - proteinHit
+      title: IntakeVsTarget
+      description: 'Yesterday''s logged intake vs the day''s target (MODELS `IntakeSummary.vsTarget`).
+
+
+        `caloriesPct` = consumed ÷ target calories; `proteinHit` = the logged protein met
+
+        the day''s protein floor. Both code-derived (no LLM).'
+    Intensity:
+      type: string
+      enum:
+      - easy
+      - quality
+      - recovery
+      title: Intensity
+      description: Session intensity (MODELS § Enums); ``quality`` is the "hard" intensity.
+    LastWeekNutrition:
+      properties:
+        avgCaloriesKcal:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Avgcalorieskcal
+        avgProteinG:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Avgproteing
+        proteinHitDays:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proteinhitdays
+        daysOverTarget:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Daysovertarget
+        daysUnderTarget:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Daysundertarget
+      type: object
+      title: LastWeekNutrition
+      description: 'The 7-day intake scorecard MODELS'' ``WeeklyNutrition.lastWeek`` carries (E13·P1).
+
+
+        Exactly the five documented camelCase fields → wire keys ``avgCaloriesKcal``,
+
+        ``avgProteinG``, ``proteinHitDays``, ``daysOverTarget``, ``daysUnderTarget``. The two
+
+        averages are window means of logged intake (``None`` for a nutrient with no logged
+
+        day — never fabricated); the three counts are target-gated and stay ``None`` until
+
+        E13·P2 wires ``nutrition_target_7d``. Every field is ``int | None = None`` so the
+
+        object honestly represents partial coverage (calorie-only / protein-only weeks) and a
+
+        legacy cached payload with missing keys still validates (DECISIONS Decisions 2 & 5).
+
+
+        The ``mode="before"`` validator is the **single rounding site**: it rounds an incoming
+
+        ``float`` average to ``int`` via ``_round_half_up``, serving both the float means
+
+        ``from_adherence`` passes in **and** a legacy cached payload''s raw fractional
+
+        ``avg_protein_g`` (which Pydantic v2 lax mode would otherwise reject for an ``int``
+
+        field — round-2 #1; DECISIONS Decision 4).'
+    MacroFocus:
+      properties:
+        dayType:
+          $ref: '#/components/schemas/DayType'
+        caloriesKcal:
+          type: integer
+          title: Calorieskcal
+        proteinG:
+          type: integer
+          title: Proteing
+        carbsG:
+          type: integer
+          title: Carbsg
+        fatGLow:
+          type: integer
+          title: Fatglow
+        fatGHigh:
+          type: integer
+          title: Fatghigh
+        hydrationLLow:
+          type: number
+          title: Hydrationllow
+        hydrationLHigh:
+          type: number
+          title: Hydrationlhigh
+      type: object
+      required:
+      - dayType
+      - caloriesKcal
+      - proteinG
+      - carbsG
+      - fatGLow
+      - fatGHigh
+      - hydrationLLow
+      - hydrationLHigh
+      title: MacroFocus
+      description: 'The day''s nutrition target (MODELS ``MacroFocus``) — all numbers code-computed.
+
+
+        Snake_case fields serialize to the MODELS camelCase wire names
+
+        (``dayType``/``caloriesKcal``/``proteinG``/``carbsG``/``fatGLow``/``fatGHigh``/
+
+        ``hydrationLLow``/``hydrationLHigh``). Carries exactly the MODELS fields — **no**
+
+        fiber/sodium target (those are §7.4 narrative/medical filters, not code targets —
+
+        Decision 10).'
+    MetaOut:
+      properties:
+        constitutionVersion:
+          type: string
+          title: Constitutionversion
+        constantsRecomputedWeek:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Constantsrecomputedweek
+      type: object
+      required:
+      - constitutionVersion
+      title: MetaOut
+      description: 'The brief-stamped version tag + last monthly-recompute week → ``{constitutionVersion,
+
+        constantsRecomputedWeek}``. The internal provenance fields (``derived_from``/``computed_at``)
+
+        are omitted.'
+    NarrativeSection:
+      properties:
+        type:
+          $ref: '#/components/schemas/NarrativeType'
+        heading:
+          type: string
+          title: Heading
+        body:
+          type: string
+          title: Body
+      type: object
+      required:
+      - type
+      - heading
+      - body
+      title: NarrativeSection
+      description: One unit of LLM-authored coach prose for display (MODELS `NarrativeSection`).
+    NarrativeType:
+      type: string
+      enum:
+      - summary
+      - session
+      - nutrition
+      - caution
+      - plan
+      title: NarrativeType
+      description: Coach-prose section kind (MODELS § Enums).
+    PlannedSession:
+      properties:
+        card:
+          $ref: '#/components/schemas/WorkoutCard'
+        tier:
+          $ref: '#/components/schemas/Tier'
+        intensity:
+          $ref: '#/components/schemas/Intensity'
+        isHardDay:
+          type: boolean
+          title: Ishardday
+        suggestedDay:
+          anyOf:
+          - $ref: '#/components/schemas/Weekday'
+          - type: 'null'
+        zoneTarget:
+          anyOf:
+          - $ref: '#/components/schemas/Zone'
+          - type: 'null'
+        durationMinLow:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Durationminlow
+        durationMinHigh:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Durationminhigh
+        flags:
+          items:
+            type: string
+          type: array
+          title: Flags
+      type: object
+      required:
+      - card
+      - tier
+      - intensity
+      - isHardDay
+      - flags
+      title: PlannedSession
+      description: 'The full, code-completed weekly session (MODELS `PlannedSession`).
+
+
+        `card`/`suggestedDay` + the dose are the LLM''s; `tier` is implied by array
+
+        membership; everything else is filled in code from `CARD_META`. No
+
+        `hrCapBpm`/`cadenceSpm` — those are daily.'
+    ProfileResponse:
+      properties:
+        athlete:
+          $ref: '#/components/schemas/AthleteOut'
+        zones:
+          $ref: '#/components/schemas/ZonesOut'
+        thresholds:
+          $ref: '#/components/schemas/ThresholdsOut'
+        meta:
+          $ref: '#/components/schemas/MetaOut'
+      type: object
+      required:
+      - athlete
+      - zones
+      - thresholds
+      - meta
+      title: ProfileResponse
+      description: 'The ``GET /profile`` payload — athlete, HR zones, thresholds, meta (all from
+
+        ``profile.yaml`` via ``load_profile()``).'
+    Readiness:
+      properties:
+        score:
+          type: integer
+          title: Score
+        band:
+          $ref: '#/components/schemas/ReadinessBand'
+        penalties:
+          items:
+            $ref: '#/components/schemas/ReadinessPenalty'
+          type: array
+          title: Penalties
+      type: object
+      required:
+      - score
+      - band
+      - penalties
+      title: Readiness
+      description: The readiness result (MODELS `Readiness`) — wire shape (the E8·P1 dataclass twin).
+    ReadinessBand:
+      type: string
+      enum:
+      - green
+      - amber
+      - red
+      title: ReadinessBand
+      description: 'Daily readiness band (MODELS § Enums, Readiness ``band``).
+
+
+        A **readiness** enum (not one of the card-system enums) — the daily
+
+        validators (E7·P3) key the RED/AMBER gating rules on this typed value rather
+
+        than a bare string. Added here, the shared enum home, because no earlier
+
+        phase has shipped it.'
+    ReadinessPenalty:
+      properties:
+        factor:
+          type: string
+          title: Factor
+        points:
+          type: integer
+          title: Points
+      type: object
+      required:
+      - factor
+      - points
+      title: ReadinessPenalty
+      description: 'One itemised readiness penalty (MODELS `ReadinessPenalty`) — wire shape.
+
+
+        The computation lives in the E8·P1 `app/services/readiness.py` frozen dataclass; this
+
+        `CamelModel` is the JSON-able wire/round-trip form the daily response carries.'
+    RecordType:
+      type: string
+      enum:
+      - heart_rate
+      - heart_rate_variability_sdnn
+      - resting_heart_rate
+      - sleep_analysis
+      - step_count
+      - active_energy_burned
+      - basal_energy_burned
+      - physical_effort
+      - vo2_max
+      - body_mass
+      - running_speed
+      - running_power
+      - running_cadence
+      - running_stride_length
+      - running_ground_contact_time
+      - running_vertical_oscillation
+      - respiratory_rate
+      - dietary_energy_consumed
+      - dietary_protein
+      - dietary_carbohydrates
+      - dietary_fat_total
+      - dietary_fiber
+      - dietary_sodium
+      - dietary_water
+      title: RecordType
+      description: 'The wire `HealthRecord.type` enum — exact MODELS "Enums → RecordType" set.
+
+
+        Values are the snake_case wire strings the Swift client sends. The enum
+
+        accepts every MODELS type (incl. `respiratory_rate`, which is *not* in E4''s
+
+        storage whitelist) — acceptance on the wire is decoupled from
+
+        acceptance for storage (`app/core/healthkit.is_record_type_whitelisted`).'
+    RestDayNutrition:
+      properties:
+        caloriesKcal:
+          type: integer
+          title: Calorieskcal
+        carbsG:
+          type: integer
+          title: Carbsg
+      type: object
+      required:
+      - caloriesKcal
+      - carbsG
+      title: RestDayNutrition
+      description: 'The representative **rest-day** cut of the carb cycle (MODELS ``WeeklyNutrition.restDay``;
+
+        E13·P4).
+
+
+        ``{caloriesKcal, carbsG}`` — the deepest of the three day-type levels (``rest < moderate <
+
+        hard``), so the app can render the rest-day carb/calorie cut (PRD §7.5.4). Rest days are
+
+        never a *planned session*, so they carry no ``dayTypePattern`` entry; this single field
+
+        surfaces their numbers, computed from the **same** ``calories_kcal``/``carbs_g`` rest-day
+
+        selectors the per-session pattern uses (single source — DECISIONS Decision 2).'
+    SafetyGate:
+      properties:
+        triggered:
+          type: boolean
+          title: Triggered
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        overrideTo:
+          anyOf:
+          - $ref: '#/components/schemas/WorkoutCard'
+          - type: 'null'
+      type: object
+      required:
+      - triggered
+      - reasons
+      title: SafetyGate
+      description: 'The safety-gate result (MODELS `SafetyGate`) — wire shape (the E8·P2 dataclass twin).
+
+
+        `overrideTo` is the forced recovery card on a trip (`null` when not triggered).'
+    SessionBlock:
+      properties:
+        card:
+          $ref: '#/components/schemas/WorkoutCard'
+        intensity:
+          $ref: '#/components/schemas/Intensity'
+        zoneTarget:
+          anyOf:
+          - $ref: '#/components/schemas/Zone'
+          - type: 'null'
+        durationMinLow:
+          type: integer
+          title: Durationminlow
+        durationMinHigh:
+          type: integer
+          title: Durationminhigh
+        hrCapBpm:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Hrcapbpm
+        cadenceSpm:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cadencespm
+        flags:
+          items:
+            type: string
+          type: array
+          title: Flags
+      type: object
+      required:
+      - card
+      - intensity
+      - durationMinLow
+      - durationMinHigh
+      - flags
+      title: SessionBlock
+      description: 'The full, code-completed daily workout (MODELS `SessionBlock`).
+
+
+        `card` + the dose (`durationMin*`) are the LLM''s; everything else is filled in
+
+        code from `CARD_META` / the injected profile. No `isHardDay`/`tier` — a single
+
+        workout carries neither (those are weekly).'
+    StrengthTest:
+      properties:
+        date:
+          type: string
+          format: date
+          title: Date
+        maxPushups:
+          type: integer
+          title: Maxpushups
+        maxPullups:
+          type: integer
+          title: Maxpullups
+      type: object
+      required:
+      - date
+      - maxPushups
+      - maxPullups
+      title: StrengthTest
+      description: The periodic strength benchmark (MODELS StrengthTest).
+    SyncRequest:
+      properties:
+        records:
+          items:
+            $ref: '#/components/schemas/HealthRecord'
+          type: array
+          title: Records
+          default: []
+        workouts:
+          items:
+            $ref: '#/components/schemas/Workout'
+          type: array
+          title: Workouts
+          default: []
+        activitySummary:
+          items:
+            $ref: '#/components/schemas/ActivitySummary'
+          type: array
+          title: Activitysummary
+          default: []
+        checkin:
+          anyOf:
+          - $ref: '#/components/schemas/DailyCheckin'
+          - type: 'null'
+        strengthTest:
+          anyOf:
+          - $ref: '#/components/schemas/StrengthTest'
+          - type: 'null'
+      type: object
+      title: SyncRequest
+      description: 'The `POST /sync` request envelope (MODELS SyncRequest). Every collection
+
+        defaults empty and both top-level singletons default `None`, so a minimal
+
+        `{}` body validates.'
+    SyncResponse:
+      properties:
+        recordsUpserted:
+          type: integer
+          title: Recordsupserted
+        recordsDuplicate:
+          type: integer
+          title: Recordsduplicate
+        workoutsUpserted:
+          type: integer
+          title: Workoutsupserted
+        activityDaysUpserted:
+          type: integer
+          title: Activitydaysupserted
+        checkinSaved:
+          type: boolean
+          title: Checkinsaved
+        strengthTestSaved:
+          type: boolean
+          title: Strengthtestsaved
+        serverTime:
+          type: string
+          format: date-time
+          title: Servertime
+      type: object
+      required:
+      - recordsUpserted
+      - recordsDuplicate
+      - workoutsUpserted
+      - activityDaysUpserted
+      - checkinSaved
+      - strengthTestSaved
+      - serverTime
+      title: SyncResponse
+      description: 'The `POST /sync` response envelope (MODELS SyncResponse). This phase
+
+        defines the *shape*; populating the counts from DB writes is E5·P2.'
+    ThresholdsOut:
+      properties:
+        maxHr:
+          type: integer
+          title: Maxhr
+        rhrBaseline:
+          type: integer
+          title: Rhrbaseline
+        hrvBaselineMs:
+          type: integer
+          title: Hrvbaselinems
+        easyHrCap:
+          type: integer
+          title: Easyhrcap
+        cadenceCurrentSpm:
+          type: integer
+          title: Cadencecurrentspm
+        cadenceTargetSpm:
+          type: integer
+          title: Cadencetargetspm
+      type: object
+      required:
+      - maxHr
+      - rhrBaseline
+      - hrvBaselineMs
+      - easyHrCap
+      - cadenceCurrentSpm
+      - cadenceTargetSpm
+      title: ThresholdsOut
+      description: 'The HR/cadence anchors → ``{maxHr, rhrBaseline, hrvBaselineMs, easyHrCap,
+
+        cadenceCurrentSpm, cadenceTargetSpm}``.'
+    Tier:
+      type: string
+      enum:
+      - core
+      - extra
+      title: Tier
+      description: Plan tier (MODELS § Enums) — singular ``extra``, not ``extras``.
+    Weekday:
+      type: string
+      enum:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+      - sat
+      - sun
+      title: Weekday
+      description: Day of week (MODELS § Enums).
+    WeeklyBriefRequest:
+      properties:
+        isoWeek:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Isoweek
+      type: object
+      title: WeeklyBriefRequest
+      description: 'The ``POST /brief/weekly`` request body (MODELS ``WeeklyBriefRequest``).
+
+
+        ``iso_week`` is ``YYYY-Www`` or ``None`` (absent → the current Europe/Sofia ISO week,
+
+        resolved server-side in the route — never trusted from the client). The validator
+
+        **parses** the week with ``date.fromisocalendar`` (not a shape-only regex), so a
+
+        malformed shape **or** an out-of-range week (``2026-W00``/``2026-W54``/an invalid
+
+        ``W53`` for a 52-week year) raises at request-validation time → ``422``
+
+        ``validation_error`` via the E1 handler, never reaching the route''s later
+
+        ``date.fromisocalendar`` (which would otherwise ``ValueError`` → ``500``) — codex
+
+        round-1 #4.'
+    WeeklyBudgets:
+      properties:
+        hardDays:
+          type: integer
+          title: Harddays
+        strengthSessions:
+          type: integer
+          title: Strengthsessions
+        longRunKm:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Longrunkm
+        deload:
+          type: boolean
+          title: Deload
+      type: object
+      required:
+      - hardDays
+      - strengthSessions
+      - deload
+      title: WeeklyBudgets
+      description: 'The §5.1 weekly budget envelope (MODELS ``WeeklyBudgets``) — the wire shape.
+
+
+        ``WeeklyBudgets`` is a frozen ``app.core.constraints`` dataclass (not a wire model),
+
+        serialised into ``plans.payload`` via ``dataclasses.asdict`` (snake_case keys); this
+
+        ``CamelModel`` accepts that snake_case input (``populate_by_name``) and re-emits
+
+        camelCase on the wire. ``long_run_km`` is nullable (no prior long-run history).'
+    WeeklyNutrition:
+      properties:
+        proteinG:
+          type: integer
+          title: Proteing
+        fatGLow:
+          type: integer
+          title: Fatglow
+        fatGHigh:
+          type: integer
+          title: Fatghigh
+        hydrationLLow:
+          type: number
+          title: Hydrationllow
+        hydrationLHigh:
+          type: number
+          title: Hydrationlhigh
+        avgCaloriesKcal:
+          type: integer
+          title: Avgcalorieskcal
+        dayTypePattern:
+          items:
+            $ref: '#/components/schemas/DayTypePatternEntry'
+          type: array
+          title: Daytypepattern
+        restDay:
+          anyOf:
+          - $ref: '#/components/schemas/RestDayNutrition'
+          - type: 'null'
+        lastWeek:
+          anyOf:
+          - $ref: '#/components/schemas/LastWeekNutrition'
+          - type: 'null'
+      type: object
+      required:
+      - proteinG
+      - fatGLow
+      - fatGHigh
+      - hydrationLLow
+      - hydrationLHigh
+      - avgCaloriesKcal
+      - dayTypePattern
+      title: WeeklyNutrition
+      description: 'The weekly brief''s nutrition half (MODELS ``WeeklyNutrition``) — all code-derived.
+
+
+        The constant targets (``proteinG``/``fatGLow/High``/``hydrationLLow/High``) + the
+
+        week-average target (``avgCaloriesKcal`` = the §7.1 ``Target_avg``, the figure the
+
+        per-day-type calories net to — Decision 5) + the ``dayTypePattern`` from the planned
+
+        picks. ``restDay`` (E13·P4) is the representative rest-day cut completing the carb cycle —
+
+        rest days are not planned sessions, so they have no ``dayTypePattern`` entry. ``lastWeek``
+
+        (7-day intake adherence) is a typed ``LastWeekNutrition`` (E13·P1) or ``None`` (no logged
+
+        dietary coverage); ``ComputeNutritionNode`` builds it via ``LastWeekNutrition.from_adherence``.
+
+        ``restDay``/``lastWeek`` are optional (``None`` default) so a legacy cached payload still
+
+        re-validates on cache hit.'
+    WeeklyPlan:
+      properties:
+        data:
+          $ref: '#/components/schemas/WeeklyPlanData'
+        narrative:
+          items:
+            $ref: '#/components/schemas/NarrativeSection'
+          type: array
+          title: Narrative
+      type: object
+      required:
+      - data
+      - narrative
+      title: WeeklyPlan
+      description: The ``POST /brief/weekly`` response (MODELS ``WeeklyPlan``) — ``{ data, narrative }``.
+    WeeklyPlanData:
+      properties:
+        isoWeek:
+          type: string
+          title: Isoweek
+        weekStart:
+          type: string
+          format: date
+          title: Weekstart
+        budgets:
+          $ref: '#/components/schemas/WeeklyBudgets'
+        core:
+          items:
+            $ref: '#/components/schemas/PlannedSession'
+          type: array
+          title: Core
+        extras:
+          items:
+            $ref: '#/components/schemas/PlannedSession'
+          type: array
+          title: Extras
+        targets:
+          $ref: '#/components/schemas/WeeklyTargets'
+        nutrition:
+          $ref: '#/components/schemas/WeeklyNutrition'
+        constantsRecomputed:
+          type: boolean
+          title: Constantsrecomputed
+        generatedAt:
+          type: string
+          format: date-time
+          title: Generatedat
+        cached:
+          type: boolean
+          title: Cached
+      type: object
+      required:
+      - isoWeek
+      - weekStart
+      - budgets
+      - core
+      - extras
+      - targets
+      - nutrition
+      - constantsRecomputed
+      - generatedAt
+      - cached
+      title: WeeklyPlanData
+      description: 'The ``WeeklyPlan.data`` sub-object (MODELS ``WeeklyPlan`` ``data``).
+
+
+        The code budgets + the LLM picks expanded (``core``/``extras``) + derived
+
+        targets/nutrition + the endpoint-stamped ``isoWeek``/``weekStart`` (Monday of the ISO
+
+        week, Europe/Sofia)/``generatedAt``/``cached``/``constantsRecomputed``.'
+    WeeklyTargets:
+      properties:
+        totalRunKm:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Totalrunkm
+        easyRunRatio:
+          type: number
+          title: Easyrunratio
+        strengthSessions:
+          type: integer
+          title: Strengthsessions
+        hardDays:
+          type: integer
+          title: Harddays
+        cadenceSpm:
+          type: integer
+          title: Cadencespm
+      type: object
+      required:
+      - totalRunKm
+      - easyRunRatio
+      - strengthSessions
+      - hardDays
+      - cadenceSpm
+      title: WeeklyTargets
+      description: 'Week-level numeric targets, all code-derived (MODELS ``WeeklyTargets``).
+
+
+        Snake_case fields serialise to the camelCase wire names
+
+        (``totalRunKm``/``easyRunRatio``/``strengthSessions``/``hardDays``/``cadenceSpm``).
+
+        Numbers only — no prose, no card-derived field (those live on ``PlannedSession``).
+
+        ``total_run_km`` is ``float | None`` (MODELS nullable: ``None`` when no run card is
+
+        planned — there is no run distance to sum).'
+    Workout:
+      properties:
+        uuid:
+          type: string
+          title: Uuid
+        type:
+          type: string
+          title: Type
+        start:
+          type: string
+          format: date-time
+          title: Start
+        end:
+          type: string
+          format: date-time
+          title: End
+        durationS:
+          type: number
+          title: Durations
+        distanceM:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Distancem
+        activeEnergyKcal:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Activeenergykcal
+        effortScore:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Effortscore
+        zoneMinutes:
+          anyOf:
+          - additionalProperties:
+              type: number
+            type: object
+          - type: 'null'
+          title: Zoneminutes
+        statistics:
+          items:
+            $ref: '#/components/schemas/WorkoutStat'
+          type: array
+          title: Statistics
+          default: []
+      type: object
+      required:
+      - uuid
+      - type
+      - start
+      - end
+      - durationS
+      title: Workout
+      description: 'A workout session. `type` is the free HealthKit activity-type string
+
+        (e.g. `boxing`, `running`); `zone_minutes` is a tolerant `str→float` map of
+
+        the `z1…z5` payload rather than a typed `Zone` map (MODELS Workout).'
+    WorkoutCard:
+      type: string
+      enum:
+      - easy_run
+      - long_run
+      - progression_run
+      - active_recovery
+      - threshold
+      - vo2
+      - strides
+      - hiit
+      - jump_rope
+      - steady_cardio
+      - strength_push
+      - strength_pull
+      - strength_lower
+      - strength_full
+      - boxing
+      - boxing_technique
+      - foot_prehab
+      - glute_prehab
+      - mobility
+      - rest
+      title: WorkoutCard
+      description: The 20 prescribable workout cards (MODELS § Enums; CARDS.md §1).
+    WorkoutStat:
+      properties:
+        type:
+          type: string
+          title: Type
+        value:
+          type: number
+          title: Value
+        unit:
+          type: string
+          title: Unit
+      type: object
+      required:
+      - type
+      - value
+      - unit
+      title: WorkoutStat
+      description: 'One aggregate stat for a workout (e.g. `avg_hr`, `max_speed`).
+
+
+        `type` is a free `str` — MODELS shows it as a bare string and lists no
+
+        validation, so a forward-compatible stat type is accepted (PLAN Decisions).'
+    Zone:
+      type: string
+      enum:
+      - z1
+      - z2
+      - z3
+      - z4
+      - z5
+      title: Zone
+      description: Heart-rate / effort zone (MODELS § Enums).
+    ZoneRange:
+      properties:
+        low:
+          type: integer
+          title: Low
+        high:
+          type: integer
+          title: High
+      type: object
+      required:
+      - low
+      - high
+      title: ZoneRange
+      description: One HR zone's bpm bounds → ``{low, high}`` (mapped from a ``zone_bounds()`` tuple).
+    ZonesOut:
+      properties:
+        z1:
+          $ref: '#/components/schemas/ZoneRange'
+        z2:
+          $ref: '#/components/schemas/ZoneRange'
+        z3:
+          $ref: '#/components/schemas/ZoneRange'
+        z4:
+          $ref: '#/components/schemas/ZoneRange'
+        z5:
+          $ref: '#/components/schemas/ZoneRange'
+      type: object
+      required:
+      - z1
+      - z2
+      - z3
+      - z4
+      - z5
+      title: ZonesOut
+      description: The five HR zones, each a ``{low, high}`` range (PRD §4.2 zone chips).
+    ErrorCode:
+      type: string
+      enum:
+      - validation_error
+      - unauthorized
+      - not_found
+      - brief_generation_failed
+      - upstream_timeout
+      - internal_error
+      description: Closed set of stable machine-readable error codes.
+    Error:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+          description: Safe public message.
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Optional extra context (e.g. which field failed validation).
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
+      description: The single error envelope returned for every non-2xx response.
+  securitySchemes:
+    HTTPBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: 'Single long-lived bearer token shared by the one user. Send as `Authorization: Bearer
+        <token>` on every route except `GET /health`.'
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token (`unauthorized`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+      headers:
+        WWW-Authenticate:
+          description: RFC 7235 auth challenge.
+          schema:
+            type: string
+            example: Bearer
+    RequestValidationError:
+      description: Request failed validation (`validation_error`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unhandled server error (`internal_error`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BriefGenerationFailed:
+      description: The brief workflow failed to produce a valid result (`brief_generation_failed`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UpstreamTimeout:
+      description: The brief model timed out (`upstream_timeout`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+servers:
+- url: http://localhost:8000
+  description: Local development
+- url: https://{host}
+  description: Deployment (set host to your server)
+  variables:
+    host:
+      default: coach.example.com
+tags:
+- name: System
+  description: Liveness and auth probes.
+- name: Ingest
+  description: HealthKit data ingestion.
+- name: Briefs
+  description: Get-or-generate weekly and daily coaching briefs.
+- name: Profile
+  description: Read-only profile constants.
