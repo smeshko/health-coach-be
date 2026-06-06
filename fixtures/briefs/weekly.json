@@ -1,0 +1,46 @@
+{
+  "data": {
+    "budgets": { "hardDays": 3, "strengthSessions": 2, "longRunKm": 18.0, "deload": false },
+    "core": [
+      { "card": "long_run", "tier": "core", "intensity": "easy", "isHardDay": true, "suggestedDay": "sun", "zoneTarget": "z2", "durationMinLow": 80, "durationMinHigh": 100, "flags": [] },
+      { "card": "threshold", "tier": "core", "intensity": "quality", "isHardDay": true, "suggestedDay": "tue", "zoneTarget": "z4", "durationMinLow": 40, "durationMinHigh": 50, "flags": [] },
+      { "card": "vo2", "tier": "core", "intensity": "quality", "isHardDay": true, "suggestedDay": "thu", "zoneTarget": "z5", "durationMinLow": 30, "durationMinHigh": 40, "flags": [] },
+      { "card": "strength_lower", "tier": "core", "intensity": "quality", "isHardDay": false, "suggestedDay": "wed", "zoneTarget": null, "durationMinLow": 45, "durationMinHigh": 60, "flags": [] },
+      { "card": "strength_push", "tier": "core", "intensity": "quality", "isHardDay": false, "suggestedDay": "sat", "zoneTarget": null, "durationMinLow": 45, "durationMinHigh": 60, "flags": [] }
+    ],
+    "extras": [
+      { "card": "easy_run", "tier": "extra", "intensity": "easy", "isHardDay": false, "suggestedDay": "mon", "zoneTarget": "z2", "durationMinLow": 30, "durationMinHigh": 45, "flags": [] },
+      { "card": "mobility", "tier": "extra", "intensity": "recovery", "isHardDay": false, "suggestedDay": "fri", "zoneTarget": null, "durationMinLow": 15, "durationMinHigh": 20, "flags": [] }
+    ],
+    "targets": { "totalRunKm": 45.0, "easyRunRatio": 0.8, "strengthSessions": 2, "hardDays": 3, "cadenceSpm": 170 },
+    "nutrition": {
+      "proteinG": 165,
+      "fatGLow": 60,
+      "fatGHigh": 80,
+      "hydrationLLow": 2.5,
+      "hydrationLHigh": 3.5,
+      "avgCaloriesKcal": 2500,
+      "dayTypePattern": [
+        { "suggestedDay": "mon", "dayType": "moderate", "caloriesKcal": 2400, "carbsG": 280 },
+        { "suggestedDay": "tue", "dayType": "hard", "caloriesKcal": 2800, "carbsG": 360 },
+        { "suggestedDay": "wed", "dayType": "moderate", "caloriesKcal": 2400, "carbsG": 280 },
+        { "suggestedDay": "thu", "dayType": "hard", "caloriesKcal": 2800, "carbsG": 360 },
+        { "suggestedDay": "fri", "dayType": "rest", "caloriesKcal": 2100, "carbsG": 200 },
+        { "suggestedDay": "sat", "dayType": "moderate", "caloriesKcal": 2400, "carbsG": 280 },
+        { "suggestedDay": "sun", "dayType": "hard", "caloriesKcal": 2900, "carbsG": 380 }
+      ],
+      "restDay": { "caloriesKcal": 2100, "carbsG": 200 },
+      "lastWeek": { "avgCaloriesKcal": 2450, "avgProteinG": 158, "proteinHitDays": 5, "daysOverTarget": 2, "daysUnderTarget": 1 }
+    },
+    "constantsRecomputed": false
+  },
+  "narrative": [
+    { "type": "summary", "heading": "This week", "body": "Synthetic fixture brief for local testing — not real coaching. Three quality days, two strength sessions, ~45 km of running." },
+    { "type": "plan", "heading": "Structure", "body": "Tuesday threshold, Thursday VO2, Sunday long run. Keep the easy days genuinely easy in Z2." },
+    { "type": "nutrition", "heading": "Fuel", "body": "Protein ~165 g/day; carb-load on hard days, pull back on the Friday rest day." }
+  ],
+  "rationale": "synthetic-fixture",
+  "model": "fixture",
+  "constitution_version": "v1",
+  "generated_at": "2026-06-06T08:00:00+03:00"
+}

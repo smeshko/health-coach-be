@@ -1,0 +1,42 @@
+{
+  "data": {
+    "readiness": {
+      "score": 78,
+      "band": "green",
+      "penalties": [
+        { "factor": "sleep", "points": -5 },
+        { "factor": "hrv", "points": -2 }
+      ]
+    },
+    "safetyGate": { "triggered": false, "reasons": [], "overrideTo": null },
+    "session": { "card": "threshold", "intensity": "quality", "zoneTarget": "z4", "durationMinLow": 40, "durationMinHigh": 50, "hrCapBpm": 172, "cadenceSpm": 172, "flags": [] },
+    "alternatives": [
+      { "card": "easy_run", "intensity": "easy", "zoneTarget": "z2", "durationMinLow": 30, "durationMinHigh": 45, "hrCapBpm": 150, "cadenceSpm": 170, "flags": ["downgrade"] },
+      { "card": "active_recovery", "intensity": "recovery", "zoneTarget": "z1", "durationMinLow": 20, "durationMinHigh": 30, "hrCapBpm": 135, "cadenceSpm": null, "flags": [] }
+    ],
+    "skipOk": false,
+    "macroFocus": { "dayType": "hard", "caloriesKcal": 2800, "proteinG": 165, "carbsG": 360, "fatGLow": 60, "fatGHigh": 80, "hydrationLLow": 3.0, "hydrationLHigh": 4.0 },
+    "intakeYesterday": {
+      "date": "2026-06-05",
+      "caloriesKcal": 2450,
+      "proteinG": 158,
+      "carbsG": 300,
+      "fatG": 70,
+      "fiberG": 28,
+      "waterL": 2.8,
+      "vsTarget": { "caloriesPct": 0.98, "proteinHit": true }
+    }
+  },
+  "narrative": [
+    { "type": "summary", "heading": "Today", "body": "Synthetic fixture brief for local testing — not real coaching. Readiness is green; go ahead with the planned threshold session." },
+    { "type": "session", "heading": "Session", "body": "Threshold, 40–50 min in Z4, HR cap 172, target cadence 172 spm." },
+    { "type": "nutrition", "heading": "Fuel", "body": "Hard day: ~2800 kcal, 360 g carbs, 165 g protein, 3–4 L water." }
+  ],
+  "readiness_score": 78,
+  "band": "green",
+  "safety_gate_tripped": 0,
+  "gate_reason": null,
+  "model": "fixture",
+  "constitution_version": "v1",
+  "generated_at": "2026-06-06T08:00:00+03:00"
+}

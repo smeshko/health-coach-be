@@ -42,4 +42,13 @@ def create_app() -> FastAPI:
     # Authenticated read-only profile constants: GET /profile (E14·P1).
     app.include_router(profile.router)
 
+    # Local-testing escape hatch (default-off): when BRIEF_FIXTURES is set, swap the
+    # LLM-backed brief generators for static-fixture ones so the brief endpoints serve
+    # canned responses with no Anthropic call. Config-gated dependency_overrides — the
+    # same seam the test suite uses — so this stays inert in any real deployment.
+    if settings.brief_fixtures:
+        from app.api.brief_fixtures import install_brief_fixtures
+
+        install_brief_fixtures(app, settings)
+
     return app

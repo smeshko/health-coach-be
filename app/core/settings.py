@@ -91,6 +91,19 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
 
+    # --- Local testing (default-off; never enable in deployment) ---
+    # When true, create_app() overrides the brief generators with static-fixture ones
+    # (app/api/brief_fixtures.py) so POST /brief/weekly + /brief/daily serve canned
+    # responses from fixtures/briefs/*.json with NO Anthropic call — for exercising the
+    # API manually (curl/Postman/iOS) without burning LLM credits.
+    brief_fixtures: bool = Field(
+        False, description="Serve canned briefs (no LLM) for local testing; env BRIEF_FIXTURES."
+    )
+    brief_fixtures_dir: str | None = Field(
+        None,
+        description="Override directory holding weekly.json/daily.json; env BRIEF_FIXTURES_DIR.",
+    )
+
     @field_validator("api_token")
     @classmethod
     def _reject_weak_or_example_token(cls, value: str) -> str:
