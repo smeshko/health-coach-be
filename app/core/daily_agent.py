@@ -42,7 +42,7 @@ from app.core.constraints import (
 )
 from app.core.enums import NarrativeType, ReadinessBand, WorkoutCard
 from app.core.nodes import AgentConfig
-from app.core.settings import Settings
+from app.core.settings import get_settings
 from app.core.task_context import TaskContext
 
 # The daily narrative subset (LLM §1): only these section types may appear in a
@@ -187,11 +187,13 @@ class TuneSessionNode(PydanticAgentNode[DailyDeps, DailyBriefLLMOutput]):
     mode = "daily"
 
     def get_agent_config(self) -> AgentConfig:
-        """Opus model id (from `Settings`, not hard-coded) + the daily
-        ``output_type``; ``instructions`` left ``None`` so the constitution flows
-        through ``build_system_prompt`` (one source, no double-instruction)."""
+        """Model id from the live `get_settings().model_id` (env `MODEL_ID`, default
+        ``claude-opus-4-8``) — so a Haiku/Sonnet downshift is a `.env` change, not a code
+        edit (LLM §5) — + the daily ``output_type``; ``instructions`` left ``None`` so the
+        constitution flows through ``build_system_prompt`` (one source, no
+        double-instruction)."""
         return AgentConfig(
-            model_id=Settings.model_fields["model_id"].default,
+            model_id=get_settings().model_id,
             output_type=DailyBriefLLMOutput,
             instructions=None,
         )

@@ -149,23 +149,31 @@ def test_tune_session_node_does_not_override_process():
     assert TuneSessionNode.process is agent_node_mod.PydanticAgentNode.process
 
 
-def test_get_agent_config_returns_output_type_and_opus_id():
+def test_get_agent_config_returns_output_type_and_instructions():
     from app.core.daily_agent import TuneSessionNode
     from app.core.nodes import AgentConfig
 
     cfg = TuneSessionNode().get_agent_config()
     assert isinstance(cfg, AgentConfig)
     assert cfg.output_type is DailyBriefLLMOutput
-    assert cfg.model_id == "claude-opus-4-8"
+    # instructions left None — the constitution flows through build_system_prompt.
     assert cfg.instructions is None
 
 
-def test_get_agent_config_model_id_sourced_from_settings_not_hardcoded():
+def test_get_agent_config_model_id_follows_settings(monkeypatch):
+    """model_id is read from the live ``get_settings().model_id`` (env ``MODEL_ID``), not a
+    hard-coded default — so a Haiku/Sonnet downshift is a ``.env`` change (LLM §5). Env vars
+    take precedence over ``.env`` in pydantic-settings, so this is deterministic."""
     from app.core.daily_agent import TuneSessionNode
-    from app.core.settings import Settings
+    from app.core.settings import Settings, get_settings
 
-    cfg = TuneSessionNode().get_agent_config()
-    assert cfg.model_id == Settings.model_fields["model_id"].default
+    assert Settings.model_fields["model_id"].default == "claude-opus-4-8"  # documents default
+    monkeypatch.setenv("MODEL_ID", "claude-sonnet-4-6")
+    get_settings.cache_clear()
+    try:
+        assert TuneSessionNode().get_agent_config().model_id == "claude-sonnet-4-6"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_node_mode_is_daily():
