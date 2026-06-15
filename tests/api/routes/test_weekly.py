@@ -711,3 +711,40 @@ def test_midweek_gi_flag_fires_deload_through_real_route(ctx, tmp_path, monkeypa
         payload = json.loads(raw.execute("SELECT payload FROM plans").fetchone()[0])
     assert payload["budgets"]["deload"] is True
     assert payload["budgets"]["hard_days"] == 1
+
+
+def test_cache_hit_populated_long_run_km_and_new_snapshot_key_revalidate(ctx) -> None:
+    """weekly-budget-inputs-wiring: a cached plan with a POPULATED budgets.longRunKm (no longer
+    always null) and the new inputs_snapshot["aggregates"]["prior_week_long_run_km"] key still
+    re-validates on cache hit — HTTP 200, longRunKm survives the round-trip, generator untouched.
+    """
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)  # a cache hit must never invoke it
+
+    data = _plan_data(CURRENT_WEEK)
+    data["budgets"]["long_run_km"] = 11.0  # the §9 ramp cap now fires (was always null pre-fix)
+    snapshot = {"aggregates": {"prior_week_long_run_km": 10.0}, "constants": None}
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps(snapshot),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0
+    # The populated value re-validates against the schema and round-trips on the wire.
+    assert body["data"]["budgets"]["longRunKm"] == 11.0
