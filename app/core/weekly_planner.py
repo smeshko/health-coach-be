@@ -56,7 +56,7 @@ from app.core.task_context import TaskContext
 from app.core.time import now_sofia
 from app.core.weekly_agent import GeneratePlanNode
 from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
-from app.database.models import DailyMetrics, Plans, StrengthTests
+from app.database.models import Checkins, DailyMetrics, Plans, StrengthTests
 from app.services.aggregates import Aggregates, load_aggregates, prior_week_long_run_km
 from app.services.budgets import compute_budgets
 from app.services.daily_metrics_engine import current_body_weight
@@ -398,6 +398,29 @@ def _anchor_baseline(session: Session, anchor: date, column: str) -> float | Non
     return session.execute(stmt).scalar_one_or_none()
 
 
+def _gi_flagged_this_week(session: Session, week_monday: date) -> bool:
+    """True iff a GI symptom is logged anywhere in the **full planning ISO week**.
+
+    The §5.3/§8.1 GI-flare deload trigger: any ``checkins.gi_symptoms == 1`` dated in the
+    **inclusive** ``[Mon(W) … Sun(W)]`` window (``week_sunday = week_monday + 6d``). The
+    weekly route always pins ``event.anchor`` to the ISO-week Monday (``weekly.py``), so a
+    "to date = ``[Mon … anchor]``" window would collapse to **Monday only** and silently miss
+    a flag logged Tue–Sun; the full ISO week reads identically (future days carry no check-in)
+    but fires regardless of the Monday anchor (DECISIONS Decision 3). ``checkins.date`` is a
+    Sofia date-only TEXT PK, so a plain string ``BETWEEN`` is the calendar window — no
+    offset-instant attribution (unlike the workout long-run). ``NULL``/``0`` count as **not**
+    flagged, matching ``safety_gate.gi_flare_reason`` (``gi_symptoms == 1``).
+    """
+    week_sunday = week_monday + timedelta(days=6)
+    stmt = (
+        select(Checkins.date)
+        .where(Checkins.gi_symptoms == 1)
+        .where(Checkins.date.between(week_monday.isoformat(), week_sunday.isoformat()))
+        .limit(1)
+    )
+    return session.execute(stmt).first() is not None
+
+
 class ComputeBudgetsNode(Node):
     """Compute the §5.1 weekly budgets — the hard limits the LLM plans within (E8·P4).
 
@@ -430,7 +453,7 @@ class ComputeBudgetsNode(Node):
             hrv_30d_sd=_anchor_baseline(session, anchor, "hrv_30d_sd"),
             rhr_avg_7d=_window_avg(session, anchor, 7, "rhr"),
             rhr_30d_mean=_anchor_baseline(session, anchor, "rhr_30d_mean"),
-            gi_symptoms_this_week=False,
+            gi_symptoms_this_week=_gi_flagged_this_week(session, _iso_week_monday(event.iso_week)),
             prior_week_long_run_km=aggregates.prior_week_long_run_km,
             extra_underrecovery_signals=0,
         )

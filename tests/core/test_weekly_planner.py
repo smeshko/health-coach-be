@@ -39,7 +39,7 @@ from app.core.weekly_planner import (
     WeeklyPlannerEvent,
     is_recompute_due,
 )
-from app.database.models import DailyMetrics, Plans, StrengthTests, Workouts
+from app.database.models import Checkins, DailyMetrics, Plans, StrengthTests, Workouts
 
 from tests.core.test_profile import valid_profile_dict
 
@@ -247,6 +247,49 @@ def test_long_run_km_none_without_prior_week_history(session, profile_path):
 
     assert ctx.nodes["LoadAggregatesNode"].aggregates.prior_week_long_run_km is None
     assert ctx.nodes["ComputeBudgetsNode"].budgets.long_run_km is None
+
+
+# --------------------------------------------------------------------------- #
+# TASK-003: a this-week GI flag forces a deload (§5.3/§8.1), full ISO week.
+# --------------------------------------------------------------------------- #
+def _gi_budgets(session, ctx):
+    """Run LoadAggregatesNode → ComputeBudgetsNode over ``ctx`` and return the WeeklyBudgets."""
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(ComputeBudgetsNode(task_context=ctx).process(ctx))
+    return ctx.nodes["ComputeBudgetsNode"].budgets
+
+
+# A GI flag on Monday, a midweek day, and Sunday of 2026-W23 ([2026-06-01 … 2026-06-07]).
+@pytest.mark.parametrize("gi_day", ["2026-06-01", "2026-06-04", "2026-06-07"])
+def test_gi_flag_anywhere_in_week_forces_deload(session, profile_path, gi_day):
+    seed_window(session, ANCHOR)  # recovered baseline → only the GI flag can deload
+    session.add(Checkins(date=gi_day, gi_symptoms=1))
+    session.flush()
+    budgets = _gi_budgets(session, _ctx(session))
+    assert budgets.deload is True  # GI flare (§5.3/§8.1)
+    assert budgets.hard_days == 1  # deload caps hard days at 1
+
+
+def test_gi_flag_outside_week_does_not_fire(session, profile_path):
+    seed_window(session, ANCHOR)
+    # A flag in the prior week and one in the next week — neither in [Mon(W23) … Sun(W23)].
+    session.add(Checkins(date="2026-05-31", gi_symptoms=1))  # Sunday before the week
+    session.add(Checkins(date="2026-06-08", gi_symptoms=1))  # Monday of the next week
+    session.flush()
+    budgets = _gi_budgets(session, _ctx(session))
+    assert budgets.deload is False  # out-of-week flags are ignored
+    assert budgets.hard_days in (2, 3)  # not the deload's 1
+
+
+def test_no_in_window_gi_flag_leaves_budgets_unchanged(session, profile_path):
+    seed_window(session, ANCHOR)
+    # A 0 and a NULL flag in-window must NOT fire (matches safety_gate's gi_symptoms == 1).
+    session.add(Checkins(date="2026-06-02", gi_symptoms=0))
+    session.add(Checkins(date="2026-06-03", gi_symptoms=None))
+    session.flush()
+    budgets = _gi_budgets(session, _ctx(session))
+    assert budgets.deload is False
+    assert budgets.hard_days in (2, 3)  # baseline, not the deload's 1
 
 
 # --------------------------------------------------------------------------- #
