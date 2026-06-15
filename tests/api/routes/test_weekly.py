@@ -653,3 +653,98 @@ def test_cache_hit_legacy_payload_without_restday_serves_null(ctx) -> None:
     assert body["data"]["cached"] is True
     assert gen.calls == 0
     assert body["data"]["nutrition"]["restDay"] is None  # graceful null, not a 500
+
+
+# --------------------------------------------------------------------------- #
+# weekly-budget-inputs-wiring TASK-003: a MIDWEEK GI flag fires a deload through the
+# real Monday-anchored WeeklyPlannerEvent — guards the `[Mon … anchor]` regression
+# (which would collapse the GI window to Monday-only and miss a Tue–Sun flag).
+# --------------------------------------------------------------------------- #
+def test_midweek_gi_flag_fires_deload_through_real_route(ctx, tmp_path, monkeypatch) -> None:
+    client, app, db_path = ctx
+    from app.api.schemas.weekly import NarrativeSection, PlannedPick, WeeklyPlanLLMOutput
+    from app.core.enums import NarrativeType, Weekday, WorkoutCard
+    from app.core.profile import load_profile, write_profile
+    from app.core.weekly_agent import GeneratePlanNode
+
+    # Run the REAL _WeeklyPlannerGenerator (no get_weekly_generator override) against a
+    # NOT-DUE profile, so RecomputeConstants is a no-op (quality_run_pick None → the validator
+    # skips the threshold↔vo2 rule) and the deterministic graph runs end-to-end.
+    base = load_profile()
+    object.__setattr__(base.meta, "constants_recomputed_week", "2026-W22")
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+
+    # A DELOAD-VALID clean plan: exactly 1 hard card (boxing) + 2 strength + 1 easy run — the
+    # GI flare caps hard days at 1, so a 2-hard-day plan would fail ValidatePlanNode.
+    plan = WeeklyPlanLLMOutput(
+        core=[
+            PlannedPick(card=WorkoutCard.boxing, suggested_day=Weekday.tue, duration_min_low=60, duration_min_high=90),
+            PlannedPick(card=WorkoutCard.strength_pull, suggested_day=Weekday.mon, duration_min_low=30, duration_min_high=45),
+            PlannedPick(card=WorkoutCard.strength_push, suggested_day=Weekday.thu, duration_min_low=30, duration_min_high=45),
+        ],
+        extras=[
+            PlannedPick(card=WorkoutCard.easy_run, suggested_day=Weekday.sat, duration_min_low=30, duration_min_high=40),
+        ],
+        narrative=[NarrativeSection(type=NarrativeType.plan, heading="h", body="b")],
+    )
+
+    async def _stand_in(self, task_context):
+        self.save_output(plan)
+        return task_context
+
+    monkeypatch.setattr(GeneratePlanNode, "process", _stand_in, raising=True)
+
+    # A GI flag on the WEDNESDAY of 2026-W23 ([2026-06-01 … 2026-06-07]). The route anchors the
+    # event on Monday (2026-06-01), so a Monday-only window would never see this midweek flag.
+    with sqlite3.connect(db_path) as raw:
+        raw.execute("INSERT INTO checkins (date, gi_symptoms) VALUES (?, ?)", ("2026-06-04", 1))
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # default week = 2026-W23
+    assert resp.status_code == 200, resp.text
+    assert _count(db_path) == 1
+
+    # The persisted plan's budgets carry the GI-fired deload (hard days capped at 1).
+    with sqlite3.connect(db_path) as raw:
+        payload = json.loads(raw.execute("SELECT payload FROM plans").fetchone()[0])
+    assert payload["budgets"]["deload"] is True
+    assert payload["budgets"]["hard_days"] == 1
+
+
+def test_cache_hit_populated_long_run_km_and_new_snapshot_key_revalidate(ctx) -> None:
+    """weekly-budget-inputs-wiring: a cached plan with a POPULATED budgets.longRunKm (no longer
+    always null) and the new inputs_snapshot["aggregates"]["prior_week_long_run_km"] key still
+    re-validates on cache hit — HTTP 200, longRunKm survives the round-trip, generator untouched.
+    """
+    client, app, db_path = ctx
+    gen = _RaisingGenerator("brief_generation_failed")
+    _use_generator(app, gen)  # a cache hit must never invoke it
+
+    data = _plan_data(CURRENT_WEEK)
+    data["budgets"]["long_run_km"] = 11.0  # the §9 ramp cap now fires (was always null pre-fix)
+    snapshot = {"aggregates": {"prior_week_long_run_km": 10.0}, "constants": None}
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "INSERT INTO plans (iso_week, payload, rationale, inputs_snapshot, model, "
+            "constitution_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                CURRENT_WEEK,
+                json.dumps(data),
+                json.dumps(_narrative()),
+                json.dumps(snapshot),
+                "claude-opus",
+                "2026.1",
+                "2026-06-04T12:00:00+03:00",
+            ),
+        )
+        raw.commit()
+
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)  # cache hit on CURRENT_WEEK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data"]["cached"] is True
+    assert gen.calls == 0
+    # The populated value re-validates against the schema and round-trips on the wire.
+    assert body["data"]["budgets"]["longRunKm"] == 11.0

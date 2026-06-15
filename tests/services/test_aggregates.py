@@ -14,22 +14,52 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.models import DailyMetrics
+from app.database.models import DailyMetrics, Workouts
 from app.services.aggregates import (
+    MAX_PLAUSIBLE_LONG_RUN_KM,
     Aggregates,
     NutritionTarget,
+    _long_run_km,
     load_aggregates,
     nutrition_adherence,
     nutrition_consumed,
+    prior_week_long_run_km,
     training_rollup,
     window_bounds,
 )
 
 D = date(2026, 6, 30)
 
+# Monday of an ISO week used by the prior-week long-run tests. June is Europe/Sofia EEST
+# (+03:00), so a `+03:00` timestamp's wall-clock date IS its Sofia date.
+WK_MON = date(2026, 6, 8)  # Monday of 2026-W24 → prior ISO week is [2026-06-01, 2026-06-08)
+
 
 def _dm(session: Session, day: date, **cols) -> None:
     session.add(DailyMetrics(date=day.isoformat(), **cols))
+
+
+def _wk(
+    session: Session,
+    *,
+    start: str,
+    activity: str = "running",
+    distance: float | None = 10.0,
+    unit: str | None = "km",
+    origin: str = "sync",
+    end: str | None = None,
+) -> None:
+    """Seed one `workouts` row (running + sync + km by default)."""
+    session.add(
+        Workouts(
+            activity_type=activity,
+            total_distance=distance,
+            total_distance_unit=unit,
+            start_date=start,
+            end_date=end,
+            origin=origin,
+        )
+    )
 
 
 def _count(session: Session, table: str = "daily_metrics") -> int:
@@ -342,3 +372,163 @@ def test_load_aggregates_performs_no_write(session: Session) -> None:
     before = _count(session)
     load_aggregates(session, D, nutrition_target_7d=NutritionTarget(kcal=2000.0))
     assert _count(session) == before  # read-only
+
+
+# ---------------------------------------------------------------------------
+# prior_week_long_run_km (weekly-budget-inputs-wiring TASK-001)
+# ---------------------------------------------------------------------------
+def test_prior_week_long_run_km_max_not_sum_two_sync_runs(session: Session) -> None:
+    # (a) Two SYNC running workouts in the prior week → the LARGER, in km (max, not sum).
+    _wk(session, start="2026-06-02T07:00:00+03:00", distance=10.0)
+    _wk(session, start="2026-06-05T18:00:00+03:00", distance=14.0)
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(14.0)
+
+
+def test_prior_week_long_run_km_normalizes_meters(session: Session) -> None:
+    # (b) An `m`-unit workout normalized to km.
+    _wk(session, start="2026-06-03T07:00:00+03:00", distance=8000.0, unit="m")
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(8.0)
+
+
+def test_prior_week_long_run_km_excludes_non_running_and_out_of_window(session: Session) -> None:
+    # (c) A non-running workout and an out-of-window running workout are both ignored.
+    _wk(session, start="2026-06-03T07:00:00+03:00", activity="cycling", distance=99.0)
+    _wk(session, start="2026-05-20T07:00:00+03:00", distance=42.0)  # before the prior week
+    _wk(session, start="2026-06-10T07:00:00+03:00", distance=42.0)  # after the prior week
+    _wk(session, start="2026-06-04T07:00:00+03:00", distance=11.0)  # the only qualifying run
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(11.0)
+
+
+def test_prior_week_long_run_km_sofia_boundary_upper_exclusion(session: Session) -> None:
+    # (d) Upper EXCLUSION: a run whose Sofia date is the CURRENT-week Monday 00:30 is excluded.
+    # 2026-06-07T21:30:00+00:00 → +03:00 Sofia = 2026-06-08T00:30 → Sofia date = WK_MON (out).
+    _wk(session, start="2026-06-07T21:30:00+00:00", distance=99.0)
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) is None  # excluded → no qualifying row
+
+
+def test_prior_week_long_run_km_sofia_boundary_lower_inclusion(session: Session) -> None:
+    # (d2) Lower INCLUSION (forces the lower buffer): raw UTC date = day BEFORE prior-Monday,
+    # but Sofia date = prior-Monday. 2026-05-31T22:30:00+00:00 → +03:00 Sofia = 2026-06-01T01:30
+    # → Sofia date = 2026-06-01 (= lo, in window). An unbuffered `start_date >= "2026-06-01"`
+    # fetch drops the row (raw prefix "2026-05-31") before attribution, so this proves the buffer.
+    _wk(session, start="2026-05-31T22:30:00+00:00", distance=8.0)
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(8.0)
+
+
+def test_prior_week_long_run_km_sofia_boundary_upper_inclusion(session: Session) -> None:
+    # (d3) Upper INCLUSION (forces the upper buffer): a travel-offset run whose raw date is
+    # at/after current-week Monday but whose Sofia date is prior-week Sunday.
+    # 2026-06-08T00:30:00+04:00 → UTC 2026-06-07T20:30 → +03:00 Sofia = 2026-06-07T23:30
+    # → Sofia date = 2026-06-07 (prior-Sunday, in window). An unbuffered `start_date < "2026-06-08"`
+    # fetch drops the row (raw prefix "2026-06-08") before attribution, so this proves the buffer.
+    _wk(session, start="2026-06-08T00:30:00+04:00", distance=9.0)
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(9.0)
+
+
+def test_prior_week_long_run_km_seed_only_counts(session: Session) -> None:
+    # (e1) Seed + sync source: a SEED-ONLY prior week (no sync rows) still yields a value —
+    # seed counts on a day that is not sync-covered (NOT origin='sync'-only filtering).
+    _wk(session, start="2026-06-04T07:00:00+03:00", distance=12.0, origin="seed")
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(12.0)
+
+
+def test_prior_week_long_run_km_seed_superseded_by_sync_returns_smaller(session: Session) -> None:
+    # (e2) On a sync-covered Sofia day with the SEED distance LARGER than the SYNC distance,
+    # the seed row is dropped by supersession and the *smaller* sync value is returned — this
+    # proves `_drop_superseded_seed` actually runs (a bare MAX would wrongly return the seed 15).
+    _wk(session, start="2026-06-04T08:00:00+03:00", distance=15.0, origin="seed")
+    _wk(session, start="2026-06-04T18:00:00+03:00", distance=10.0, origin="sync")
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize(
+    ("distance", "unit"),
+    [
+        (None, "km"),  # null distance
+        (0.0, "km"),  # zero
+        (-5.0, "km"),  # negative
+        (float("inf"), "km"),  # non-finite
+        (float("nan"), "km"),  # non-finite (SQLite stores NaN as NULL → still non-qualifying)
+        (10.0, "miles"),  # unknown unit
+        (10.0, None),  # missing unit
+        (10.0, ""),  # empty unit
+        (1e6, "km"),  # finite-but-absurd > MAX_PLAUSIBLE_LONG_RUN_KM
+        (1e308, "km"),  # corrupt float that would overflow long_run_cap_km's raw*10
+        (1e9, "m"),  # 1e6 km after m→km normalization — still absurd
+    ],
+)
+def test_prior_week_long_run_km_non_qualifying_is_none_never_zero(
+    session: Session, distance: float | None, unit: str | None
+) -> None:
+    # (f) A non-qualifying distance — alone in-window — yields None, NEVER a 0.0/inf cap.
+    _wk(session, start="2026-06-03T07:00:00+03:00", distance=distance, unit=unit)
+    session.commit()
+    assert prior_week_long_run_km(session, WK_MON) is None
+
+
+def test_prior_week_long_run_km_no_history_is_none(session: Session) -> None:
+    # (g) No running history at all → None (week-one unconstrained).
+    assert prior_week_long_run_km(session, WK_MON) is None
+
+
+def test_long_run_km_normalizer_unit_cases() -> None:
+    # Direct unit coverage of the km-normalizer / qualifying predicate (incl. nan/inf, which
+    # SQLite would coerce to NULL on a persisted row — here they hit `math.isfinite` directly).
+    def wk(distance, unit):
+        return Workouts(
+            activity_type="running",
+            total_distance=distance,
+            total_distance_unit=unit,
+            start_date="2026-06-03T07:00:00+03:00",
+            origin="sync",
+        )
+
+    assert _long_run_km(wk(12.0, "km")) == pytest.approx(12.0)
+    assert _long_run_km(wk(8000.0, "m")) == pytest.approx(8.0)
+    assert _long_run_km(wk(12.0, "KM")) == pytest.approx(12.0)  # unit is case-insensitive
+    assert _long_run_km(wk(None, "km")) is None
+    assert _long_run_km(wk(0.0, "km")) is None
+    assert _long_run_km(wk(-3.0, "km")) is None
+    assert _long_run_km(wk(float("inf"), "km")) is None
+    assert _long_run_km(wk(float("nan"), "km")) is None
+    assert _long_run_km(wk(10.0, "miles")) is None
+    assert _long_run_km(wk(10.0, None)) is None
+    assert _long_run_km(wk(MAX_PLAUSIBLE_LONG_RUN_KM + 1.0, "km")) is None
+    assert _long_run_km(wk(MAX_PLAUSIBLE_LONG_RUN_KM, "km")) == pytest.approx(
+        MAX_PLAUSIBLE_LONG_RUN_KM
+    )  # the ceiling itself is still qualifying (inclusive)
+
+
+def test_prior_week_long_run_km_performs_no_write(session: Session) -> None:
+    _wk(session, start="2026-06-03T07:00:00+03:00", distance=10.0)
+    session.commit()
+    before = _count(session, "workouts")
+    prior_week_long_run_km(session, WK_MON)
+    assert _count(session, "workouts") == before  # read-only
+
+
+# ---------------------------------------------------------------------------
+# load_aggregates injects prior_week_long_run_km onto Aggregates + to_dict (TASK-001)
+# ---------------------------------------------------------------------------
+def test_load_aggregates_surfaces_injected_prior_week_long_run_km(session: Session) -> None:
+    # (h) The value is INJECTED (not derived in the assembler); default None; in to_dict().
+    _dm(session, D, kcal_in=2000.0)
+    session.commit()
+
+    default = load_aggregates(session, D)
+    assert default.prior_week_long_run_km is None
+    assert "prior_week_long_run_km" in default.to_dict()
+    assert default.to_dict()["prior_week_long_run_km"] is None
+
+    injected = load_aggregates(session, D, prior_week_long_run_km=12.3)
+    assert injected.prior_week_long_run_km == pytest.approx(12.3)
+    blob = json.loads(json.dumps(injected.to_dict()))  # JSON-serialisable
+    assert blob["prior_week_long_run_km"] == pytest.approx(12.3)

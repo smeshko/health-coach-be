@@ -56,8 +56,8 @@ from app.core.task_context import TaskContext
 from app.core.time import now_sofia
 from app.core.weekly_agent import GeneratePlanNode
 from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
-from app.database.models import DailyMetrics, Plans, StrengthTests
-from app.services.aggregates import Aggregates, load_aggregates
+from app.database.models import Checkins, DailyMetrics, Plans, StrengthTests
+from app.services.aggregates import Aggregates, load_aggregates, prior_week_long_run_km
 from app.services.budgets import compute_budgets
 from app.services.daily_metrics_engine import current_body_weight
 from app.services.derive.plan import PlannedSession, expand_plan
@@ -193,8 +193,21 @@ class LoadAggregatesNode(Node):
             nutrition=profile.nutrition,
             athlete=profile.athlete,
         )
+        # Derive the prior-ISO-week longest run (the §9 ramp cap's base) off `workouts` and
+        # inject it onto Aggregates — the same injection seam as `nutrition_target_7d`. The
+        # window is keyed off `event.iso_week` (the route pins `anchor` to Monday, so use the
+        # period key, not the anchor) → its Monday → the prior ISO week. `None` when there is
+        # no qualifying prior-week running history (week-one unconstrained).
+        prior_long_run_km = prior_week_long_run_km(
+            session, _iso_week_monday(task_context.event.iso_week)
+        )
         # Only the 7d window gets a target; the 28d stays target-less.
-        aggregates = load_aggregates(session, anchor, nutrition_target_7d=target_7d)
+        aggregates = load_aggregates(
+            session,
+            anchor,
+            nutrition_target_7d=target_7d,
+            prior_week_long_run_km=prior_long_run_km,
+        )
         self.save_output(self.OutputType(aggregates=aggregates))
         return task_context
 
@@ -385,6 +398,29 @@ def _anchor_baseline(session: Session, anchor: date, column: str) -> float | Non
     return session.execute(stmt).scalar_one_or_none()
 
 
+def _gi_flagged_this_week(session: Session, week_monday: date) -> bool:
+    """True iff a GI symptom is logged anywhere in the **full planning ISO week**.
+
+    The §5.3/§8.1 GI-flare deload trigger: any ``checkins.gi_symptoms == 1`` dated in the
+    **inclusive** ``[Mon(W) … Sun(W)]`` window (``week_sunday = week_monday + 6d``). The
+    weekly route always pins ``event.anchor`` to the ISO-week Monday (``weekly.py``), so a
+    "to date = ``[Mon … anchor]``" window would collapse to **Monday only** and silently miss
+    a flag logged Tue–Sun; the full ISO week reads identically (future days carry no check-in)
+    but fires regardless of the Monday anchor (DECISIONS Decision 3). ``checkins.date`` is a
+    Sofia date-only TEXT PK, so a plain string ``BETWEEN`` is the calendar window — no
+    offset-instant attribution (unlike the workout long-run). ``NULL``/``0`` count as **not**
+    flagged, matching ``safety_gate.gi_flare_reason`` (``gi_symptoms == 1``).
+    """
+    week_sunday = week_monday + timedelta(days=6)
+    stmt = (
+        select(Checkins.date)
+        .where(Checkins.gi_symptoms == 1)
+        .where(Checkins.date.between(week_monday.isoformat(), week_sunday.isoformat()))
+        .limit(1)
+    )
+    return session.execute(stmt).first() is not None
+
+
 class ComputeBudgetsNode(Node):
     """Compute the §5.1 weekly budgets — the hard limits the LLM plans within (E8·P4).
 
@@ -402,8 +438,10 @@ class ComputeBudgetsNode(Node):
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
         event: WeeklyPlannerEvent = task_context.event
-        # Capture the upstream Aggregates (node order) — the prior-long-run / adherence
-        # feeds ride into the agent context below; the budget inputs are the rolling baselines.
+        # Capture the upstream Aggregates (node order). The prior-week long run now feeds the
+        # §9 ramp cap via `aggregates.prior_week_long_run_km` (derived in LoadAggregatesNode);
+        # the rolling baselines below come from `daily_metrics`. The adherence feed rides into
+        # the agent context further down.
         aggregates = _aggregates_of(task_context)
         anchor = event.anchor
 
@@ -415,8 +453,8 @@ class ComputeBudgetsNode(Node):
             hrv_30d_sd=_anchor_baseline(session, anchor, "hrv_30d_sd"),
             rhr_avg_7d=_window_avg(session, anchor, 7, "rhr"),
             rhr_30d_mean=_anchor_baseline(session, anchor, "rhr_30d_mean"),
-            gi_symptoms_this_week=False,
-            prior_week_long_run_km=None,
+            gi_symptoms_this_week=_gi_flagged_this_week(session, _iso_week_monday(event.iso_week)),
+            prior_week_long_run_km=aggregates.prior_week_long_run_km,
             extra_underrecovery_signals=0,
         )
         self.save_output(self.OutputType(budgets=budgets))
