@@ -57,7 +57,7 @@ from app.core.time import now_sofia
 from app.core.weekly_agent import GeneratePlanNode
 from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
 from app.database.models import DailyMetrics, Plans, StrengthTests
-from app.services.aggregates import Aggregates, load_aggregates
+from app.services.aggregates import Aggregates, load_aggregates, prior_week_long_run_km
 from app.services.budgets import compute_budgets
 from app.services.daily_metrics_engine import current_body_weight
 from app.services.derive.plan import PlannedSession, expand_plan
@@ -193,8 +193,21 @@ class LoadAggregatesNode(Node):
             nutrition=profile.nutrition,
             athlete=profile.athlete,
         )
+        # Derive the prior-ISO-week longest run (the §9 ramp cap's base) off `workouts` and
+        # inject it onto Aggregates — the same injection seam as `nutrition_target_7d`. The
+        # window is keyed off `event.iso_week` (the route pins `anchor` to Monday, so use the
+        # period key, not the anchor) → its Monday → the prior ISO week. `None` when there is
+        # no qualifying prior-week running history (week-one unconstrained).
+        prior_long_run_km = prior_week_long_run_km(
+            session, _iso_week_monday(task_context.event.iso_week)
+        )
         # Only the 7d window gets a target; the 28d stays target-less.
-        aggregates = load_aggregates(session, anchor, nutrition_target_7d=target_7d)
+        aggregates = load_aggregates(
+            session,
+            anchor,
+            nutrition_target_7d=target_7d,
+            prior_week_long_run_km=prior_long_run_km,
+        )
         self.save_output(self.OutputType(aggregates=aggregates))
         return task_context
 
@@ -402,8 +415,10 @@ class ComputeBudgetsNode(Node):
     async def process(self, task_context: TaskContext) -> TaskContext:
         session = _session_of(task_context)
         event: WeeklyPlannerEvent = task_context.event
-        # Capture the upstream Aggregates (node order) — the prior-long-run / adherence
-        # feeds ride into the agent context below; the budget inputs are the rolling baselines.
+        # Capture the upstream Aggregates (node order). The prior-week long run now feeds the
+        # §9 ramp cap via `aggregates.prior_week_long_run_km` (derived in LoadAggregatesNode);
+        # the rolling baselines below come from `daily_metrics`. The adherence feed rides into
+        # the agent context further down.
         aggregates = _aggregates_of(task_context)
         anchor = event.anchor
 
@@ -416,7 +431,7 @@ class ComputeBudgetsNode(Node):
             rhr_avg_7d=_window_avg(session, anchor, 7, "rhr"),
             rhr_30d_mean=_anchor_baseline(session, anchor, "rhr_30d_mean"),
             gi_symptoms_this_week=False,
-            prior_week_long_run_km=None,
+            prior_week_long_run_km=aggregates.prior_week_long_run_km,
             extra_underrecovery_signals=0,
         )
         self.save_output(self.OutputType(budgets=budgets))

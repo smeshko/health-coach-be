@@ -39,7 +39,7 @@ from app.core.weekly_planner import (
     WeeklyPlannerEvent,
     is_recompute_due,
 )
-from app.database.models import DailyMetrics, Plans, StrengthTests
+from app.database.models import DailyMetrics, Plans, StrengthTests, Workouts
 
 from tests.core.test_profile import valid_profile_dict
 
@@ -104,6 +104,22 @@ def seed_window(session, anchor: date, *, days: int = 28) -> None:
                 hard_day=0,
             )
         )
+    session.flush()
+
+
+def seed_prior_week_run(
+    session, *, start: str, distance: float, unit: str = "km", origin: str = "sync"
+) -> None:
+    """Seed one prior-ISO-week running ``workouts`` row (for the §9 long-run ramp tests)."""
+    session.add(
+        Workouts(
+            activity_type="running",
+            total_distance=distance,
+            total_distance_unit=unit,
+            start_date=start,
+            origin=origin,
+        )
+    )
     session.flush()
 
 
@@ -179,6 +195,58 @@ def test_compute_budgets_node_delegates_to_compute_budgets(session, profile_path
     assert budgets.strength_sessions == 2
     assert budgets.deload is False
     assert budgets.hard_days in (2, 3)
+
+
+# --------------------------------------------------------------------------- #
+# TASK-002: prior-week long run feeds WeeklyBudgets.longRunKm (the §9 ramp cap).
+# --------------------------------------------------------------------------- #
+def test_long_run_km_populates_from_prior_week_run_normal_week(session, profile_path):
+    # A 10 km running workout in the prior ISO week (W22, [2026-05-25, 2026-06-01)) → the
+    # §9 ≤110% ramp, floor-rounded: floor(10.0 * 1.10 * 10) / 10 = 11.0. W23 (idx 2) is not
+    # a deload, and a recovered window keeps it that way.
+    seed_window(session, ANCHOR)
+    seed_prior_week_run(session, start="2026-05-27T08:00:00+03:00", distance=10.0)
+    ctx = _ctx(session)
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+
+    aggregates = ctx.nodes["LoadAggregatesNode"].aggregates
+    assert aggregates.prior_week_long_run_km == pytest.approx(10.0)
+    # The value rides into the serialized inputs_snapshot via aggregates.to_dict().
+    assert aggregates.to_dict()["prior_week_long_run_km"] == pytest.approx(10.0)
+
+    asyncio.run(ComputeBudgetsNode(task_context=ctx).process(ctx))
+    budgets = ctx.nodes["ComputeBudgetsNode"].budgets
+    assert budgets.deload is False
+    assert budgets.long_run_km == pytest.approx(11.0)
+
+
+def test_long_run_km_deload_down_ramp(session, profile_path):
+    # W24 (0-based index 3) is a cadence-deload week, so the long run ramps DOWN ~40%:
+    # floor(10.0 * 0.60 * 10) / 10 = 6.0, and hard days drop to 1. Prior week is W23
+    # ([2026-06-01, 2026-06-08)).
+    event = WeeklyPlannerEvent(
+        anchor=date(2026, 6, 14), iso_week="2026-W24", week_start=date(2026, 6, 8)
+    )
+    ctx = TaskContext(event=event, metadata={"session": session})
+    seed_prior_week_run(session, start="2026-06-03T08:00:00+03:00", distance=10.0)
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(ComputeBudgetsNode(task_context=ctx).process(ctx))
+
+    budgets = ctx.nodes["ComputeBudgetsNode"].budgets
+    assert budgets.deload is True
+    assert budgets.long_run_km == pytest.approx(6.0)
+    assert budgets.hard_days == 1
+
+
+def test_long_run_km_none_without_prior_week_history(session, profile_path):
+    # No prior-week running workout → longRunKm is None (week-one unconstrained).
+    seed_window(session, ANCHOR)
+    ctx = _ctx(session)
+    asyncio.run(LoadAggregatesNode(task_context=ctx).process(ctx))
+    asyncio.run(ComputeBudgetsNode(task_context=ctx).process(ctx))
+
+    assert ctx.nodes["LoadAggregatesNode"].aggregates.prior_week_long_run_km is None
+    assert ctx.nodes["ComputeBudgetsNode"].budgets.long_run_km is None
 
 
 # --------------------------------------------------------------------------- #
