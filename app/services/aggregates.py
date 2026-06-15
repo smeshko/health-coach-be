@@ -12,24 +12,43 @@ anchor date:
 - **Nutrition intake (consumed)** — the seven dietary aggregates, plus a
   target-injection seam (`NutritionTarget`) the caller fills to get adherence.
 
+One read here is **not** over `daily_metrics`: `prior_week_long_run_km` reads the prior
+ISO week's longest running session straight off `workouts` (the §9 ramp cap's base). That
+read reuses the recompute engine's read-time helpers (Sofia-day attribution + seed/sync
+supersession) — the one place this module touches `daily_metrics_engine` — so it stays
+byte-for-byte consistent with how the engine attributes a workout to its Sofia day.
+
 The window is a lexical `date BETWEEN start AND end` over the `daily_metrics.date`
 TEXT PK — already a `YYYY-MM-DD` Europe/Sofia string (E6·P1 fixed day attribution at
 write time), so a contiguous PK range **is** the Sofia-day window with **no** read-time
 tz parse (DECISIONS Decision 2). Sums are NULL-safe (`COALESCE(SUM, 0.0)`) — the
 inverse of E6·P1's per-day null rule, because a rollup is an additive total
-(DECISIONS Decision 3). Pure service — no FastAPI/HTTP, no `daily_metrics_engine`,
-no profile/macro import, no DB write.
+(DECISIONS Decision 3). Pure service — no FastAPI/HTTP, no profile/macro import, no DB
+write; it imports only the `daily_metrics_engine` read-time helpers the prior-week
+long-run derivation reuses (above).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
-from app.database.models import DailyMetrics
+from app.core.time import parse_ts, to_sofia
+from app.database.models import DailyMetrics, Workouts
+
+# The prior-week long-run derivation reuses the recompute engine's read-time helpers —
+# the running-type canonicaliser and the seed/sync supersession pair — so workout
+# attribution + seed-vs-sync precedence stay identical to `daily_metrics`' `hard_day`
+# read (do NOT re-derive that logic here; weekly-budget-inputs-wiring TASK-001).
+from app.services.daily_metrics_engine import (
+    _canonical_activity_type,
+    _day_is_sync_covered,
+    _drop_superseded_seed,
+)
 
 # The summed training columns, in DB.md §2 order.
 _ZONE_ENERGY_COLUMNS: tuple[str, ...] = (
@@ -278,6 +297,101 @@ def nutrition_adherence(
 
 
 # ---------------------------------------------------------------------------
+# Prior-week long-run derivation (weekly-budget-inputs-wiring) — the §9 ramp base.
+# ---------------------------------------------------------------------------
+# `workouts.total_distance` is an unconstrained Float and `total_distance_unit` is
+# nullable, so a materialised distance can be garbage — null / 0 / negative / non-finite
+# (`inf`/`nan`) / unknown-unit — OR a finite-but-absurd outlier (e.g. a corrupt `1e308`).
+# A finite-but-absurd value would overflow `long_run_cap_km`'s `raw * 10` ramp math to
+# `inf` (a user-visible broken cap), so this sanity ceiling rejects it before it can reach
+# the kernel. The bound is a deliberately wide guard — far above any real single session
+# (the longest recorded ultramarathons are only a few hundred km) — so a real long run is
+# never excluded.
+MAX_PLAUSIBLE_LONG_RUN_KM = 500.0
+
+
+def _long_run_km(w: Workouts) -> float | None:
+    """One running workout's `total_distance` normalized to km, or `None` if non-qualifying.
+
+    `total_distance_unit` `m` → `/1000`, `km` → pass-through; an unknown/empty unit is
+    **non-qualifying**. A null / non-finite (`inf`/`nan`) / non-positive (`0`/negative) /
+    above-the-sanity-ceiling (> `MAX_PLAUSIBLE_LONG_RUN_KM`) distance is also non-qualifying
+    → `None`, so it is **excluded** from the MAX rather than coerced to a `0.0` cap
+    (`long_run_cap_km(0.0)` would return a real `0.0`, only `None` is guarded).
+    """
+    dist = w.total_distance
+    if dist is None or not math.isfinite(dist):
+        return None
+    unit = (w.total_distance_unit or "").strip().lower()
+    if unit == "km":
+        km = dist
+    elif unit == "m":
+        km = dist / 1000.0
+    else:
+        return None  # unknown / empty unit — non-qualifying
+    if km <= 0.0 or km > MAX_PLAUSIBLE_LONG_RUN_KM:
+        return None
+    return km
+
+
+def prior_week_long_run_km(session: Session, week_monday: date) -> float | None:
+    """The longest qualifying running distance (km) over the **prior ISO week**.
+
+    The §9 ≤10%/wk ramp cap's base (`compute_budgets`' `prior_week_long_run_km`). The window
+    is the prior ISO week `[week_monday − 7d, week_monday)` in **Sofia days**. Because
+    `workouts.start_date` is an offset-bearing ISO instant, candidate running rows are fetched
+    over a **two-sided buffered** (±1-day) lexical `start_date` range — wide enough that an
+    offset row near *either* Monday boundary is not dropped before attribution — then each row
+    is attributed to its Sofia day via `to_sofia(parse_ts(...))` and kept iff that day is in
+    `[week_monday − 7d, week_monday)` (mirrors the engine's `hard_day`, never a raw-string
+    window).
+
+    Source is **seed + sync** (no `origin` filter): per Sofia day the engine's
+    `_drop_superseded_seed`/`_day_is_sync_covered` supersession runs, so a seed row counts on a
+    day **not** sync-covered and is dropped on a sync-covered day — a freshly-bootstrapped,
+    seed-only prior week still activates the cap. The result is the MAX of the **qualifying**
+    km distances (`_long_run_km`); `None` when no running row qualifies (week-one unconstrained
+    — MODELS `longRunKm` nullable). Pure read-only — the caller owns the txn; no write.
+    """
+    lo = week_monday - timedelta(days=7)
+    hi = week_monday
+    # Two-sided ±1-day buffer: start_date is an offset-bearing instant, so the precise cut is
+    # the Sofia-date attribution below, NOT these string bounds (a near-boundary offset row
+    # can sit a calendar day either side of the window before attribution).
+    lo_fetch = (lo - timedelta(days=1)).isoformat()
+    hi_fetch = (hi + timedelta(days=1)).isoformat()
+    rows = (
+        session.execute(
+            select(Workouts)
+            .where(Workouts.start_date >= lo_fetch)
+            .where(Workouts.start_date < hi_fetch)
+        )
+        .scalars()
+        .all()
+    )
+
+    # Attribute each running row to its Sofia day; keep only the in-window days.
+    by_day: dict[date, list[Workouts]] = {}
+    for w in rows:
+        if _canonical_activity_type(w.activity_type) != "running":
+            continue
+        day = to_sofia(parse_ts(w.start_date)).date()
+        if lo <= day < hi:
+            by_day.setdefault(day, []).append(w)
+
+    # Per Sofia day, drop seed rows superseded by live sync (Decision 4), then MAX over the
+    # qualifying km distances of whatever rows survive.
+    best: float | None = None
+    for day, day_rows in by_day.items():
+        kept = _drop_superseded_seed(day_rows, covered=_day_is_sync_covered(session, day))
+        for w in kept:
+            km = _long_run_km(w)
+            if km is not None and (best is None or km > best):
+                best = km
+    return best
+
+
+# ---------------------------------------------------------------------------
 # Public aggregate shape + accessor (TASK-003).
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -290,6 +404,10 @@ class Aggregates:
     training_28d: TrainingRollup
     nutrition_7d: NutritionAdherence
     nutrition_28d: NutritionAdherence
+    # The prior ISO week's longest running session (km), the §9 ramp cap's base — injected by
+    # the caller (E10's LoadAggregatesNode, via `prior_week_long_run_km`); `None` = no qualifying
+    # prior-week running history (week-one unconstrained). Last field (it carries a default).
+    prior_week_long_run_km: float | None = None
 
     def to_dict(self) -> dict:
         """A plain JSON-serialisable dict (nested rollups flattened to primitives, anchor
@@ -308,12 +426,18 @@ def load_aggregates(
     *,
     nutrition_target_7d: NutritionTarget | None = None,
     nutrition_target_28d: NutritionTarget | None = None,
+    prior_week_long_run_km: float | None = None,
 ) -> Aggregates:
     """The one public accessor: build both training rollups (7/28) and both
     nutrition-adherence views (7/28, each against its **own** window's optional per-day
     target — never interchanged), and assemble the `Aggregates`. Takes a `Session` (the
     caller owns the txn — it runs inside a brief node's session); opens no `SessionLocal`,
     writes nothing.
+
+    `prior_week_long_run_km` is **injected** by the caller (E10's `LoadAggregatesNode`
+    computes it via the module's `prior_week_long_run_km(session, week_monday)` query and
+    passes it here) — it is not derived inside this assembler, mirroring the
+    `nutrition_target_7d` injection seam; defaults to `None` (no prior-week running history).
     """
     return Aggregates(
         anchor=anchor,
@@ -321,4 +445,5 @@ def load_aggregates(
         training_28d=training_rollup(session, anchor, 28),
         nutrition_7d=nutrition_adherence(session, anchor, 7, target=nutrition_target_7d),
         nutrition_28d=nutrition_adherence(session, anchor, 28, target=nutrition_target_28d),
+        prior_week_long_run_km=prior_week_long_run_km,
     )
