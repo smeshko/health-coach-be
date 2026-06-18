@@ -8,6 +8,14 @@ re-writing a duplicate workout's children would double-insert (DB.md §1; epic R
 `zoneMinutes` has no ingest column and the canonical `daily_metrics.z1_min…z5_min`
 is derived from HR records by E6, so it is captured here as `zone_minutes_z*`
 statistics rows — the only durable per-workout home (PLAN Decisions).
+
+**Effort (RPE) backfill.** `WorkoutEffortScore` is frequently entered in Apple Fitness
+*after* a workout has already synced once. Plain `DO NOTHING` would drop that later
+score (the workout uuid already exists), silently defeating the documented "effort is
+used when present" behaviour. So for *duplicate* workouts we run a targeted backfill:
+set `effort_score` only where it is currently `NULL` and an incoming score is present.
+This never clobbers an existing score (so a later effort-less re-sync can't wipe one),
+and it only touches `effort_score` — all other workout columns remain insert-once.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.api.schemas.sync import Workout
 from app.database.models import Workouts, WorkoutStatistics
@@ -76,6 +84,31 @@ def _statistics_for(workout: Workout, workout_id: int) -> list[WorkoutStatistics
     return children
 
 
+def _backfill_effort_scores(
+    session, rows: list[dict[str, Any]], new_uuids: set[str]
+) -> None:
+    """Set `effort_score` on already-existing workouts whose stored score is `NULL`.
+
+    Only the *duplicate* rows (their uuid pre-existed, so the insert skipped them) with
+    a non-null incoming `effort_score` are considered; the `WHERE effort_score IS NULL`
+    guard makes this a pure backfill that never overwrites a score already on the row.
+    """
+    pending: dict[str, int] = {
+        r["uuid"]: r["effort_score"]
+        for r in rows
+        if r["uuid"] not in new_uuids and r["effort_score"] is not None
+    }
+    if not pending:
+        return
+    for uuid, score in pending.items():
+        session.execute(
+            update(Workouts)
+            .where(Workouts.uuid == uuid, Workouts.effort_score.is_(None))
+            .values(effort_score=score)
+        )
+    session.flush()
+
+
 def upsert_workouts(session, workouts: Iterable[Workout]) -> WorkoutUpsertResult:
     """Upsert workouts by `uuid`; write child statistics for net-new workouts only."""
     workouts = list(workouts)
@@ -83,6 +116,9 @@ def upsert_workouts(session, workouts: Iterable[Workout]) -> WorkoutUpsertResult
     new_rows, upserted, duplicate = insert_new_by_uuid(session, Workouts, rows)
 
     new_uuids = {r["uuid"] for r in new_rows}
+    # Late-arriving RPE: backfill effort_score onto workouts that already existed.
+    _backfill_effort_scores(session, rows, new_uuids)
+
     if new_uuids:
         id_by_uuid = dict(
             session.execute(

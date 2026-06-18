@@ -61,6 +61,19 @@ def test_make_engine_sets_wal_and_foreign_keys(tmp_path):
         engine.dispose()
 
 
+def test_make_engine_sets_busy_timeout_and_synchronous(tmp_path):
+    # Concurrency/durability hardening: every pooled connection waits up to 5 s on a
+    # write lock instead of failing fast with SQLITE_BUSY, and runs at synchronous=
+    # NORMAL (1) — durable under WAL, litestream-recommended.
+    engine = make_engine(tmp_path / "app.db")
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(text("PRAGMA busy_timeout")).scalar() == 5000
+            assert conn.execute(text("PRAGMA synchronous")).scalar() == 1  # NORMAL
+    finally:
+        engine.dispose()
+
+
 def test_get_engine_reads_app_db_path_from_settings(tmp_path, monkeypatch):
     # Separate from the factory-arg test: proves the runtime engine is sourced
     # from settings.app_db_path, not a literal or the make_engine arg (round-1 #4).

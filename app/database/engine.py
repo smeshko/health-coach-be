@@ -30,11 +30,24 @@ def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
     **side-effect-free** (no engine/settings access) and importable on its own so
     Alembic's ``env.py`` reuses it without constructing the runtime engine
     (round-1 #1).
+
+    Two further pragmas harden the single-file runtime store:
+
+    * ``busy_timeout=5000`` — FastAPI runs the sync `/sync` and `/brief` routes on a
+      threadpool, so two requests can briefly contend for SQLite's single writer.
+      Without a timeout the loser fails *immediately* with ``SQLITE_BUSY`` (a 5xx);
+      with 5 s it waits for the writer to finish instead. (SQLite defaults to 0.)
+    * ``synchronous=NORMAL`` — under WAL this is durable against application crashes
+      and is the setting litestream recommends; combined with the deployment running
+      on a battery-backed host (the laptop battery is an effective UPS), the residual
+      power-loss window is negligible while avoiding FULL's per-commit fsync cost.
     """
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
     finally:
         cursor.close()
 
