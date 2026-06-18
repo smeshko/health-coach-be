@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Coach App — periodic profile.yaml snapshot (macOS LaunchDaemon).
+
+  litestream backs up app.db but NOT profile.yaml; this job snapshots the YAML every 6 hours.
+  TEMPLATE: replace every CHANGEME, then:
+    sudo cp deploy/launchd/com.coachapp.profile-backup.plist /Library/LaunchDaemons/
+    sudo launchctl load -w /Library/LaunchDaemons/com.coachapp.profile-backup.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.coachapp.profile-backup</string>
+
+  <key>UserName</key>
+  <string>CHANGEME-your-macos-username</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/CHANGEME/Developer/Projects/coach-app/backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/CHANGEME/Developer/Projects/coach-app/backend/scripts/backup_profile.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PROFILE_PATH</key>        <string>/Users/CHANGEME/coach-app-data/profile.yaml</string>
+    <key>PROFILE_BACKUP_DIR</key>  <string>/Users/CHANGEME/Library/Mobile Documents/com~apple~CloudDocs/coach-app-backups</string>
+    <key>PATH</key>               <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- Run at load, then every 6 hours. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>21600</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGEME/Library/Logs/coachapp-profile-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGEME/Library/Logs/coachapp-profile-backup.err.log</string>
+</dict>
+</plist>
