@@ -100,6 +100,7 @@ def test_sync_success_returns_camel_counts(ctx) -> None:
     assert body["activityDaysUpserted"] == 1
     assert body["checkinSaved"] is False
     assert body["strengthTestSaved"] is False
+    assert body["recomputeOk"] is True  # real engine recompute succeeded
     assert "serverTime" in body
     assert datetime.fromisoformat(body["serverTime"]).utcoffset() is not None  # aware
 
@@ -291,11 +292,12 @@ def test_sync_empty_body_writes_no_daily_metrics(ctx) -> None:
     assert _table_count(db_path, "daily_metrics") == 0
 
 
-def test_sync_recompute_failure_returns_5xx_but_keeps_ingest_durable(ctx) -> None:
-    # The recompute seam fires AFTER /sync's commit. If the engine raises, the
-    # exception is NOT swallowed — /sync surfaces a 5xx — but the already-committed
-    # ingest stays durable and the day's daily_metrics is absent until the next sync
-    # re-derives it (round-2 #4).
+def test_sync_recompute_failure_acks_200_with_recompute_ok_false(ctx) -> None:
+    # The recompute seam fires AFTER /sync's commit. If the engine raises, the route
+    # CATCHES it and acks 200 with recomputeOk=False (data-safety hardening): the
+    # already-committed, idempotent ingest must not be reported as a failure, and one
+    # poison day must not 5xx the client into a permanent retry loop that blocks the
+    # brief. The affected day's daily_metrics is simply re-derived on the next sync.
     client, app, db_path = ctx
 
     def failing_recompute():
@@ -305,15 +307,14 @@ def test_sync_recompute_failure_returns_5xx_but_keeps_ingest_durable(ctx) -> Non
         return _raise
 
     app.dependency_overrides[get_recompute] = failing_recompute
-    # raise_server_exceptions=False so we observe the 500 envelope, not a re-raise.
-    failing_client = TestClient(app, raise_server_exceptions=False)
-    resp = failing_client.post("/sync", json=BODY, headers=AUTH)
+    resp = client.post("/sync", json=BODY, headers=AUTH)
 
-    assert resp.status_code == 500
+    assert resp.status_code == 200
+    assert resp.json()["recomputeOk"] is False
     # Ingest committed before recompute fired → durable.
     assert _table_count(db_path, "records") == 2
     assert _table_count(db_path, "workouts") == 1
-    # The recompute never completed → no daily_metrics row.
+    # The recompute never completed → no daily_metrics row (re-derived next sync).
     assert _table_count(db_path, "daily_metrics") == 0
 
 

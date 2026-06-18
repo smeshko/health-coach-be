@@ -155,6 +155,13 @@ class SyncRequest(CamelModel):
 class SyncResponse(CamelModel):
     """The `POST /sync` response envelope (MODELS SyncResponse). This phase
     defines the *shape*; populating the counts from DB writes is E5·P2.
+
+    `recompute_ok` reports whether the post-commit `daily_metrics` recompute
+    succeeded. The ingest is committed *before* the recompute fires, so a recompute
+    failure must NOT fail the whole request (that would report durable, idempotent
+    ingest as a failure and let one poison day block the brief forever). Instead the
+    ingest is acknowledged `200` and this flag goes `False`; the affected day's
+    `daily_metrics` is simply re-derived on the next sync or brief.
     """
 
     records_upserted: int
@@ -164,3 +171,4 @@ class SyncResponse(CamelModel):
     checkin_saved: bool
     strength_test_saved: bool
     server_time: datetime
+    recompute_ok: bool = True

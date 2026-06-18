@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Coach App backend — macOS LaunchDaemon (home server).
+
+  TEMPLATE: replace every CHANGEME before loading. Secrets live here (not in a committed file),
+  so chmod 600 and keep this copy out of git (the real file goes in /Library/LaunchDaemons).
+
+  Install:
+    sudo cp deploy/launchd/com.coachapp.server.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.coachapp.server.plist
+    sudo chmod 644 /Library/LaunchDaemons/com.coachapp.server.plist   # plist perms; secrets are inline
+    sudo launchctl load -w /Library/LaunchDaemons/com.coachapp.server.plist
+  Tail logs:  tail -f ~/Library/Logs/coachapp-server.{log,err.log}
+
+  NOTE: API_TOKEN is left as a CHANGEME-* value ON PURPOSE — the app refuses to boot on a
+  placeholder token (settings.py sentinel check), so a forgotten replacement fails loud.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.coachapp.server</string>
+
+  <key>UserName</key>
+  <string>CHANGEME-your-macos-username</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/CHANGEME/Developer/Projects/coach-app/backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/CHANGEME/Developer/Projects/coach-app/backend/scripts/start.sh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- App config -->
+    <key>APP_DB_PATH</key>           <string>/Users/CHANGEME/coach-app-data/app.db</string>
+    <key>PROFILE_PATH</key>          <string>/Users/CHANGEME/coach-app-data/profile.yaml</string>
+    <key>PROFILE_BACKUP_DIR</key>    <string>/Users/CHANGEME/Library/Mobile Documents/com~apple~CloudDocs/coach-app-backups</string>
+    <key>API_TOKEN</key>             <string>CHANGEME-set-a-long-random-token-at-least-16-chars</string>
+    <key>ANTHROPIC_API_KEY</key>     <string>CHANGEME</string>
+    <key>MODEL_ID</key>              <string>claude-opus-4-8</string>
+
+    <!-- litestream -> Backblaze B2 (S3-compatible). LITESTREAM_ENDPOINT/REGION come from your B2 bucket. -->
+    <key>LITESTREAM_BUCKET</key>     <string>CHANGEME-b2-bucket</string>
+    <key>LITESTREAM_PATH</key>       <string>coach-app/app.db</string>
+    <key>LITESTREAM_ENDPOINT</key>   <string>https://s3.CHANGEME.backblazeb2.com</string>
+    <key>LITESTREAM_REGION</key>     <string>CHANGEME-region</string>
+    <key>AWS_ACCESS_KEY_ID</key>     <string>CHANGEME-b2-key-id</string>
+    <key>AWS_SECRET_ACCESS_KEY</key> <string>CHANGEME-b2-app-key</string>
+
+    <!-- Homebrew (litestream) + system bins must be on PATH for a daemon. -->
+    <key>PATH</key>                  <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/CHANGEME/Library/Logs/coachapp-server.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/CHANGEME/Library/Logs/coachapp-server.err.log</string>
+</dict>
+</plist>

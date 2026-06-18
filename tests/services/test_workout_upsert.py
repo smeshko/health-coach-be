@@ -98,6 +98,41 @@ def test_zone_minutes_written_as_stat_rows(session) -> None:
     assert all(s.unit == "min" for s in zone_rows)
 
 
+def _effort(session, uuid: str):
+    # Column select (not entity load) so we read the committed/flushed DB value, not a
+    # stale identity-map object after the Core UPDATE.
+    return session.execute(
+        select(Workouts.effort_score).where(Workouts.uuid == uuid)
+    ).scalar_one()
+
+
+def test_effort_score_backfilled_on_later_sync(session) -> None:
+    # A workout first syncs with no RPE; a later sync of the SAME uuid carries the score
+    # entered after the fact in Apple Fitness. DO NOTHING would drop it; the backfill
+    # lands it — without duplicating the workout row.
+    upsert_workouts(session, [_workout("w", effortScore=None)])
+    assert _effort(session, "w") is None
+    result = upsert_workouts(session, [_workout("w", effortScore=8)])
+    assert result.upserted == 0 and result.duplicate == 1  # still a dup by uuid
+    assert _effort(session, "w") == 8  # late RPE backfilled
+    assert _wcount(session) == 1  # no duplicate workout row
+
+
+def test_effort_score_not_clobbered_by_later_effortless_sync(session) -> None:
+    # A stale re-sync that omits the score must NOT wipe an existing one.
+    upsert_workouts(session, [_workout("w", effortScore=7)])
+    upsert_workouts(session, [_workout("w", effortScore=None)])
+    assert _effort(session, "w") == 7
+
+
+def test_effort_score_backfill_is_fill_only_not_overwrite(session) -> None:
+    # Backfill-only by design: once a score exists it is authoritative, so a later
+    # *different* score does not overwrite it (avoids a stale delta clobbering a value).
+    upsert_workouts(session, [_workout("w", effortScore=7)])
+    upsert_workouts(session, [_workout("w", effortScore=9)])
+    assert _effort(session, "w") == 7
+
+
 def test_replay_adds_no_statistics_rows(session) -> None:
     w = _workout(
         "w",

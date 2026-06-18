@@ -14,6 +14,7 @@ computation (MODELS "SyncResponse").
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 
@@ -31,6 +32,8 @@ from app.services.record_upsert import upsert_records
 from app.services.strength_test_upsert import upsert_strength_test
 from app.services.workout_upsert import upsert_workouts
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -39,9 +42,11 @@ def get_recompute() -> RecomputeDailyMetrics:
 
     Returns the real E6 engine (E5·P3 shipped a `noop_recompute` default behind this
     seam precisely so E6 swaps it in with no route change). Tests still override this
-    provider with a spy. If the engine raises (post-commit), the exception propagates
-    and `/sync` returns a 5xx while the already-committed ingest stays durable
-    (round-2 #4) — the route does **not** swallow it.
+    provider with a spy. If the engine raises (post-commit), the route **catches** it,
+    logs it, and returns `200` with `recomputeOk=False` — the already-committed ingest
+    is durable and the affected day's `daily_metrics` is re-derived on the next sync or
+    brief (data-safety hardening: a failed recompute must not report durable ingest as a
+    failure, nor let one poison day permanently block the client's brief).
     """
     return get_engine_recompute()
 
@@ -70,7 +75,15 @@ def sync(
     # Fire the recompute seam AFTER commit (so the engine reads committed rows and a
     # recompute error can't roll back a good ingest) — unconditionally, even on an
     # empty affected set (noop and a real E6 engine both treat set() as "nothing").
-    recompute(affected_dates(body))
+    # A recompute failure does NOT fail the request: the ingest is already durable and
+    # idempotent, so we ack 200 with recomputeOk=False and let the next sync/brief
+    # re-derive the affected day, rather than 5xx-ing durable data into a retry loop.
+    recompute_ok = True
+    try:
+        recompute(affected_dates(body))
+    except Exception:  # noqa: BLE001 — recompute is best-effort; ingest is already committed
+        recompute_ok = False
+        logger.exception("daily_metrics recompute failed after a committed /sync ingest")
 
     return SyncResponse(
         records_upserted=records.upserted,
@@ -80,4 +93,5 @@ def sync(
         checkin_saved=checkin_saved,
         strength_test_saved=strength_test_saved,
         server_time=now_sofia(clock),
+        recompute_ok=recompute_ok,
     )
