@@ -35,8 +35,11 @@ D = date(2026, 6, 30)
 WK_MON = date(2026, 6, 8)  # Monday of 2026-W24 → prior ISO week is [2026-06-01, 2026-06-08)
 
 
-def _dm(session: Session, day: date, **cols) -> None:
-    session.add(DailyMetrics(date=day.isoformat(), **cols))
+def _dm(session: Session, day: date, *, computed_at: str | None = "2026-01-01T00:00:00+02:00", **cols) -> None:
+    # A genuine daily_metrics row always carries a `computed_at` (the engine stamps it on every
+    # upsert), so default it here; `n_days` now counts materialized rows only. Pass
+    # `computed_at=None` to seed a readiness-only placeholder (Phase 19.5).
+    session.add(DailyMetrics(date=day.isoformat(), computed_at=computed_at, **cols))
 
 
 def _wk(
@@ -532,3 +535,17 @@ def test_load_aggregates_surfaces_injected_prior_week_long_run_km(session: Sessi
     assert injected.prior_week_long_run_km == pytest.approx(12.3)
     blob = json.loads(json.dumps(injected.to_dict()))  # JSON-serialisable
     assert blob["prior_week_long_run_km"] == pytest.approx(12.3)
+
+
+def test_readiness_placeholder_row_not_counted_in_coverage(session):
+    # Phase 19.5 (review #2): a readiness-only placeholder (computed_at NULL, all metrics NULL)
+    # written by the daily-brief persist for an unsynced day must NOT count toward n_days — else
+    # it inflates the coverage denominator fed to the weekly planner.
+    _dm(session, D, z1_min=10.0, active_energy=100.0)  # a real materialized day
+    _dm(session, D - timedelta(days=1), computed_at=None, readiness_score=80, band="green")  # placeholder
+    session.commit()
+
+    train = training_rollup(session, D, days=7)
+    nutr = nutrition_consumed(session, D, days=7)
+    assert train.n_days == 1  # only the materialized row
+    assert nutr.n_days == 1

@@ -109,7 +109,7 @@ class TrainingRollup:
     z5_min: float
     active_energy: float
     hard_days: int
-    n_days: int  # rows present in the window — the coverage denominator
+    n_days: int  # MATERIALIZED rows (non-NULL computed_at) in the window — the coverage denominator
 
 
 def training_rollup(session: Session, anchor: date, days: int) -> TrainingRollup:
@@ -117,14 +117,18 @@ def training_rollup(session: Session, anchor: date, days: int) -> TrainingRollup
 
     Sums `z1_min`…`z5_min`/`active_energy` (`COALESCE(SUM, 0.0)`), counts hard days
     (`COALESCE(SUM(hard_day), 0)` — `hard_day` is 0/1, so this is the count of hard
-    days), and `COUNT(*)` for `n_days`. One aggregate query; no write.
+    days), and `COUNT(computed_at)` for `n_days` (materialized rows only). One aggregate query; no write.
     """
     stmt = _window_select(
         anchor,
         days,
         *[_sum0(col) for col in _ZONE_ENERGY_COLUMNS],
         func.coalesce(func.sum(DailyMetrics.hard_day), 0),
-        func.count(),
+        # `n_days` counts only MATERIALIZED metric rows (non-NULL `computed_at`, stamped by the
+        # metrics engine on every real upsert), not a readiness-only placeholder row that the
+        # daily-brief persist can create for an unsynced day (Phase 19.5): counting the
+        # placeholder would inflate the coverage denominator fed to the weekly planner.
+        func.count(DailyMetrics.computed_at),
     )
     z1, z2, z3, z4, z5, active_energy, hard_days, n_days = session.execute(stmt).one()
     return TrainingRollup(
@@ -147,7 +151,7 @@ def training_rollup(session: Session, anchor: date, days: int) -> TrainingRollup
 class NutritionConsumed:
     """One window's summed dietary intake + per-nutrient logged-day coverage.
 
-    `n_days` is the count of `daily_metrics` rows present; the per-nutrient
+    `n_days` is the count of MATERIALIZED `daily_metrics` rows (non-NULL `computed_at`); the per-nutrient
     `*_n` counts (`COUNT(col)`, NULL-skipping) are the real adherence coverage — a
     window can have full `n_days` yet a nutrient never logged (E6·P1 stores a
     no-source dietary cell as NULL) — round-1 #1.
@@ -173,10 +177,12 @@ class NutritionConsumed:
 
 def nutrition_consumed(session: Session, anchor: date, days: int) -> NutritionConsumed:
     """The windowed consumed-intake rollup: NULL-safe `SUM` of the seven dietary
-    columns + each nutrient's logged-day count (`COUNT(col)`) + `n_days` (`COUNT(*)`)."""
+    columns + each nutrient's logged-day count (`COUNT(col)`) + `n_days` (`COUNT(computed_at)`, materialized rows only)."""
     sums = [_sum0(col) for col in _DIETARY_COLUMNS]
     counts = [func.count(getattr(DailyMetrics, col)) for col in _DIETARY_COLUMNS]
-    stmt = _window_select(anchor, days, *sums, *counts, func.count())
+    # `n_days` counts materialized rows only (non-NULL `computed_at`), excluding a readiness-only
+    # placeholder (Phase 19.5) so coverage isn't inflated — see `training_rollup`.
+    stmt = _window_select(anchor, days, *sums, *counts, func.count(DailyMetrics.computed_at))
     row = session.execute(stmt).one()
     sum_vals = row[: len(_DIETARY_COLUMNS)]
     count_vals = row[len(_DIETARY_COLUMNS) : 2 * len(_DIETARY_COLUMNS)]
