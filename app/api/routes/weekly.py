@@ -27,6 +27,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.api.auth import require_auth
@@ -40,6 +41,7 @@ from app.core.weekly_planner import (
     WeeklyPlannerEvent,
 )
 from app.database.engine import get_session
+from app.database.models import Plans
 from app.services.weekly_plan import (
     GeneratedWeeklyPlan,
     WeeklyPlanGenerator,
@@ -179,7 +181,19 @@ def weekly_brief(
     if not cached:
         pending = getattr(generate, "pending_profile", None)
         if pending is not None:
-            _write_profile_with_retry(pending)
+            try:
+                _write_profile_with_retry(pending)
+            except OSError:
+                # The profile write failed after retries; the plan row is already committed.
+                # Leaving it cached would let the NEXT request take the cache-hit path (which
+                # skips the write entirely) and return 200 with stale constants — a permanent
+                # silent divergence (review #2.1). profile.yaml is not on the durable volume
+                # (Dockerfile bakes it into /app; only app.db lives on /data), so a redeploy can
+                # diverge them too. Invalidate the committed plan so the next request MISSES and
+                # re-generates + re-attempts the write, rather than serving a diverged plan.
+                session.execute(delete(Plans).where(Plans.iso_week == key))
+                session.commit()
+                raise
 
     # `generatedAt` is the row's `created_at` stamped by PersistPlanNode. A hit deserialises
     # it off the row; a fresh miss's `save_output` doesn't expose it, so re-read the now-
