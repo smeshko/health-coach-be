@@ -1,6 +1,6 @@
 # Plan: Backend persistence integrity (Phase 19.5)
 
-Status: in-progress
+Status: done
 Branch: fix/phase-19-5-persistence-integrity
 Risk: medium
 Epic: 19 — Make the numbers trustworthy (audit wave 2, iOS repo docs/artifacts/epics/19-trustworthy-numbers.md)
@@ -50,18 +50,18 @@ Alembic head is `0004` (after 19.4).
   `alembic check`/`compare_metadata` stays clean.
 
 ## Acceptance Criteria
-- [ ] A brief for a day with NO `daily_metrics` row persists its readiness snapshot (a row is
+- [x] A brief for a day with NO `daily_metrics` row persists its readiness snapshot (a row is
   created with `readiness_score`/`band` set) — failing-then-passing shown.
-- [ ] A brief for a day WITH a metrics row updates the snapshot without clobbering the row's
+- [x] A brief for a day WITH a metrics row updates the snapshot without clobbering the row's
   other columns (preserved).
-- [ ] A transient `write_profile` failure is retried and succeeds; a persistent failure logs
+- [x] A transient `write_profile` failure is retried and succeeds; a persistent failure logs
   an error and re-raises (pinned by a test).
-- [ ] `workouts.start_date` is indexed: migration `0005` creates `ix_workouts_start_date`,
+- [x] `workouts.start_date` is indexed: migration `0005` creates `ix_workouts_start_date`,
   the ORM carries the `Index`, and `compare_metadata` is clean after `upgrade head`.
-- [ ] `just test` green; `just lint` clean.
+- [x] `just test` green; `just lint` clean.
 
 ## Tasks
-- [ ] TASK-001: readiness snapshot upsert (no silent drop)
-- [ ] TASK-002: bounded retry for the post-commit profile.yaml write
-- [ ] TASK-003: workouts.start_date index + migration 0005
-- [ ] TASK-004: Final validation
+- [x] TASK-001: readiness snapshot upsert (no silent drop)
+- [x] TASK-002: bounded retry for the post-commit profile.yaml write
+- [x] TASK-003: workouts.start_date index + migration 0005
+- [x] TASK-004: Final validation
