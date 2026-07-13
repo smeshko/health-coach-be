@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from app.api.schemas.weekly import NarrativeSection, PlannedPick, WeeklyPlanLLMOutput
 from app.core.enums import NarrativeType, Weekday, WorkoutCard
+from app.services.recompute import QualityFocus
 from app.core.profile import load_profile
 from app.core.task_context import TaskContext
 from app.core.agent_node import BriefGenerationError
@@ -588,14 +589,17 @@ def test_is_recompute_due_is_monthly(last_week, current_week, due):
 
 
 def test_recompute_constants_not_due_branch(session, tmp_path, monkeypatch):
-    # Last recompute one week ago → not due: no helper called, no proposed write.
+    # Last recompute one week ago → not due: NONE of the monthly helpers run and no proposed
+    # write happens — BUT the weekly quality focus is still computed (Phase 19.4 D2) and rides
+    # in `recomputed`. Cold start (no prior plans row) → THRESHOLD.
     _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
     seed_strength_tests(session)
 
     import app.core.weekly_planner as wp
 
     called = []
-    for name in ("ramp_cadence_for", "next_quality_focus", "smooth_strength_trend", "rederive_zones"):
+    # `next_quality_focus` is deliberately NOT in this fail-list — it runs every week now.
+    for name in ("ramp_cadence_for", "smooth_strength_trend", "rederive_zones"):
         monkeypatch.setattr(wp, name, lambda *a, _n=name, **k: pytest.fail(f"{_n} called when not due"))
     monkeypatch.setattr(
         __import__("app.core.profile", fromlist=["write_profile"]),
@@ -608,7 +612,8 @@ def test_recompute_constants_not_due_branch(session, tmp_path, monkeypatch):
     output = out_ctx.nodes["RecomputeConstants"]
     assert output.constants_recomputed is False
     assert output.profile is not None  # unchanged profile stored for downstream nodes
-    assert output.recomputed is None
+    # `recomputed` now always carries the weekly focus (never None), even on a not-due week.
+    assert output.recomputed == {"quality_focus": "threshold"}
     assert called == []  # no file write proposed
 
 
@@ -876,6 +881,10 @@ def test_end_to_end_happy_path_via_run_async_context(session, tmp_path, monkeypa
     # A not-due week (recompute False) — the full deterministic graph runs end-to-end.
     _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
     seed_window(session, ANCHOR)
+    # Prior week persisted "threshold" → this week's weekly focus flips to "vo2" (Phase 19.4),
+    # which the belt-and-suspenders validator now enforces even on a not-due week — so the
+    # mocked plan's vo2 quality run matches, and the derived vo2/z5 assertions below hold.
+    _seed_plan_focus(session, "2026-W22", "threshold")
     _mock_generate_plan(monkeypatch, _clean_llm_output())
 
     ctx = TaskContext(
@@ -894,8 +903,9 @@ def test_end_to_end_happy_path_via_run_async_context(session, tmp_path, monkeypa
     assert out_ctx.nodes["ComputeBudgetsNode"].budgets.strength_sessions == 2
     assert out_ctx.nodes["ComputeTargetsNode"].targets.hard_days == 2
     assert len(out_ctx.nodes["ComputeNutritionNode"].nutrition.day_type_pattern) == 5
-    # Exactly one Plans row with the key columns set.
-    rows = session.execute(select(Plans)).scalars().all()
+    # Exactly one Plans row for THIS week with the key columns set (a prior-week focus row was
+    # seeded above, so filter by the planning week rather than counting all rows).
+    rows = session.execute(select(Plans).where(Plans.iso_week == ISO_WEEK)).scalars().all()
     assert len(rows) == 1
     row = rows[0]
     assert row.payload and row.inputs_snapshot and row.model and row.constitution_version
@@ -930,7 +940,7 @@ def test_monthly_recompute_branch_due_stages_profile_write(session, tmp_path, mo
 def test_monthly_recompute_branch_adjacent_week_no_write(session, tmp_path, monkeypatch):
     path = _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
     seed_window(session, ANCHOR)
-    _mock_generate_plan(monkeypatch, _clean_llm_output())
+    _mock_generate_plan(monkeypatch, _clean_llm_output(WorkoutCard.threshold))
     before = path.read_text(encoding="utf-8")
 
     ctx = TaskContext(
@@ -981,3 +991,179 @@ def test_constraint_breaking_plan_never_reaches_the_cache(session, profile_path,
         asyncio.run(WeeklyPlanner().run_async(context=ctx))
     assert exc.value.code == "brief_generation_failed"
     assert not session.execute(select(Plans)).scalars().all()  # no row written
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.4: weekly quality-focus alternation (DB-persisted, refresh-safe) +
+# correct-when-reachable zone-rederivation merge.
+# --------------------------------------------------------------------------- #
+def _seed_plan_focus(session, iso_week: str, focus, *, inputs_snapshot=...) -> None:
+    """Seed a ``plans`` row for ``iso_week`` whose ``inputs_snapshot`` carries ``focus``
+    (a str/None) under ``constants.quality_focus``. Pass ``inputs_snapshot=`` explicitly to
+    seed a legacy/malformed snapshot verbatim (round-2 #1 / round-3 #2)."""
+    if inputs_snapshot is ...:
+        snap = json.dumps({"aggregates": {}, "constants": {"quality_focus": focus}})
+    else:
+        snap = inputs_snapshot
+    session.add(
+        Plans(
+            iso_week=iso_week,
+            payload="{}",
+            rationale="[]",
+            inputs_snapshot=snap,
+            model="test",
+            constitution_version="v1",
+            created_at="2026-06-01T00:00:00+03:00",
+        )
+    )
+    session.flush()
+
+
+def _run_recompute_focus(session, tmp_path, monkeypatch) -> str:
+    """Run RecomputeConstants for ISO_WEEK (a not-due week) and return the emitted focus."""
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
+    ctx = _ctx(session)
+    out_ctx = asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    return out_ctx.nodes["RecomputeConstants"].recomputed["quality_focus"]
+
+
+def test_weekly_focus_alternates_off_prior_week(session, tmp_path, monkeypatch):
+    # Prior ISO week (2026-W22) persisted "threshold" → this week flips to "vo2".
+    _seed_plan_focus(session, "2026-W22", "threshold")
+    assert _run_recompute_focus(session, tmp_path, monkeypatch) == "vo2"
+
+
+def test_weekly_focus_alternates_the_other_way(session, tmp_path, monkeypatch):
+    _seed_plan_focus(session, "2026-W22", "vo2")
+    assert _run_recompute_focus(session, tmp_path, monkeypatch) == "threshold"
+
+
+def test_weekly_focus_cold_start_is_threshold(session, tmp_path, monkeypatch):
+    # No prior row at all → cold start → THRESHOLD.
+    assert _run_recompute_focus(session, tmp_path, monkeypatch) == "threshold"
+
+
+def test_weekly_focus_refresh_is_idempotent(session, tmp_path, monkeypatch):
+    # A same-week refresh reads the PRIOR week (W-1), never this week — so re-running yields
+    # the SAME focus, no double-flip (round-2 #3 / #4).
+    _seed_plan_focus(session, "2026-W22", "threshold")
+    first = _run_recompute_focus(session, tmp_path, monkeypatch)
+    # Simulate this week's row already persisted with the first pick (as PersistPlanNode would).
+    _seed_plan_focus(session, ISO_WEEK, first)
+    second = _run_recompute_focus(session, tmp_path, monkeypatch)
+    assert first == second == "vo2"
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        None,  # null inputs_snapshot
+        json.dumps({"aggregates": {}, "constants": None}),  # legacy not-due row
+        "not json at all",  # non-object / unparseable
+        json.dumps([1, 2, 3]),  # non-object JSON
+        json.dumps({}),  # missing "constants"
+        json.dumps({"constants": {}}),  # missing "quality_focus"
+        json.dumps({"constants": {"quality_focus": "garbage"}}),  # invalid value
+    ],
+)
+def test_weekly_focus_legacy_and_malformed_rows_cold_start(session, tmp_path, monkeypatch, snapshot):
+    # Every legacy/malformed prior row falls back to THRESHOLD without raising (round-3 #2).
+    _seed_plan_focus(session, "2026-W22", None, inputs_snapshot=snapshot)
+    assert _run_recompute_focus(session, tmp_path, monkeypatch) == "threshold"
+
+
+def test_weekly_focus_iso_year_boundary_w01(session, tmp_path, monkeypatch):
+    # W01's predecessor is the PRIOR ISO year's final week (W52/W53), not this calendar
+    # year's W00 (round-2 #5). 2026-W01's predecessor is 2025-W52.
+    from app.core.weekly_planner import _prior_week_quality_focus
+
+    _seed_plan_focus(session, "2025-W52", "threshold")
+    # The helper returns the PRIOR week's focus (the flip is next_quality_focus's job); the
+    # point is that W01 resolves to 2025-W52 (prior ISO year), not a calendar-year W00 miss.
+    assert _prior_week_quality_focus(session, "2026-W01") == QualityFocus.THRESHOLD
+
+
+def test_weekly_focus_prior_lookup_is_canonical(session, tmp_path, monkeypatch):
+    # A prior row stored under the canonical padded key is found by the padded lookup (D5).
+    from app.core.weekly_planner import _prior_week_quality_focus
+
+    _seed_plan_focus(session, "2026-W22", "vo2")
+    assert _prior_week_quality_focus(session, "2026-W23") == QualityFocus.VO2
+
+
+def test_weekly_focus_both_readers_agree_on_not_due_week(session, tmp_path, monkeypatch):
+    # The belt-and-suspenders validator reader (_quality_run_pick) and the agent reader
+    # (GeneratePlanNode._quality_run_pick) must derive the SAME pick from the emitted focus.
+    from app.core.weekly_planner import _quality_run_pick
+
+    _seed_plan_focus(session, "2026-W22", "threshold")
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W22")
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    recomputed = ctx.nodes["RecomputeConstants"].recomputed
+
+    validator_pick = _quality_run_pick(ctx)
+    agent_pick = GeneratePlanNode._quality_run_pick(recomputed)
+    assert validator_pick == agent_pick == WorkoutCard.vo2
+
+
+def test_zone_merge_reachable_max_hr_move_updates_thresholds_and_zones(session, tmp_path, monkeypatch):
+    # Injected max-HR move on a DUE week: the proposed Profile VALIDATES with the new zones AND
+    # the new thresholds.max_hr/rhr_baseline (round-1 #1 / round-2 #3).
+    from scripts.compute_zones import compute_zones
+    from app.services.recompute import ZoneRederivation
+    import app.core.weekly_planner as wp
+
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    profile = load_profile()
+    new_max, new_rhr = profile.thresholds.max_hr + 6, profile.thresholds.rhr_baseline + 3
+    monkeypatch.setattr(
+        wp, "rederive_zones",
+        lambda **k: ZoneRederivation(True, compute_zones(new_max, new_rhr), new_max, new_rhr),
+    )
+
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    proposed = ctx.nodes["RecomputeConstants"].profile
+    assert proposed.thresholds.max_hr == new_max
+    assert proposed.thresholds.rhr_baseline == new_rhr
+    assert proposed.zones.z5[1] == new_max  # the validator invariant now holds
+
+
+def test_zone_merge_rhr_only_move_updates_baseline_unchanged_bounds(session, tmp_path, monkeypatch):
+    # RHR-only move: compute_zones is %max-only so bounds are unchanged, but rhr_baseline MUST
+    # update or `changed` re-fires every recompute (round-2 #3).
+    from scripts.compute_zones import compute_zones
+    from app.services.recompute import ZoneRederivation
+    import app.core.weekly_planner as wp
+
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    profile = load_profile()
+    same_max, new_rhr = profile.thresholds.max_hr, profile.thresholds.rhr_baseline + 4
+    monkeypatch.setattr(
+        wp, "rederive_zones",
+        lambda **k: ZoneRederivation(True, compute_zones(same_max, new_rhr), same_max, new_rhr),
+    )
+
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    proposed = ctx.nodes["RecomputeConstants"].profile
+    assert proposed.thresholds.rhr_baseline == new_rhr
+    assert proposed.thresholds.max_hr == same_max
+    assert proposed.zones.z5[1] == profile.zones.z5[1]  # bounds unchanged (%max-only)
+
+
+def test_zone_merge_default_path_is_no_op(session, tmp_path, monkeypatch):
+    # Default (new == current → not changed): max_hr/rhr_baseline/zones byte-identical.
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    profile = load_profile()
+
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    proposed = ctx.nodes["RecomputeConstants"].profile
+    assert proposed.thresholds.max_hr == profile.thresholds.max_hr
+    assert proposed.thresholds.rhr_baseline == profile.thresholds.rhr_baseline
+    assert proposed.zones.model_dump() == profile.zones.model_dump()

@@ -268,6 +268,16 @@ def test_explicit_iso_week_honored(ctx) -> None:
     assert body["data"]["weekStart"] == "2024-12-30"
 
 
+def test_unpadded_iso_week_is_canonicalized(ctx) -> None:
+    # Phase 19.4 D5: an accepted unpadded `2026-W1` is canonicalized to `2026-W01` so the
+    # cache key, persistence, and the prior-week focus lookup all agree on one key per week.
+    client, app, _db = ctx
+    _use_generator(app, _StubGenerator())
+    resp = client.post("/brief/weekly", json={"isoWeek": "2026-W1"}, headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["isoWeek"] == "2026-W01"
+
+
 # --------------------------------------------------------------------------- #
 # Out-of-range / malformed isoWeek → 422 validation_error (never a 500)
 # --------------------------------------------------------------------------- #

@@ -166,6 +166,6 @@ See [RESEARCH.md](RESEARCH.md). Load-bearing, all re-verified against current co
 
 ## Tasks
 
-- [ ] TASK-001: Week-keyed quality-focus alternation (DB-persisted, refresh-safe)
-- [ ] TASK-002: Correct-when-reachable zone-rederivation merge
+- [x] TASK-001: Week-keyed quality-focus alternation (DB-persisted, refresh-safe)
+- [x] TASK-002: Correct-when-reachable zone-rederivation merge
 - [ ] TASK-003: Final validation
