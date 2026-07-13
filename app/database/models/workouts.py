@@ -7,7 +7,7 @@ nullable) and `physical_effort` (METs proxy, nullable) (DB.md §1; ARCHITECTURE 
 TEXT. Schema only — the write path is E5.
 """
 
-from sqlalchemy import Float, Integer, Text, UniqueConstraint
+from sqlalchemy import Float, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -35,4 +35,10 @@ class Workouts(Base):
     end_date: Mapped[str | None] = mapped_column(Text)
     origin: Mapped[str] = mapped_column(Text, nullable=False)
 
-    __table_args__ = (UniqueConstraint("uuid"),)
+    # `start_date` is the hot filter for every date-range query (daily recompute, hard-day
+    # detection, the weekly prior-long-run rollup), so index it — mirroring `records.py`
+    # (Phase 19.5). Migration `0005` creates `ix_workouts_start_date`.
+    __table_args__ = (
+        UniqueConstraint("uuid"),
+        Index(None, "start_date"),
+    )
