@@ -110,7 +110,11 @@ class WeeklyBriefRequest(CamelModel):
             raise ValueError("isoWeek must be 'YYYY-Www'")
         # Parsing the Monday rejects out-of-range weeks (W00, W54, an invalid W53).
         date.fromisocalendar(int(year_str), int(week_str), 1)
-        return value
+        # Canonicalize to zero-padded ISO `%G-W%V` (Phase 19.4 D5): an accepted unpadded
+        # `2026-W1` must become `2026-W01` so the cache key, `plans` persistence, and the
+        # prior-week focus lookup all agree on one key per logical week (else an unpadded row
+        # is missed by the padded lookup and aliases can duplicate a week's plan).
+        return f"{int(year_str):04d}-W{int(week_str):02d}"
 
 
 class WeeklyBudgets(CamelModel):

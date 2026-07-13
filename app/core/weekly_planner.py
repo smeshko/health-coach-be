@@ -32,13 +32,14 @@ Pure ``app/core`` module otherwise: no FastAPI route, no endpoint, no get-or-gen
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
 from datetime import date, timedelta
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
@@ -295,14 +296,25 @@ class RecomputeConstants(Node):
     async def process(self, task_context: TaskContext) -> TaskContext:
         event: WeeklyPlannerEvent = task_context.event
         profile = load_profile()
+        session = _session_of(task_context)
+
+        # The §9 quality focus is a WEEKLY cue, computed every week off the prior ISO-week's
+        # persisted pick (Phase 19.4, D1/D2) — independent of the monthly recompute gate below,
+        # so consecutive plans alternate threshold↔VO₂. It rides in `recomputed` on BOTH
+        # branches (always present), so a not-due week still feeds the validator + agent a pick
+        # and persists it (via PersistPlanNode's `inputs_snapshot["constants"]`) for next week.
+        quality = next_quality_focus(_prior_week_quality_focus(session, event.iso_week))
 
         if not is_recompute_due(profile.meta.constants_recomputed_week, event.iso_week):
             self.save_output(
-                RecomputeConstantsOutput(constants_recomputed=False, profile=profile)
+                RecomputeConstantsOutput(
+                    constants_recomputed=False,
+                    profile=profile,
+                    recomputed={"quality_focus": quality.value},
+                )
             )
             return task_context
 
-        session = _session_of(task_context)
         last_week = profile.meta.constants_recomputed_week
         weeks_elapsed = (
             RECOMPUTE_EVERY_N_WEEKS
@@ -310,11 +322,13 @@ class RecomputeConstants(Node):
             else (_iso_week_monday(event.iso_week) - _iso_week_monday(last_week)).days // 7
         )
 
-        # --- The four E8·P5 helpers (value objects; this node writes nothing) ---
+        # --- The E8·P5 helpers (value objects; this node writes nothing) ---
         cadence = ramp_cadence_for(profile, weeks_since_last_bump=weeks_elapsed)
-        quality = next_quality_focus(_last_quality_focus(task_context))
         pushups = smooth_strength_trend(_strength_series(session, "max_pushups"))
         pullups = smooth_strength_trend(_strength_series(session, "max_pullups"))
+        # `new_* == current` today (documented production no-op): there is no runtime measured
+        # max-HR source, so this branch never fires in production — Phase 19.6 supplies the
+        # measured anchor. The merge below is nonetheless correct-when-reachable (D3).
         zones = rederive_zones(
             current_max_hr=profile.thresholds.max_hr,
             current_rhr=profile.thresholds.rhr_baseline,
@@ -325,10 +339,35 @@ class RecomputeConstants(Node):
         # --- Merge into a FULLY RE-VALIDATED Profile (re-runs E3·P1 validators) ---
         dump = profile.model_dump(mode="json")
         dump["thresholds"]["cadence_current_spm"] = cadence.new_spm
-        if zones.changed and zones.zones is not None:
-            dump["zones"] = {name: list(bounds) for name, bounds in zones.zones.items()}
         dump["meta"]["constants_recomputed_week"] = event.iso_week
-        proposed = Profile.model_validate(dump)
+        zones_applied = False
+        if zones.changed and zones.zones is not None:
+            # A moved anchor must update BOTH thresholds AND zones atomically (D3): the
+            # `_zones_consistent_with_max_hr` validator enforces `zones.z5.high == max_hr`, and
+            # writing the new rhr_baseline stops `changed` re-firing on the same RHR next month.
+            candidate = copy.deepcopy(dump)
+            candidate["thresholds"]["max_hr"] = zones.new_max_hr
+            candidate["thresholds"]["rhr_baseline"] = zones.new_rhr
+            candidate["zones"] = {name: list(bounds) for name, bounds in zones.zones.items()}
+            try:
+                proposed = Profile.model_validate(candidate)
+                zones_applied = True
+            except ValidationError:
+                # A measured anchor that would violate a DEPENDENT threshold (e.g. a downward
+                # max_hr dropping below `easy_hr_cap`, or an rhr ≥ max_hr) must NOT abort weekly
+                # generation (review): keep the current zones/anchors and carry on. Phase 19.6's
+                # ratchet-up-only admission policy prevents this in practice; this is defense in
+                # depth. NB the fallback still re-validates `dump`, so an invalid *cadence*
+                # (independent of zones) still raises as before.
+                logger.warning(
+                    "rederived anchors (max_hr=%s, rhr=%s) would violate profile constraints; "
+                    "keeping current zones (Phase 19.6 will gate the anchor source)",
+                    zones.new_max_hr,
+                    zones.new_rhr,
+                )
+                proposed = Profile.model_validate(dump)
+        else:
+            proposed = Profile.model_validate(dump)
 
         recomputed = {
             "cadence_spm": cadence.new_spm,
@@ -336,7 +375,7 @@ class RecomputeConstants(Node):
             "quality_focus": quality.value,
             "strength_pushups": {"smoothed": pushups.smoothed, "direction": pushups.direction},
             "strength_pullups": {"smoothed": pullups.smoothed, "direction": pullups.direction},
-            "zones_changed": zones.changed,
+            "zones_changed": zones_applied,
         }
         self.save_output(
             RecomputeConstantsOutput(
@@ -346,14 +385,44 @@ class RecomputeConstants(Node):
         return task_context
 
 
-def _last_quality_focus(task_context: TaskContext) -> QualityFocus | None:
-    """Last week's quality focus to flip off (``None`` cold start → THRESHOLD).
+def _prior_week_quality_focus(session: Session, iso_week: str) -> QualityFocus | None:
+    """The prior ISO-week's persisted quality focus, to flip off this week (Phase 19.4 D1).
 
-    There is no stored prior-quality history in this phase's scope; the flip opens on
-    ``THRESHOLD`` (the base-phase quality day) and ``next_quality_focus`` is total over a
-    ``None``. A future phase that persists the prior pick threads it through here.
+    Reads the previous ISO week's ``plans`` row's ``inputs_snapshot["constants"]
+    ["quality_focus"]``. Returns ``None`` — a cold start (``next_quality_focus`` opens on
+    ``THRESHOLD``) — for a missing predecessor **or** any legacy/malformed row: a null or
+    non-string ``inputs_snapshot``, non-object JSON, a ``constants`` that is missing/null/
+    non-dict (a not-due row before Phase 19.4 stored ``constants: null``), a missing
+    ``quality_focus``, or an unrecognised value. Every access is ``.get()`` — never ``[]`` —
+    so no legacy shape can raise (round-2 #1 / round-3 #2).
+
+    The prior-week key uses ``date.isocalendar`` (ISO ``%G-W%V``), so W01's predecessor
+    resolves into the previous ISO year's final week, never a calendar-year mismatch
+    (round-2 #5). Stored keys are canonical (`_validate_iso_week` pads them, D5), so a padded
+    lookup matches.
     """
-    return None
+    prior_monday = _iso_week_monday(iso_week) - timedelta(days=7)
+    y, w, _ = prior_monday.isocalendar()
+    key = f"{y:04d}-W{w:02d}"
+    snapshot = session.execute(
+        select(Plans.inputs_snapshot).where(Plans.iso_week == key)
+    ).scalar_one_or_none()
+    if not isinstance(snapshot, str):
+        return None
+    try:
+        parsed = json.loads(snapshot)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    constants = parsed.get("constants")
+    if not isinstance(constants, dict):
+        return None
+    focus = constants.get("quality_focus")
+    try:
+        return QualityFocus(focus)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
