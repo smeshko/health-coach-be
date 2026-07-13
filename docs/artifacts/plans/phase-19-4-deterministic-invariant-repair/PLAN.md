@@ -1,6 +1,6 @@
 # Plan: Backend deterministic-invariant repair (Phase 19.4)
 
-Status: in-progress
+Status: done
 Branch: fix/phase-19-4-deterministic-invariant-repair
 Risk: high
 Epic: 19 — Make the numbers trustworthy (audit wave 2, tracked in the iOS repo's docs/artifacts/epics/19-trustworthy-numbers.md)
@@ -140,7 +140,7 @@ See [RESEARCH.md](RESEARCH.md). Load-bearing, all re-verified against current co
 
 ## Acceptance Criteria
 
-- [ ] Consecutive weekly briefs alternate quality focus, demonstrated by **two committed
+- [x] Consecutive weekly briefs alternate quality focus, demonstrated by **two committed
   adjacent generations** (persisted W `threshold` → generate W+1 → persisted W+1 `vo2` →
   generate W+2 → `threshold`), with the focus transported through
   `metadata["computed"]["constants"]` into `GeneratePlanNode.build_deps` (not fed directly
@@ -148,11 +148,11 @@ See [RESEARCH.md](RESEARCH.md). Load-bearing, all re-verified against current co
   opens on `threshold`. Green on a **not-due** week (independent of the monthly gate), which
   still reports `constantsRecomputed=false`. W01/W53 ISO-year boundary covered.
   Failing-then-passing shown.
-- [ ] Both focus readers (`_quality_run_pick` and the agent `WeeklyDeps`) receive the same
+- [x] Both focus readers (`_quality_run_pick` and the agent `WeeklyDeps`) receive the same
   per-week pick on a not-due week (no divergence).
-- [ ] A **same-week `refresh=true`** re-emits the **same** focus (reads W-1, not W) — no
+- [x] A **same-week `refresh=true`** re-emits the **same** focus (reads W-1, not W) — no
   double-flip. Pinned by a test.
-- [ ] Zone merge is correct-when-reachable, **both anchor paths**:
+- [x] Zone merge is correct-when-reachable, **both anchor paths**:
   - injected **max-HR** move → `Profile` validates, `zones == compute_zones(new_max_hr,
     new_rhr)`, `thresholds.max_hr == new_max_hr`, `thresholds.rhr_baseline == new_rhr`;
   - injected **RHR-only** move (`new_rhr != current`, `new_max_hr == current`) → `zones`
@@ -162,10 +162,10 @@ See [RESEARCH.md](RESEARCH.md). Load-bearing, all re-verified against current co
     byte-identical (assert those fields specifically, since `cadence_current_spm` may change
     independently on a due run — round-2 #3).
   Failing-then-passing shown.
-- [ ] `just test` green; `just lint` (`ruff check .`) clean.
+- [x] `just test` green; `just lint` (`ruff check .`) clean.
 
 ## Tasks
 
 - [x] TASK-001: Week-keyed quality-focus alternation (DB-persisted, refresh-safe)
 - [x] TASK-002: Correct-when-reachable zone-rederivation merge
-- [ ] TASK-003: Final validation
+- [x] TASK-003: Final validation
