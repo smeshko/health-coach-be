@@ -157,3 +157,46 @@ def test_migration_matches_metadata(tmp_path):
     finally:
         engine.dispose()
     assert diff == [], diff
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.4 (0004): canonicalize plans.iso_week to zero-padded %G-W%V.
+# --------------------------------------------------------------------------- #
+def _insert_plan(conn, *, iso_week, created_at, payload="{}"):
+    conn.execute(
+        "INSERT INTO plans (iso_week, payload, model, constitution_version, created_at) "
+        "VALUES (?, ?, 'test', 'v1', ?)",
+        (iso_week, payload, created_at),
+    )
+
+
+def test_0004_canonicalizes_unpadded_iso_week(tmp_path):
+    db_path = tmp_path / "canon.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")  # stop BEFORE the canonicalization migration
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W1", created_at="2026-01-05T00:00:00+02:00")
+        _insert_plan(conn, iso_week="2026-W02", created_at="2026-01-12T00:00:00+02:00")  # already canonical
+        conn.commit()
+
+    command.upgrade(cfg, "0004")
+
+    with sqlite3.connect(db_path) as conn:
+        weeks = {r[0] for r in conn.execute("SELECT iso_week FROM plans").fetchall()}
+    assert weeks == {"2026-W01", "2026-W02"}  # W1 padded, W02 untouched
+
+
+def test_0004_resolves_padded_unpadded_collision_keeping_newest(tmp_path):
+    db_path = tmp_path / "collide.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W1", created_at="2026-01-05T00:00:00+02:00", payload='{"old":1}')
+        _insert_plan(conn, iso_week="2026-W01", created_at="2026-01-06T00:00:00+02:00", payload='{"new":1}')
+        conn.commit()
+
+    command.upgrade(cfg, "0004")  # must not violate UNIQUE(iso_week)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
+    assert rows == [("2026-W01", '{"new":1}')]  # collision resolved, newest kept
