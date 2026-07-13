@@ -200,3 +200,72 @@ def test_0004_resolves_padded_unpadded_collision_keeping_newest(tmp_path):
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
     assert rows == [("2026-W01", '{"new":1}')]  # collision resolved, newest kept
+
+
+def test_0004_collision_survivor_is_dst_safe(tmp_path):
+    # Across Sofia's autumn DST rollback, the raw offset string misleads: the LATER instant
+    # carries +02:00 and sorts lexicographically BELOW the earlier +03:00 one. The survivor
+    # must be chosen by the actual UTC instant (review #2.1), so the +02:00 row wins.
+    db_path = tmp_path / "dst.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W43", created_at="2026-10-25T03:50:00+03:00", payload='{"earlier":1}')
+        _insert_plan(conn, iso_week="2026-W043", created_at="2026-10-25T03:10:00+02:00", payload='{"later":1}')
+        conn.commit()
+
+    command.upgrade(cfg, "0004")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
+    # 2026-10-25T03:10+02:00 == 01:10 UTC is LATER than 03:50+03:00 == 00:50 UTC → later wins.
+    assert rows == [("2026-W43", '{"later":1}')]
+
+
+def test_0004_collision_null_created_at_falls_back_to_id(tmp_path):
+    # Null/missing timestamps must not make the survivor SELECT-order-dependent: a real
+    # timestamp outranks a null, and among equals the higher id wins (deterministic).
+    db_path = tmp_path / "nulls.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W1", created_at=None, payload='{"null":1}')
+        _insert_plan(conn, iso_week="2026-W01", created_at="2026-01-06T00:00:00+02:00", payload='{"dated":1}')
+        conn.commit()
+
+    command.upgrade(cfg, "0004")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
+    assert rows == [("2026-W01", '{"dated":1}')]  # the real timestamp beats the null
+
+
+def test_0004_three_alias_collision_keeps_one(tmp_path):
+    db_path = tmp_path / "three.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W3", created_at="2026-01-12T00:00:00+02:00")
+        _insert_plan(conn, iso_week="2026-W03", created_at="2026-01-14T00:00:00+02:00", payload='{"win":1}')
+        _insert_plan(conn, iso_week="2026-W003", created_at="2026-01-13T00:00:00+02:00")
+        conn.commit()
+
+    command.upgrade(cfg, "0004")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
+    assert rows == [("2026-W03", '{"win":1}')]
+
+
+def test_0004_empty_table_and_idempotent(tmp_path):
+    db_path = tmp_path / "empty.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "head")  # empty table through 0004 — no error
+    with sqlite3.connect(db_path) as conn:
+        _insert_plan(conn, iso_week="2026-W05", created_at="2026-01-26T00:00:00+02:00")
+        conn.commit()
+    # Re-running the canonicalization logic over already-canonical rows is a no-op.
+    command.downgrade(cfg, "0003")
+    command.upgrade(cfg, "0004")
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT iso_week FROM plans").fetchall() == [("2026-W05",)]

@@ -15,6 +15,8 @@ Create Date: 2026-07-13
 
 """
 
+from datetime import datetime, timezone
+
 from alembic import op
 
 revision: str = "0004"
@@ -31,38 +33,45 @@ def _canonical(iso_week: str) -> str | None:
     return f"{int(year_str):04d}-W{int(week_str):02d}"
 
 
+def _sort_key(row_id: int, created_at: str | None) -> tuple:
+    """A total, DST-safe ordering key for picking a collision survivor (review #2.1).
+
+    Compares the ACTUAL instant (parsed as an aware datetime → UTC), never the raw
+    offset-bearing string — so a pre-DST-rollback `+03:00` row does not spuriously outrank a
+    later `+02:00` row. A row with a real timestamp always outranks a null/malformed one; ties
+    (equal/missing/unparseable instants) fall back to the surrogate `id` (later insert wins),
+    so the choice is deterministic regardless of SELECT order. ``max(key)`` picks the survivor.
+    """
+    if created_at:
+        try:
+            instant = datetime.fromisoformat(created_at).astimezone(timezone.utc)
+            return (1, instant, row_id)
+        except ValueError:
+            pass
+    return (0, datetime.min.replace(tzinfo=timezone.utc), row_id)
+
+
 def upgrade() -> None:
     conn = op.get_bind()
     rows = conn.exec_driver_sql("SELECT id, iso_week, created_at FROM plans").fetchall()
-    # Group logical weeks by canonical key; pick the survivor (latest created_at) per key.
-    survivors: dict[str, tuple[int, str]] = {}  # canonical -> (id, created_at)
-    drops: list[int] = []
-    renames: list[tuple[int, str]] = []
+    # Group every row by its canonical key, then per key keep the survivor (max _sort_key) and
+    # drop the rest — so `UNIQUE(iso_week)` holds after the renames.
+    by_key: dict[str, list[tuple[tuple, int, str]]] = {}
     for row_id, iso_week, created_at in rows:
         canonical = _canonical(iso_week)
         if canonical is None:
-            continue
-        created_at = created_at or ""
-        if canonical not in survivors:
-            survivors[canonical] = (row_id, created_at)
-            if iso_week != canonical:
-                renames.append((row_id, canonical))
-            continue
-        # A collision on the canonical key: keep the newer row, drop the older.
-        keep_id, keep_created = survivors[canonical]
-        if created_at >= keep_created:
-            drops.append(keep_id)
-            survivors[canonical] = (row_id, created_at)
-            renames.append((row_id, canonical))
-            renames[:] = [(rid, c) for rid, c in renames if rid != keep_id]
-        else:
-            drops.append(row_id)
-    for row_id in drops:
-        conn.exec_driver_sql("DELETE FROM plans WHERE id = ?", (row_id,))
-    for row_id, canonical in renames:
-        conn.exec_driver_sql(
-            "UPDATE plans SET iso_week = ? WHERE id = ?", (canonical, row_id)
-        )
+            continue  # leave an unparseable key untouched
+        by_key.setdefault(canonical, []).append((_sort_key(row_id, created_at), row_id, iso_week))
+
+    for canonical, group in by_key.items():
+        group.sort(key=lambda t: t[0])
+        survivor = group[-1]
+        for _key, row_id, _iso in group[:-1]:
+            conn.exec_driver_sql("DELETE FROM plans WHERE id = ?", (row_id,))
+        if survivor[2] != canonical:  # rename the survivor only if noncanonical
+            conn.exec_driver_sql(
+                "UPDATE plans SET iso_week = ? WHERE id = ?", (canonical, survivor[1])
+            )
 
 
 def downgrade() -> None:
