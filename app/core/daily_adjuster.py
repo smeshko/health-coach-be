@@ -38,7 +38,8 @@ from datetime import date, timedelta
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.api.schemas.daily import IntakeSummary, IntakeVsTarget
@@ -485,11 +486,19 @@ def _persist_brief(
             created_at=now_sofia().isoformat(),
         )
     )
-    session.execute(
-        update(DailyMetrics)
-        .where(DailyMetrics.date == date_str)
-        .values(readiness_score=readiness.score, band=readiness.band.value)
+    # Persist the readiness/band verdict via an upsert on the `date` PK (Phase 19.5): a bare
+    # UPDATE silently no-ops when no `daily_metrics` row exists yet (a brief requested before
+    # that day synced), dropping the snapshot. Mirror `daily_metrics_engine._upsert_daily_metrics`
+    # — insert a row carrying only the verdict (other columns stay NULL), or update just these
+    # two on conflict, so the metrics engine's PRESERVED_COLUMNS semantics are untouched.
+    stmt = sqlite_insert(DailyMetrics).values(
+        date=date_str, readiness_score=readiness.score, band=readiness.band.value
     )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["date"],
+        set_={"readiness_score": stmt.excluded.readiness_score, "band": stmt.excluded.band},
+    )
+    session.execute(stmt)
     return brief
 
 

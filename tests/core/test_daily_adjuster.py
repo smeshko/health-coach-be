@@ -694,3 +694,44 @@ def test_end_to_end_persisted_macro_day_type_is_hard_for_hard_card(session, prof
     row = session.execute(select(Suggestions)).scalars().one()
     data = json.loads(row.payload)["data"]
     assert data["macroFocus"]["dayType"] == "hard"  # hard card fuels hard
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.5: the readiness/band snapshot must persist even when no daily_metrics
+# row exists for the brief day (a brief requested before that day synced).
+# --------------------------------------------------------------------------- #
+def test_readiness_snapshot_persists_when_no_metrics_row(session, profile_path):
+    from sqlalchemy import delete
+
+    from app.core.daily_adjuster import SafetyRestNode
+
+    ctx = _tripped_ctx(session)
+    # Simulate a brief for a day whose daily_metrics row does not exist at persist time.
+    session.execute(delete(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat()))
+    session.flush()
+
+    asyncio.run(SafetyRestNode(task_context=ctx).process(ctx))
+
+    # The bare UPDATE would silently no-op (no row) — the upsert creates it with the snapshot.
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score is not None and dm.band == "green"
+
+
+def test_readiness_snapshot_upsert_preserves_other_columns(session, profile_path):
+    from app.core.daily_adjuster import SafetyRestNode
+
+    ctx = _tripped_ctx(session)  # seeds today's row with sleep_h=7.5 etc.
+    sleep_before = session.execute(
+        select(DailyMetrics.sleep_h).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+
+    asyncio.run(SafetyRestNode(task_context=ctx).process(ctx))
+    session.expire_all()  # the upsert is a Core statement; drop stale identity-map state
+
+    dm = session.execute(
+        select(DailyMetrics).where(DailyMetrics.date == TODAY.isoformat())
+    ).scalar_one()
+    assert dm.readiness_score is not None and dm.band == "green"
+    assert dm.sleep_h == sleep_before  # the upsert only touches readiness_score/band
