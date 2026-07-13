@@ -758,3 +758,64 @@ def test_cache_hit_populated_long_run_km_and_new_snapshot_key_revalidate(ctx) ->
     assert gen.calls == 0
     # The populated value re-validates against the schema and round-trips on the wire.
     assert body["data"]["budgets"]["longRunKm"] == 11.0
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.5: the post-commit profile.yaml write is retried; a persistent
+# failure logs and re-raises rather than silently diverging.
+# --------------------------------------------------------------------------- #
+def test_profile_write_retries_transient_failure(ctx, tmp_path, monkeypatch) -> None:
+    client, app, db_path = ctx
+    import app.api.routes.weekly as weekly_route
+    from app.core.profile import load_profile, write_profile
+
+    base = load_profile()
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    proposed = base.model_copy(deep=True)
+    object.__setattr__(proposed.meta, "constants_recomputed_week", "2026-W23")
+
+    calls = {"n": 0}
+    real = weekly_route.write_profile
+
+    def _flaky(pending):
+        calls["n"] += 1
+        if calls["n"] < 3:  # fail the first two attempts, succeed on the third
+            raise OSError("transient fs contention")
+        return real(pending)
+
+    monkeypatch.setattr(weekly_route, "write_profile", _flaky)
+    monkeypatch.setattr(weekly_route, "_PROFILE_WRITE_BACKOFF_S", 0.0)  # no real sleep in tests
+
+    _use_generator(app, _StagingGenerator(proposed))
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert calls["n"] == 3  # retried through the two failures
+    assert load_profile(path=target).meta.constants_recomputed_week == "2026-W23"
+
+
+def test_profile_write_persistent_failure_raises(ctx, tmp_path, monkeypatch) -> None:
+    client, app, db_path = ctx
+    import app.api.routes.weekly as weekly_route
+    from app.core.profile import load_profile, write_profile
+
+    base = load_profile()
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    proposed = base.model_copy(deep=True)
+    object.__setattr__(proposed.meta, "constants_recomputed_week", "2026-W23")
+
+    monkeypatch.setattr(weekly_route, "_PROFILE_WRITE_BACKOFF_S", 0.0)
+    monkeypatch.setattr(
+        weekly_route, "write_profile",
+        lambda pending: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    _use_generator(app, _StagingGenerator(proposed))
+    # A persistent write failure re-raises (surfaced as a 500, not silently swallowed). The
+    # plan row is already committed — the divergence is logged for reconciliation.
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)
+    assert resp.status_code == 500
+    assert _count(db_path) == 1  # plan committed before the write attempt

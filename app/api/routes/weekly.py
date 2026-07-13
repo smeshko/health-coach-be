@@ -21,6 +21,8 @@ caches no ``Plans`` row.
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from datetime import date, datetime
 
@@ -46,6 +48,35 @@ from app.services.weekly_plan import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# Phase 19.5 (D2): the post-commit `profile.yaml` write is a non-transactional side effect —
+# a transient failure (fs contention, a momentary EIO) would leave the committed plan diverged
+# from its constants file. Retry a few times with a short backoff; `write_profile` is atomic
+# (temp-file + fsync + os.replace), so a retry never leaves a torn file. This handler is sync
+# (FastAPI runs it in a threadpool), so `time.sleep` blocks only this worker.
+_PROFILE_WRITE_ATTEMPTS = 3
+_PROFILE_WRITE_BACKOFF_S = 0.05
+
+
+def _write_profile_with_retry(pending: Profile) -> None:
+    """Apply the staged `profile.yaml` write with a bounded retry. On exhaustion, log a loud
+    error (the plan is committed but the constants file is stale — surfaced for reconciliation)
+    and re-raise so the failure is visible rather than silently swallowed."""
+    for attempt in range(1, _PROFILE_WRITE_ATTEMPTS + 1):
+        try:
+            write_profile(pending)
+            return
+        except OSError:
+            if attempt == _PROFILE_WRITE_ATTEMPTS:
+                logger.error(
+                    "profile.yaml write failed after %d attempts; the weekly plan is committed "
+                    "but the constants file is stale and needs reconciliation",
+                    _PROFILE_WRITE_ATTEMPTS,
+                    exc_info=True,
+                )
+                raise
+            time.sleep(_PROFILE_WRITE_BACKOFF_S)
 
 
 def _week_monday(iso_week_key: str) -> date:
@@ -148,7 +179,7 @@ def weekly_brief(
     if not cached:
         pending = getattr(generate, "pending_profile", None)
         if pending is not None:
-            write_profile(pending)
+            _write_profile_with_retry(pending)
 
     # `generatedAt` is the row's `created_at` stamped by PersistPlanNode. A hit deserialises
     # it off the row; a fresh miss's `save_output` doesn't expose it, so re-read the now-
