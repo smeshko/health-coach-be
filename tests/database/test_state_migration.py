@@ -288,3 +288,17 @@ def test_0004_naive_timestamp_is_malformed_not_host_local(tmp_path):
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
     assert rows == [("2026-W01", '{"aware":1}')]  # aware beats naive on any host
+
+
+def _has_index_on(conn, table, cols):
+    """True if any (non-unique or unique) index on ``table`` covers exactly ``cols``."""
+    for row in conn.execute(f"PRAGMA index_list({table})").fetchall():
+        idx_cols = [r[2] for r in conn.execute(f"PRAGMA index_info({row[1]})").fetchall()]
+        if idx_cols == list(cols):
+            return True
+    return False
+
+
+def test_0005_workouts_start_date_index_exists(migrated_db):
+    # Phase 19.5: every hot workouts query filters by start_date range — it must be indexed.
+    assert _has_index_on(migrated_db, "workouts", ["start_date"])

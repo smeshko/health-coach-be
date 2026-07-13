@@ -146,3 +146,25 @@ litestream restore -config litestream.yml "$APP_DB_PATH"   # → last-replicated
     adds rate-limiting/WAF. Add a Cloudflare **rate-limit** rule on `/sync` as a backstop.
   - note Cloudflare's edge **sees the token** (TLS terminates there) and free-plan limits: ~100 MB
     request body (first sync is small — fine) and a **100 s origin timeout** (briefs are 3–8 s — fine).
+
+---
+
+## 5. Known limitation: profile.yaml durability (Phase 19.5)
+
+The weekly recompute stages an updated `profile.yaml` (the constants file) and the route
+writes it **after** the DB commit. Two integrity properties:
+
+- **Write failure is now safe.** If the write fails after retries, the just-committed plan row
+  is invalidated so the next request regenerates and re-attempts the write — a cache hit can
+  never silently serve constants that diverge from a failed write (Phase 19.5).
+- **Redeploy can still lose a *successful* write.** The Docker image bakes `profile.yaml` into
+  the ephemeral `/app` layer, while `app.db` lives on the durable `/data` volume, and
+  litestream replicates `app.db` but **not** the YAML (only the 6-hourly
+  `com.coachapp.profile-backup` job snapshots it). So a container replacement can restore an
+  older `profile.yaml` while keeping the newer committed plan → subsequent cache hits use stale
+  constants until the next recompute rewrites the file.
+
+  **Mitigation / follow-up:** move `PROFILE_PATH` onto the durable `/data` volume (with
+  entrypoint logic to seed the baked default on first boot), or restore the latest
+  profile-backup snapshot after a redeploy. Until then, after any redeploy that might straddle
+  a recompute, force a weekly `?refresh=true` to re-stage + re-write the constants.

@@ -103,6 +103,9 @@ def seed_window(session, anchor: date, *, days: int = 28) -> None:
                 z2_min=20.0,
                 active_energy=400.0,
                 hard_day=0,
+                # A materialized row always carries `computed_at` (Phase 19.5: `n_days` now
+                # counts only materialized rows, so a seeded window must stamp it).
+                computed_at="2026-01-01T00:00:00+02:00",
             )
         )
     session.flush()

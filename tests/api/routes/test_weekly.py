@@ -758,3 +758,103 @@ def test_cache_hit_populated_long_run_km_and_new_snapshot_key_revalidate(ctx) ->
     assert gen.calls == 0
     # The populated value re-validates against the schema and round-trips on the wire.
     assert body["data"]["budgets"]["longRunKm"] == 11.0
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.5: the post-commit profile.yaml write is retried; a persistent
+# failure logs and re-raises rather than silently diverging.
+# --------------------------------------------------------------------------- #
+def test_profile_write_retries_transient_failure(ctx, tmp_path, monkeypatch) -> None:
+    client, app, db_path = ctx
+    import app.api.routes.weekly as weekly_route
+    from app.core.profile import load_profile, write_profile
+
+    base = load_profile()
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    proposed = base.model_copy(deep=True)
+    object.__setattr__(proposed.meta, "constants_recomputed_week", "2026-W23")
+
+    calls = {"n": 0}
+    real = weekly_route.write_profile
+
+    def _flaky(pending):
+        calls["n"] += 1
+        if calls["n"] < 3:  # fail the first two attempts, succeed on the third
+            raise OSError("transient fs contention")
+        return real(pending)
+
+    monkeypatch.setattr(weekly_route, "write_profile", _flaky)
+    monkeypatch.setattr(weekly_route, "_PROFILE_WRITE_BACKOFF_S", 0.0)  # no real sleep in tests
+
+    _use_generator(app, _StagingGenerator(proposed))
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert calls["n"] == 3  # retried through the two failures
+    assert load_profile(path=target).meta.constants_recomputed_week == "2026-W23"
+
+
+def test_profile_write_persistent_failure_raises(ctx, tmp_path, monkeypatch) -> None:
+    client, app, db_path = ctx
+    import app.api.routes.weekly as weekly_route
+    from app.core.profile import load_profile, write_profile
+
+    base = load_profile()
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    proposed = base.model_copy(deep=True)
+    object.__setattr__(proposed.meta, "constants_recomputed_week", "2026-W23")
+
+    monkeypatch.setattr(weekly_route, "_PROFILE_WRITE_BACKOFF_S", 0.0)
+    monkeypatch.setattr(
+        weekly_route, "write_profile",
+        lambda pending: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    _use_generator(app, _StagingGenerator(proposed))
+    # A persistent write failure re-raises (surfaced as a 500) AND invalidates the committed
+    # plan (review #2.1): otherwise the next cache-hit request would return 200 with stale
+    # constants — a permanent silent divergence.
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)
+    assert resp.status_code == 500
+    assert _count(db_path) == 0  # the diverged plan was invalidated, so the next request MISSES
+
+
+def test_profile_write_exhaustion_then_retry_regenerates(ctx, tmp_path, monkeypatch) -> None:
+    # Review #2.1 recovery: after write exhaustion invalidates the plan, a subsequent request
+    # is a MISS (regenerates + re-attempts the write), never a stale cache hit.
+    client, app, db_path = ctx
+    import app.api.routes.weekly as weekly_route
+    from app.core.profile import load_profile, write_profile
+
+    base = load_profile()
+    target = tmp_path / "profile.yaml"
+    write_profile(base, path=target)
+    monkeypatch.setenv("PROFILE_PATH", str(target))
+    proposed = base.model_copy(deep=True)
+    object.__setattr__(proposed.meta, "constants_recomputed_week", "2026-W23")
+
+    monkeypatch.setattr(weekly_route, "_PROFILE_WRITE_BACKOFF_S", 0.0)
+    fail = {"on": True}
+    real = weekly_route.write_profile
+
+    def _maybe_fail(pending):
+        if fail["on"]:
+            raise OSError("mount read-only")
+        return real(pending)
+
+    monkeypatch.setattr(weekly_route, "write_profile", _maybe_fail)
+    _use_generator(app, _StagingGenerator(proposed))
+
+    # First request: write exhausts → 500 → plan invalidated.
+    assert client.post("/brief/weekly", json={}, headers=AUTH).status_code == 500
+    assert _count(db_path) == 0
+
+    # The mount recovers; the retry MISSES (no cached plan), regenerates, and the write lands.
+    fail["on"] = False
+    resp = client.post("/brief/weekly", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert _count(db_path) == 1
+    assert load_profile(path=target).meta.constants_recomputed_week == "2026-W23"
