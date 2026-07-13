@@ -1167,3 +1167,32 @@ def test_zone_merge_default_path_is_no_op(session, tmp_path, monkeypatch):
     assert proposed.thresholds.max_hr == profile.thresholds.max_hr
     assert proposed.thresholds.rhr_baseline == profile.thresholds.rhr_baseline
     assert proposed.zones.model_dump() == profile.zones.model_dump()
+
+
+def test_zone_merge_inadmissible_anchor_does_not_abort_generation(session, tmp_path, monkeypatch):
+    # A downward max-HR that would drop below easy_hr_cap (or rhr >= max_hr) must NOT abort the
+    # weekly recompute (post-impl review): the merge falls back to the current zones/anchors and
+    # reports zones_changed=False, so generation continues. Phase 19.6 gates the anchor source.
+    from scripts.compute_zones import compute_zones
+    from app.services.recompute import ZoneRederivation
+    import app.core.weekly_planner as wp
+
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    profile = load_profile()
+    # A max-HR at/below easy_hr_cap → invalid Thresholds (easy_hr_cap must be < max_hr).
+    bad_max = profile.thresholds.easy_hr_cap  # equals cap → violates `easy_hr_cap < max_hr`
+    monkeypatch.setattr(
+        wp, "rederive_zones",
+        lambda **k: ZoneRederivation(True, compute_zones(bad_max, profile.thresholds.rhr_baseline),
+                                     bad_max, profile.thresholds.rhr_baseline),
+    )
+
+    ctx = _ctx(session)
+    asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))  # must not raise
+    output = ctx.nodes["RecomputeConstants"]
+    proposed = output.profile
+    # Fallback: current anchors + zones kept, zones_changed reported False.
+    assert proposed.thresholds.max_hr == profile.thresholds.max_hr
+    assert proposed.zones.model_dump() == profile.zones.model_dump()
+    assert output.recomputed["zones_changed"] is False

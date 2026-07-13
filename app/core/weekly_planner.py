@@ -32,13 +32,14 @@ Pure ``app/core`` module otherwise: no FastAPI route, no endpoint, no get-or-gen
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import logging
 from datetime import date, timedelta
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
@@ -338,16 +339,35 @@ class RecomputeConstants(Node):
         # --- Merge into a FULLY RE-VALIDATED Profile (re-runs E3·P1 validators) ---
         dump = profile.model_dump(mode="json")
         dump["thresholds"]["cadence_current_spm"] = cadence.new_spm
-        if zones.changed:
+        dump["meta"]["constants_recomputed_week"] = event.iso_week
+        zones_applied = False
+        if zones.changed and zones.zones is not None:
             # A moved anchor must update BOTH thresholds AND zones atomically (D3): the
             # `_zones_consistent_with_max_hr` validator enforces `zones.z5.high == max_hr`, and
             # writing the new rhr_baseline stops `changed` re-firing on the same RHR next month.
-            dump["thresholds"]["max_hr"] = zones.new_max_hr
-            dump["thresholds"]["rhr_baseline"] = zones.new_rhr
-            if zones.zones is not None:
-                dump["zones"] = {name: list(bounds) for name, bounds in zones.zones.items()}
-        dump["meta"]["constants_recomputed_week"] = event.iso_week
-        proposed = Profile.model_validate(dump)
+            candidate = copy.deepcopy(dump)
+            candidate["thresholds"]["max_hr"] = zones.new_max_hr
+            candidate["thresholds"]["rhr_baseline"] = zones.new_rhr
+            candidate["zones"] = {name: list(bounds) for name, bounds in zones.zones.items()}
+            try:
+                proposed = Profile.model_validate(candidate)
+                zones_applied = True
+            except ValidationError:
+                # A measured anchor that would violate a DEPENDENT threshold (e.g. a downward
+                # max_hr dropping below `easy_hr_cap`, or an rhr ≥ max_hr) must NOT abort weekly
+                # generation (review): keep the current zones/anchors and carry on. Phase 19.6's
+                # ratchet-up-only admission policy prevents this in practice; this is defense in
+                # depth. NB the fallback still re-validates `dump`, so an invalid *cadence*
+                # (independent of zones) still raises as before.
+                logger.warning(
+                    "rederived anchors (max_hr=%s, rhr=%s) would violate profile constraints; "
+                    "keeping current zones (Phase 19.6 will gate the anchor source)",
+                    zones.new_max_hr,
+                    zones.new_rhr,
+                )
+                proposed = Profile.model_validate(dump)
+        else:
+            proposed = Profile.model_validate(dump)
 
         recomputed = {
             "cadence_spm": cadence.new_spm,
@@ -355,7 +375,7 @@ class RecomputeConstants(Node):
             "quality_focus": quality.value,
             "strength_pushups": {"smoothed": pushups.smoothed, "direction": pushups.direction},
             "strength_pullups": {"smoothed": pullups.smoothed, "direction": pullups.direction},
-            "zones_changed": zones.changed,
+            "zones_changed": zones_applied,
         }
         self.save_output(
             RecomputeConstantsOutput(
