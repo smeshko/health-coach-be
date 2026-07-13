@@ -44,10 +44,14 @@ def _sort_key(row_id: int, created_at: str | None) -> tuple:
     """
     if created_at:
         try:
-            instant = datetime.fromisoformat(created_at).astimezone(timezone.utc)
-            return (1, instant, row_id)
+            parsed = datetime.fromisoformat(created_at)
         except ValueError:
-            pass
+            parsed = None
+        # Require an explicit offset (review #3.1): a tz-less/date-only string would otherwise be
+        # read in the migration HOST's local timezone, making the survivor host-dependent — so
+        # classify it as malformed and fall through to the id-only ordering instead.
+        if parsed is not None and parsed.utcoffset() is not None:
+            return (1, parsed.astimezone(timezone.utc), row_id)
     return (0, datetime.min.replace(tzinfo=timezone.utc), row_id)
 
 

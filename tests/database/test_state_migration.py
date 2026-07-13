@@ -269,3 +269,22 @@ def test_0004_empty_table_and_idempotent(tmp_path):
     command.upgrade(cfg, "0004")
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT iso_week FROM plans").fetchall() == [("2026-W05",)]
+
+
+def test_0004_naive_timestamp_is_malformed_not_host_local(tmp_path):
+    # A tz-less timestamp must be treated as malformed (host-independent), so an aware timestamp
+    # always outranks it regardless of the migration host's timezone (review #3.1).
+    db_path = tmp_path / "naive.db"
+    cfg = _make_cfg(db_path)
+    command.upgrade(cfg, "0003")
+    with sqlite3.connect(db_path) as conn:
+        # Naive string is chronologically "later" but has no offset → malformed → loses.
+        _insert_plan(conn, iso_week="2026-W1", created_at="2026-01-06T09:00:00", payload='{"naive":1}')
+        _insert_plan(conn, iso_week="2026-W01", created_at="2026-01-06T00:30:00+00:00", payload='{"aware":1}')
+        conn.commit()
+
+    command.upgrade(cfg, "0004")
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT iso_week, payload FROM plans").fetchall()
+    assert rows == [("2026-W01", '{"aware":1}')]  # aware beats naive on any host
