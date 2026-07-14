@@ -149,6 +149,6 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
 - [x] TASK-001: Add measured_max_hr(session, as_of, current_max_hr) query fn + unit tests
-- [ ] TASK-002: Wire measured_max_hr into RecomputeConstants (ratchet-up feed) (depends on TASK-001)
+- [x] TASK-002: Wire measured_max_hr into RecomputeConstants (ratchet-up feed) (depends on TASK-001)
 - [ ] TASK-003: End-to-end recompute test: real shift re-derives zones, quiet window does not (depends on TASK-002)
 - [ ] TASK-004: Final Validation
