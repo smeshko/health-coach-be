@@ -171,10 +171,18 @@ writes it **after** the DB commit. Two integrity properties still hold:
 after 19.7 ships seeds the *baked* default — which may be older than the `/app` file recompute
 had been rewriting under the old behavior. This is the same one-time loss the old limitation
 risked on **every** redeploy, and the **last** time it can happen. To avoid it, at the cutover
-either copy the live file into place — `docker cp <container>:/app/profile.yaml -` (or the
-latest `com.coachapp.profile-backup` snapshot) → `/data/profile.yaml` — before/just after the
-redeploy, or force one weekly `?refresh=true` right after to re-stage + re-write current
-constants onto the durable volume.
+copy the live file onto the durable volume with a two-step `docker cp` via the host (the
+plain `-` stdout form streams a tar, it does not write into `/data`):
+
+```sh
+docker cp <old-container>:/app/profile.yaml ./profile.yaml   # pull the live file to the host
+docker cp ./profile.yaml <new-container>:/data/profile.yaml   # push it onto the durable volume
+```
+
+(or restore the latest `com.coachapp.profile-backup` snapshot to `/data/profile.yaml`) before
+the new container serves its first recompute. Alternatively, just force one weekly
+`?refresh=true` right after the redeploy to re-stage + re-write current constants onto the
+durable volume.
 
 The 6-hourly `com.coachapp.profile-backup` job (litestream replicates only SQLite, not the
 YAML) stays as **defense-in-depth** — an offsite snapshot to restore from if the volume itself
