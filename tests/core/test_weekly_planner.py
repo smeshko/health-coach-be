@@ -40,7 +40,8 @@ from app.core.weekly_planner import (
     WeeklyPlannerEvent,
     is_recompute_due,
 )
-from app.database.models import Checkins, DailyMetrics, Plans, StrengthTests, Workouts
+from app.database.models import Checkins, DailyMetrics, Plans, Records, StrengthTests, Workouts
+from scripts.compute_zones import compute_zones
 
 from tests.core.test_profile import valid_profile_dict
 
@@ -688,6 +689,79 @@ def test_recompute_no_model_copy_update_in_source():
 def test_recompute_constants_output_is_constructible():
     # A bare not-due output and a full due output both construct.
     assert RecomputeConstantsOutput(constants_recomputed=False).constants_recomputed is False
+
+
+# --------------------------------------------------------------------------- #
+# Phase 19.6: end-to-end — a real measured max-HR shift re-derives zones on a due
+# recompute; a quiet window / out-of-range artifact leaves anchor + zones untouched.
+# (Stored anchor from valid_profile_dict: max_hr=192, rhr=58, z5=[177,192].)
+# --------------------------------------------------------------------------- #
+def _seed_hr(session, *, value, start, type_="heart_rate") -> None:
+    """Seed one HR `Records` row (raw Apple-style TEXT `start_date`, offset verbatim)."""
+    session.add(
+        Records(type=type_, start_date=start, end_date=start, value=value, origin="sync")
+    )
+
+
+def _run_recompute_due(session, tmp_path, monkeypatch):
+    """Drive `RecomputeConstants` on a recompute-DUE week; return the proposed Profile."""
+    # last recompute 4 weeks before ISO_WEEK (2026-W23) → due.
+    _write_profile_yaml(tmp_path, monkeypatch, constants_recomputed_week="2026-W19")
+    seed_strength_tests(session)
+    ctx = _ctx(session)
+    out_ctx = asyncio.run(RecomputeConstants(task_context=ctx).process(ctx))
+    return out_ctx.nodes["RecomputeConstants"].profile
+
+
+def test_recompute_measured_max_hr_shift_re_derives_zones(session, tmp_path, monkeypatch):
+    # A corpus peak (200) clears the stored anchor (192) by >= ANCHOR_MIN_DELTA_BPM, dated inside
+    # the recompute week → the anchor moves and zones re-derive. Peak seeded across BOTH type
+    # spellings (dual-origin union exercised end-to-end): the HK-identifier row holds the peak.
+    _seed_hr(session, value=180.0, start="2026-06-03 08:00:00 +0300", type_="heart_rate")
+    _seed_hr(
+        session,
+        value=200.0,
+        start="2026-06-05 08:00:00 +0300",
+        type_="HKQuantityTypeIdentifierHeartRate",
+    )
+    session.commit()
+
+    profile = _run_recompute_due(session, tmp_path, monkeypatch)
+
+    assert profile.thresholds.max_hr == 200
+    assert profile.zones.z5[1] == 200  # z5.high == new max_hr
+    assert {
+        "z1": profile.zones.z1,
+        "z2": profile.zones.z2,
+        "z3": profile.zones.z3,
+        "z4": profile.zones.z4,
+        "z5": profile.zones.z5,
+    } == compute_zones(200, 58)
+
+
+def test_recompute_measured_max_hr_quiet_window_leaves_anchor(session, tmp_path, monkeypatch):
+    # Every in-range sample is at/below the stored anchor (192) → ratchet floor holds; the anchor
+    # and zones are unchanged (no move ⇒ rederive_zones no-op).
+    _seed_hr(session, value=180.0, start="2026-06-03 08:00:00 +0300")
+    _seed_hr(session, value=190.0, start="2026-06-05 08:00:00 +0300")
+    session.commit()
+
+    profile = _run_recompute_due(session, tmp_path, monkeypatch)
+
+    assert profile.thresholds.max_hr == 192
+    assert profile.zones.z5 == (177, 192)
+
+
+def test_recompute_measured_max_hr_artifact_clamped_leaves_anchor(session, tmp_path, monkeypatch):
+    # An out-of-range spike (250 bpm) above the anchor is clamped out by the physiological
+    # window → the anchor never moves; zones unchanged.
+    _seed_hr(session, value=250.0, start="2026-06-05 08:00:00 +0300")
+    session.commit()
+
+    profile = _run_recompute_due(session, tmp_path, monkeypatch)
+
+    assert profile.thresholds.max_hr == 192
+    assert profile.zones.z5 == (177, 192)
 
 
 # --------------------------------------------------------------------------- #

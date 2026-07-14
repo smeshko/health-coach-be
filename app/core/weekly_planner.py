@@ -71,6 +71,7 @@ from app.services.macros import (
 from app.services.recompute import (
     QualityFocus,
     StrengthPoint,
+    measured_max_hr,
     next_quality_focus,
     ramp_cadence_for,
     rederive_zones,
@@ -326,13 +327,22 @@ class RecomputeConstants(Node):
         cadence = ramp_cadence_for(profile, weeks_since_last_bump=weeks_elapsed)
         pushups = smooth_strength_trend(_strength_series(session, "max_pushups"))
         pullups = smooth_strength_trend(_strength_series(session, "max_pullups"))
-        # `new_* == current` today (documented production no-op): there is no runtime measured
-        # max-HR source, so this branch never fires in production — Phase 19.6 supplies the
-        # measured anchor. The merge below is nonetheless correct-when-reachable (D3).
+        # Phase 19.6: the runtime measured max-HR source now EXISTS — `measured_max_hr` is the
+        # whole-corpus bounded MAX over the `records` table through the recompute-week boundary
+        # (`as_of` = the week's exclusive end, next Monday; the query's conservative-inclusive
+        # cutoff may admit a near-boundary row within ~1 day — immaterial for an up-only ceiling,
+        # R3). Its ratchet-up policy guarantees `new_max_hr >= current`, so `rederive_zones`'s
+        # `ANCHOR_MIN_DELTA_BPM` gate fires only on a genuine upward move. RHR has no runtime
+        # measured source yet (out of scope), so `new_rhr` stays the stored baseline. The merge
+        # below stays correct-when-reachable (Phase 19.4, D3).
+        as_of = _iso_week_monday(event.iso_week) + timedelta(days=7)
+        new_max_hr = measured_max_hr(
+            session, as_of=as_of, current_max_hr=profile.thresholds.max_hr
+        )
         zones = rederive_zones(
             current_max_hr=profile.thresholds.max_hr,
             current_rhr=profile.thresholds.rhr_baseline,
-            new_max_hr=profile.thresholds.max_hr,
+            new_max_hr=new_max_hr,
             new_rhr=profile.thresholds.rhr_baseline,
         )
 

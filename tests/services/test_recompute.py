@@ -16,6 +16,7 @@ from app.api.schemas.sync import SyncRequest
 from app.core.profile import Profile
 from scripts.compute_zones import compute_zones
 
+from app.database.models import Records
 from app.services.recompute import (
     CADENCE_RAMP_MIN_WEEKS,
     CADENCE_STEP_SPM,
@@ -25,7 +26,10 @@ from app.services.recompute import (
     StrengthPoint,
     StrengthTrend,
     ZoneRederivation,
+    _HR_CEILING,
+    _HR_FLOOR,
     affected_dates,
+    measured_max_hr,
     next_quality_focus,
     noop_recompute,
     ramp_cadence,
@@ -471,3 +475,114 @@ def test_rederive_zones_reimplements_no_band_math() -> None:
     src = (Path(__file__).resolve().parents[2] / "app" / "services" / "recompute.py").read_text()
     for edge in ("0.65", "0.78", "0.87", "0.92"):
         assert edge not in src, f"zone-edge literal {edge} leaked into recompute.py"
+
+
+# --- Phase 19.6: measured_max_hr runtime anchor source (over the conftest `session`) ---
+_HR_HK = "HKQuantityTypeIdentifierHeartRate"  # the identifier seeded rows store
+
+
+def _seed_hr(session, *, value, start, type_="heart_rate") -> None:
+    """Add one HR `Records` row (raw Apple-style TEXT `start_date`, offset verbatim)."""
+    session.add(
+        Records(type=type_, start_date=start, end_date=start, value=value, origin="sync")
+    )
+
+
+def test_measured_max_hr_is_corpus_wide_not_windowed(session) -> None:
+    # The true peak is MONTHS before the cutoff — a date window would miss it; the whole-corpus
+    # MAX must still find it. Cutoff far in the future so nothing is excluded by `as_of`.
+    _seed_hr(session, value=201.0, start="2026-01-15 08:00:00 +0300")  # old peak
+    _seed_hr(session, value=150.0, start="2026-06-06 08:00:00 +0300")  # recent, lower
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 12, 31), current_max_hr=100) == 201
+
+
+def test_measured_max_hr_clamps_out_of_range_artifacts(session) -> None:
+    # A below-floor dropout (70) and an above-ceiling spike (250) are both excluded; the peak
+    # is the highest IN-range sample (190).
+    _seed_hr(session, value=70.0, start="2026-06-01 08:00:00 +0300")  # below _HR_FLOOR
+    _seed_hr(session, value=250.0, start="2026-06-02 08:00:00 +0300")  # above _HR_CEILING
+    _seed_hr(session, value=190.0, start="2026-06-03 08:00:00 +0300")  # in-range peak
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 190
+
+
+def test_measured_max_hr_peak_in_hk_identifier_origin(session) -> None:
+    # Live rows (`heart_rate`) are lower; the peak lives in a SEEDED row (HK identifier).
+    _seed_hr(session, value=150.0, start="2026-06-01 08:00:00 +0300", type_="heart_rate")
+    _seed_hr(session, value=198.0, start="2026-06-02 08:00:00 +0300", type_=_HR_HK)
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 198
+
+
+def test_measured_max_hr_peak_in_snake_case_origin(session) -> None:
+    # Seeded rows (HK identifier) are lower; the peak lives in a LIVE row (`heart_rate`).
+    _seed_hr(session, value=150.0, start="2026-06-01 08:00:00 +0300", type_=_HR_HK)
+    _seed_hr(session, value=197.0, start="2026-06-02 08:00:00 +0300", type_="heart_rate")
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 197
+
+
+def test_measured_max_hr_as_of_boundary_inclusive_at_nonutc_offset(session) -> None:
+    # R3: a peak whose DEVICE-LOCAL date == `as_of` but at a non-UTC offset (its UTC instant
+    # rolls into the next day) must NEVER be dropped — the lexical device-local bound includes it.
+    _seed_hr(session, value=203.0, start="2026-06-07 23:30:00 -1000")  # local 06-07, UTC 06-08
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 203
+
+
+def test_measured_max_hr_excludes_far_future_peak(session) -> None:
+    # A HIGHER peak dated well AFTER the `as_of` window is excluded (guards `start_date < bound`);
+    # the result is the in-window peak.
+    _seed_hr(session, value=190.0, start="2026-06-05 08:00:00 +0300")  # in window
+    _seed_hr(session, value=200.0, start="2026-08-01 08:00:00 +0300")  # far future, excluded
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 190
+
+
+def test_measured_max_hr_ratchets_to_current_on_quiet_corpus(session) -> None:
+    # Every in-range sample is BELOW the stored anchor → the ratchet floor holds `current_max_hr`.
+    _seed_hr(session, value=150.0, start="2026-06-01 08:00:00 +0300")
+    _seed_hr(session, value=170.0, start="2026-06-02 08:00:00 +0300")
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=192) == 192
+
+
+def test_measured_max_hr_empty_corpus_returns_current(session) -> None:
+    # No HR rows at all ⇒ return `current_max_hr` (D3: never raises on a thin/empty corpus).
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=192) == 192
+
+
+def test_measured_max_hr_physiological_window_constants() -> None:
+    # The app-side clamp mirrors the offline HR_FLOOR / HR_CEILING (parity guarded in tests/scripts).
+    assert (_HR_FLOOR, _HR_CEILING) == (80.0, 205.0)
+
+
+def test_measured_max_hr_ceiling_is_inclusive_at_the_boundary(session) -> None:
+    # Operator guard for `value <= _HR_CEILING`: a sample exactly AT the ceiling (205) is the
+    # admitted peak, while one just above (205.6) is clamped out. A `<=`→`<` regression would
+    # drop the 205 peak and fall through to `current_max_hr` (100), so this pins the boundary.
+    _seed_hr(session, value=205.0, start="2026-06-03 08:00:00 +0300")  # AT ceiling → included
+    _seed_hr(session, value=205.6, start="2026-06-04 08:00:00 +0300")  # above ceiling → excluded
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 205
+
+
+def test_measured_max_hr_as_of_window_width_excludes_next_day(session) -> None:
+    # Width guard for `start_date < (as_of + 1 day)`: an in-window `as_of`-day row (195) is
+    # included, while a HIGHER row dated exactly `as_of + 1 day` (200) is excluded. Together with
+    # `..._boundary_inclusive_at_nonutc_offset` (as_of day included) this pins the upper edge at
+    # exactly +1 day — a regression that widened the window would admit the 200 and fail here.
+    _seed_hr(session, value=195.0, start="2026-06-07 08:00:00 +0300")  # as_of day → included
+    _seed_hr(session, value=200.0, start="2026-06-08 08:00:00 +0300")  # as_of + 1 day → excluded
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 195
+
+
+def test_measured_max_hr_rounds_fractional_peak_not_truncates(session) -> None:
+    # Parity guard for `int(round(raw))` (offline derive_max_hr rounds, does not truncate): a
+    # fractional peak of 199.6 must resolve to 200, not 199. Every other seeded value is a whole
+    # number, so without this a `round`→`int` truncation regression would go uncaught.
+    _seed_hr(session, value=199.6, start="2026-06-03 08:00:00 +0300")
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 200
