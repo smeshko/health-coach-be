@@ -242,3 +242,14 @@ def test_determinism_byte_identical(derive_constants, tmp_path) -> None:
             ["--db", str(db), "--out", str(out), "--computed-at", "2026-06-02"]
         )
     assert out1.read_bytes() == out2.read_bytes()
+
+
+def test_runtime_hr_window_matches_offline_derivation(derive_constants) -> None:
+    # Phase 19.6 D4/R1: the runtime `measured_max_hr` mirrors the physiological HR window
+    # app-side (it can't import this offline module). This parity assertion is the drift guard —
+    # it lives HERE because the `derive_constants` fixture + `scripts/` sys.path exist only in
+    # tests/scripts/conftest.py (pytest fixtures are directory-scoped).
+    from app.services.recompute import _HR_CEILING, _HR_FLOOR
+
+    assert _HR_FLOOR == derive_constants.HR_FLOOR
+    assert _HR_CEILING == derive_constants.HR_CEILING

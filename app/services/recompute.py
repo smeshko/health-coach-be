@@ -14,7 +14,11 @@ max-HR/RHR anchors move). Each takes already-resolved inputs (or a loaded `Profi
 **returns a value object** — it decides no staleness, merges into no `Profile`, and writes
 **no** `profile.yaml` (that atomic write is the E10·P2 node's; ARCHITECTURE §5, epic §3).
 
-Pure: no FastAPI/HTTP imports, no DB persistence, no LLM, no `profile.yaml` write.
+**Runtime measured max-HR source (Phase 19.6):** `measured_max_hr` supplies the runtime
+anchor `rederive_zones` re-derives from — a read-only, `session`-scoped `func.max` over the
+`records` table (the ONE DB read this module hosts, alongside the otherwise-pure helpers).
+
+Otherwise pure: no FastAPI/HTTP imports, no DB **writes**, no LLM, no `profile.yaml` write.
 """
 
 from __future__ import annotations
@@ -22,14 +26,18 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from enum import StrEnum
 from typing import Literal, Protocol, runtime_checkable
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
 from app.api.schemas.sync import SyncRequest
-from app.core.healthkit import filter_whitelisted_records
+from app.core.healthkit import RECORD_TYPE_TO_HK, filter_whitelisted_records
 from app.core.profile import Profile
 from app.core.time import to_sofia
+from app.database.models import Records
 from scripts.compute_zones import compute_zones
 
 
@@ -297,3 +305,56 @@ def rederive_zones(
         new_max_hr=new_max_hr,
         new_rhr=new_rhr,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 19.6 — runtime measured max-HR anchor source (feeds `rederive_zones`)
+# ---------------------------------------------------------------------------
+
+#: Physiological HR window, MIRRORED from ``scripts/derive_constants.py``
+#: (``HR_FLOOR = 80.0`` / ``HR_CEILING = 205.0``) so the runtime anchor is clamped
+#: exactly like the offline seed derivation. The offline module is deliberately NOT
+#: imported (its bare ``from compute_zones import compute_zones`` needs ``scripts/`` on
+#: ``sys.path`` and has no package path). A parity test in
+#: ``tests/scripts/test_derive_constants.py`` guards against drift (PLAN D4 / R1).
+_HR_FLOOR = 80.0
+_HR_CEILING = 205.0
+
+
+def measured_max_hr(session: Session, *, as_of: date, current_max_hr: int) -> int:
+    """The runtime measured max-HR anchor — a SQLAlchemy port of the offline
+    ``scripts/derive_constants.py:derive_max_hr`` (§ parity), fed to ``rederive_zones``.
+
+    Runs a single ``func.max(records.value)`` over the **whole corpus** (NOT date-windowed
+    — a recent window could miss the true peak), matching **both** HR type spellings (the
+    snake-case wire alias ``heart_rate`` that live ``/sync`` rows store AND the HK identifier
+    ``HKQuantityTypeIdentifierHeartRate`` that seeded rows store; alias set derived from
+    ``RECORD_TYPE_TO_HK``), physiologically clamped to ``[_HR_FLOOR, _HR_CEILING]`` so a
+    sensor artifact can't inflate it.
+
+    **``as_of`` cutoff** — a single conservative-inclusive, *device-local-date* lexical bound
+    ``records.start_date < (as_of + 1 day)``. ``start_date`` is ISO-8601 TEXT with the device
+    offset preserved verbatim, so its date-prefix is the device-local date; a ``func.max()``
+    aggregate cannot re-narrow by Sofia date in Python (unlike ``daily_metrics_engine._window``),
+    so the bound is deliberately biased **inclusive** — an in-week peak is never dropped, while
+    a near-future row within ~1 day may be included (immaterial for an up-only whole-corpus
+    ceiling; production carries no future HR). See PLAN R3.
+
+    **Ratchet-up only** (D2): the returned anchor never drops below ``current_max_hr``, so
+    ``rederive_zones``'s ``ANCHOR_MIN_DELTA_BPM`` gate can only ever fire on an upward move.
+    An empty / thin corpus (no in-range HR rows) returns ``current_max_hr`` unchanged — never
+    raises (D3), unlike the build-time offline derivation, so a weekly brief can't crash.
+    """
+    aliases = {"heart_rate", RECORD_TYPE_TO_HK["heart_rate"]}
+    upper_bound = (as_of + timedelta(days=1)).isoformat()
+    stmt = (
+        select(func.max(Records.value))
+        .where(Records.type.in_(aliases))
+        .where(Records.value >= _HR_FLOOR)
+        .where(Records.value <= _HR_CEILING)
+        .where(Records.start_date < upper_bound)
+    )
+    raw = session.execute(stmt).scalar_one_or_none()
+    if raw is None:
+        return current_max_hr
+    return max(current_max_hr, int(round(raw)))
