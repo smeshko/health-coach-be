@@ -556,3 +556,33 @@ def test_measured_max_hr_empty_corpus_returns_current(session) -> None:
 def test_measured_max_hr_physiological_window_constants() -> None:
     # The app-side clamp mirrors the offline HR_FLOOR / HR_CEILING (parity guarded in tests/scripts).
     assert (_HR_FLOOR, _HR_CEILING) == (80.0, 205.0)
+
+
+def test_measured_max_hr_ceiling_is_inclusive_at_the_boundary(session) -> None:
+    # Operator guard for `value <= _HR_CEILING`: a sample exactly AT the ceiling (205) is the
+    # admitted peak, while one just above (205.6) is clamped out. A `<=`→`<` regression would
+    # drop the 205 peak and fall through to `current_max_hr` (100), so this pins the boundary.
+    _seed_hr(session, value=205.0, start="2026-06-03 08:00:00 +0300")  # AT ceiling → included
+    _seed_hr(session, value=205.6, start="2026-06-04 08:00:00 +0300")  # above ceiling → excluded
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 205
+
+
+def test_measured_max_hr_as_of_window_width_excludes_next_day(session) -> None:
+    # Width guard for `start_date < (as_of + 1 day)`: an in-window `as_of`-day row (195) is
+    # included, while a HIGHER row dated exactly `as_of + 1 day` (200) is excluded. Together with
+    # `..._boundary_inclusive_at_nonutc_offset` (as_of day included) this pins the upper edge at
+    # exactly +1 day — a regression that widened the window would admit the 200 and fail here.
+    _seed_hr(session, value=195.0, start="2026-06-07 08:00:00 +0300")  # as_of day → included
+    _seed_hr(session, value=200.0, start="2026-06-08 08:00:00 +0300")  # as_of + 1 day → excluded
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 195
+
+
+def test_measured_max_hr_rounds_fractional_peak_not_truncates(session) -> None:
+    # Parity guard for `int(round(raw))` (offline derive_max_hr rounds, does not truncate): a
+    # fractional peak of 199.6 must resolve to 200, not 199. Every other seeded value is a whole
+    # number, so without this a `round`→`int` truncation regression would go uncaught.
+    _seed_hr(session, value=199.6, start="2026-06-03 08:00:00 +0300")
+    session.commit()
+    assert measured_max_hr(session, as_of=date(2026, 6, 7), current_max_hr=100) == 200
