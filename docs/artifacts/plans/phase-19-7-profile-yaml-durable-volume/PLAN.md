@@ -1,6 +1,6 @@
 # Plan: profile.yaml durability across redeploys (Phase 19.7)
 
-Status: draft
+Status: in-progress
 Branch: fix/phase-19-7-profile-yaml-durable-volume
 Risk: medium
 Epic: 19 — Make the numbers trustworthy (audit wave 2, tracked in the iOS repo's docs/artifacts/epics/19-trustworthy-numbers.md)
@@ -124,7 +124,7 @@ add net-new coverage. No test hardcodes `/app/profile.yaml`.
 Task state lives here. Tasks are appended by `scripts/add_task.py` and
 `scripts/add_final_task.py`. Update the checkboxes as work progresses.
 
-- [ ] TASK-001: Dockerfile: default PROFILE_PATH to /data/profile.yaml, keep baked seed source
+- [x] TASK-001: Dockerfile: default PROFILE_PATH to /data/profile.yaml, keep baked seed source
 - [ ] TASK-002: Entrypoint seed-on-first-boot + runnable seed-branch shell test
 - [ ] TASK-003: Regression test: loader AND recompute writer both honor PROFILE_PATH override
 - [ ] TASK-004: RUNBOOK §5 + .env.docker.example: Known limitation -> Resolved (Phase 19.7)

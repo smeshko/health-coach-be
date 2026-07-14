@@ -30,8 +30,10 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # App source + the runtime inputs the app opens: `profile.yaml` (the constants source —
-# must sit at /app so `app/core/profile.py`'s default `PROFILE_PATH = parents[2]/
-# profile.yaml` resolves) and `alembic/`/`alembic.ini` (the entrypoint migrates the
+# the baked `/app/profile.yaml` is now the SEED SOURCE + source-tree anchor
+# `app/core/profile.py`'s default `PROFILE_PATH = parents[2]/profile.yaml` resolves; the
+# durable RUNTIME file lives at `/data/profile.yaml` via ENV PROFILE_PATH below, seeded on
+# first boot by the entrypoint) and `alembic/`/`alembic.ini` (the entrypoint migrates the
 # volume on start — added in the entrypoint below).
 COPY app ./app
 COPY alembic ./alembic
@@ -55,10 +57,13 @@ RUN chmod +x /app/docker-entrypoint.sh \
     && mkdir -p /data \
     && chown -R app:app /app /data
 
-# One durable `app.db` (+ -wal/-shm) on a VOLUME so it survives container recreation.
-# Document APP_DB_PATH=/data/app.db and run with `-v <vol>:/data`.
+# One durable `app.db` (+ -wal/-shm) AND the runtime `profile.yaml` on a VOLUME so both
+# survive container recreation. Document APP_DB_PATH=/data/app.db and run with `-v <vol>:/data`.
+# PROFILE_PATH points the loader AND the recompute writer at the durable volume; the baked
+# /app/profile.yaml is seeded there on first boot only when absent (docker-entrypoint.sh).
 VOLUME ["/data"]
 ENV APP_DB_PATH=/data/app.db \
+    PROFILE_PATH=/data/profile.yaml \
     HOME=/app
 
 EXPOSE 8000
