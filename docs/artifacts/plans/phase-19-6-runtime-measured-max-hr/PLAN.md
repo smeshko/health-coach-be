@@ -1,6 +1,6 @@
 # Plan: Runtime measured max-HR anchor source (Phase 19.6)
 
-Status: in-progress
+Status: done
 Branch: fix/phase-19-6-runtime-measured-max-hr
 Risk: high
 Epic: 19 — Make the numbers trustworthy (audit wave 2, tracked in the iOS repo's docs/artifacts/epics/19-trustworthy-numbers.md)
@@ -151,4 +151,4 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-001: Add measured_max_hr(session, as_of, current_max_hr) query fn + unit tests
 - [x] TASK-002: Wire measured_max_hr into RecomputeConstants (ratchet-up feed) (depends on TASK-001)
 - [x] TASK-003: End-to-end recompute test: real shift re-derives zones, quiet window does not (depends on TASK-002)
-- [ ] TASK-004: Final Validation
+- [x] TASK-004: Final Validation
