@@ -149,22 +149,33 @@ litestream restore -config litestream.yml "$APP_DB_PATH"   # → last-replicated
 
 ---
 
-## 5. Known limitation: profile.yaml durability (Phase 19.5)
+## 5. Resolved: profile.yaml durability (Phase 19.7)
 
 The weekly recompute stages an updated `profile.yaml` (the constants file) and the route
-writes it **after** the DB commit. Two integrity properties:
+writes it **after** the DB commit. Two integrity properties still hold:
 
-- **Write failure is now safe.** If the write fails after retries, the just-committed plan row
+- **Write failure is safe.** If the write fails after retries, the just-committed plan row
   is invalidated so the next request regenerates and re-attempts the write — a cache hit can
   never silently serve constants that diverge from a failed write (Phase 19.5).
-- **Redeploy can still lose a *successful* write.** The Docker image bakes `profile.yaml` into
-  the ephemeral `/app` layer, while `app.db` lives on the durable `/data` volume, and
-  litestream replicates `app.db` but **not** the YAML (only the 6-hourly
-  `com.coachapp.profile-backup` job snapshots it). So a container replacement can restore an
-  older `profile.yaml` while keeping the newer committed plan → subsequent cache hits use stale
-  constants until the next recompute rewrites the file.
+- **A *successful* write now survives a redeploy (Phase 19.7).** The runtime `profile.yaml`
+  lives on the durable `/data` volume via `ENV PROFILE_PATH=/data/profile.yaml` (alongside
+  `app.db`), so both the loader and the recompute writer resolve there. The image still bakes
+  `/app/profile.yaml` as the **seed source**; on first boot the entrypoint
+  (`scripts/seed_profile.sh`) copies that default into `/data/profile.yaml` **only when the
+  durable file is absent** — an existing (recomputed) file is never clobbered, and the copy is
+  idempotent and non-root-safe. A container replacement therefore preserves the latest written
+  constants instead of reverting to the baked default.
 
-  **Mitigation / follow-up:** move `PROFILE_PATH` onto the durable `/data` volume (with
-  entrypoint logic to seed the baked default on first boot), or restore the latest
-  profile-backup snapshot after a redeploy. Until then, after any redeploy that might straddle
-  a recompute, force a weekly `?refresh=true` to re-stage + re-write the constants.
+**One-time cutover (first 19.7 redeploy only).** An existing prod `/data` volume has no
+`/data/profile.yaml` yet (today it lives on the ephemeral `/app` layer), so the first redeploy
+after 19.7 ships seeds the *baked* default — which may be older than the `/app` file recompute
+had been rewriting under the old behavior. This is the same one-time loss the old limitation
+risked on **every** redeploy, and the **last** time it can happen. To avoid it, at the cutover
+either copy the live file into place — `docker cp <container>:/app/profile.yaml -` (or the
+latest `com.coachapp.profile-backup` snapshot) → `/data/profile.yaml` — before/just after the
+redeploy, or force one weekly `?refresh=true` right after to re-stage + re-write current
+constants onto the durable volume.
+
+The 6-hourly `com.coachapp.profile-backup` job (litestream replicates only SQLite, not the
+YAML) stays as **defense-in-depth** — an offsite snapshot to restore from if the volume itself
+is lost.

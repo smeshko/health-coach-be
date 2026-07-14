@@ -127,5 +127,5 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-001: Dockerfile: default PROFILE_PATH to /data/profile.yaml, keep baked seed source
 - [x] TASK-002: Entrypoint seed-on-first-boot + runnable seed-branch shell test
 - [x] TASK-003: Regression test: loader AND recompute writer both honor PROFILE_PATH override
-- [ ] TASK-004: RUNBOOK §5 + .env.docker.example: Known limitation -> Resolved (Phase 19.7)
+- [x] TASK-004: RUNBOOK §5 + .env.docker.example: Known limitation -> Resolved (Phase 19.7)
 - [ ] TASK-005: Final Validation
