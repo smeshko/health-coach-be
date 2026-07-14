@@ -21,5 +21,11 @@ VENV="${UV_PROJECT_ENVIRONMENT:-/app/.venv}"
 echo "[entrypoint] applying Alembic migrations to ${APP_DB_PATH:-/data/app.db}"
 "${VENV}/bin/alembic" upgrade head
 
+# Seed the runtime profile.yaml onto the durable /data volume on first boot only when
+# absent (never clobbers a recomputed file). Subprocess form keeps this `set -eu`/exec flow
+# intact; a missing seed source fails loudly (a real image defect).
+echo "[entrypoint] seeding profile.yaml on the durable volume if absent"
+sh /app/scripts/seed_profile.sh
+
 echo "[entrypoint] starting uvicorn app.main:app on 0.0.0.0:8000 (single process)"
 exec "${VENV}/bin/uvicorn" app.main:app --host 0.0.0.0 --port 8000

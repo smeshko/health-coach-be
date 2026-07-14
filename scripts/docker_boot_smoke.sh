@@ -91,6 +91,19 @@ check "migrations applied (alembic_version stamped)" "$migrated" "1"
 # Non-root user.
 check "runs as non-root user" "$(docker exec "$NAME" id -un 2>/dev/null)" "app"
 
+# Fresh-volume profile.yaml seed (Phase 19.7): the entrypoint seeds the baked default onto
+# the durable /data volume on first boot, and load_profile() (via ENV PROFILE_PATH) reads it.
+seeded="$(docker exec "$NAME" /app/.venv/bin/python -c "
+import os
+from app.core.profile import load_profile
+try:
+    ok = os.path.isfile('/data/profile.yaml') and bool(load_profile().meta.constitution_version)
+    print(1 if ok else 0)
+except Exception:
+    print(0)
+" 2>/dev/null || echo 0)"
+check "profile.yaml seeded on the durable volume and loads (Phase 19.7)" "$seeded" "1"
+
 echo "== 4. fail-fast without API_TOKEN =="
 ff_exit=0
 ff_out="$(docker run --rm -e APP_DB_PATH=/data/app.db "$IMAGE" 2>&1)" || ff_exit=$?

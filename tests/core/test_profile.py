@@ -620,8 +620,21 @@ def test_write_profile_atomicity_safe_dump_failure_leaves_original_intact(tmp_pa
 
 def test_write_profile_default_path_honours_env_override(tmp_path, monkeypatch):
     # No explicit path → resolve PROFILE_PATH (the deployment seam), like load_profile.
+    # Strengthened (Phase 19.7): the FULL Profile round-trips through the override, and the
+    # source-tree anchor is left untouched — locking that recompute writes land on the env
+    # path (/data in prod), never on the baked /app/profile.yaml the durability fix diverts off.
+    anchor_before = PROFILE_PATH.read_bytes()
+    anchor_mtime_before = PROFILE_PATH.stat().st_mtime_ns
+
     target = tmp_path / "deployed.yaml"
     monkeypatch.setenv("PROFILE_PATH", str(target))
-    write_profile(Profile(**valid_profile_dict()))
+    original = Profile(**valid_profile_dict())
+    write_profile(original)
+
     assert target.is_file()
-    assert load_profile().meta.constitution_version == "v1"
+    # Full-Profile equality on the write+load round-trip, not just constitution_version.
+    assert load_profile() == original
+    # The override truly diverts the write off the source-tree anchor: it is byte-for-byte
+    # AND mtime unchanged, proving the recompute never wrote the baked /app/profile.yaml.
+    assert PROFILE_PATH.read_bytes() == anchor_before
+    assert PROFILE_PATH.stat().st_mtime_ns == anchor_mtime_before
