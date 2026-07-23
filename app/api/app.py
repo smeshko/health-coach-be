@@ -31,6 +31,14 @@ def create_app() -> FastAPI:
     # Every non-2xx response renders the single error envelope (E1·P2).
     register_exception_handlers(app)
 
+    # Debug observability (default-off): when REQUEST_LOG_PATH is set, every
+    # request/response pair — bodies included, auth headers redacted — is written
+    # as a JSON line to a rotating file for post-hoc wire-level debugging.
+    if settings.request_log_path:
+        from app.api.request_logging import install_request_logging
+
+        install_request_logging(app, settings)
+
     # Routes: unauthenticated /health + the auth-gated /probe (E1·P2).
     app.include_router(health.router)
     # Authenticated HealthKit ingest: POST /sync (E5·P2).

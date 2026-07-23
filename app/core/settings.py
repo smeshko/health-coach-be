@@ -91,6 +91,25 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
 
+    # --- Debug observability: full request/response logging (default-off) ---
+    # When set, every request/response pair is appended as one JSON line to this
+    # file (rotating, bodies captured up to request_log_max_body bytes each,
+    # Authorization/Cookie redacted — see app/api/request_logging.py). The log
+    # holds health data in plaintext: keep it on-machine, out of off-site backups.
+    request_log_path: str | None = Field(
+        None,
+        description="JSONL file for full request/response logging; env REQUEST_LOG_PATH.",
+    )
+    request_log_max_body: int = Field(
+        64 * 1024,
+        gt=0,
+        description="Max bytes captured per body in the request log; env REQUEST_LOG_MAX_BODY.",
+    )
+    request_log_exclude: str = Field(
+        "/health",
+        description="Comma-separated exact paths skipped by the request log (monitor spam).",
+    )
+
     # --- Local testing (default-off; never enable in deployment) ---
     # When true, create_app() overrides the brief generators with static-fixture ones
     # (app/api/brief_fixtures.py) so POST /brief/weekly + /brief/daily serve canned

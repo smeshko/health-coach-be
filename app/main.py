@@ -12,10 +12,21 @@ This lives here (the composition root), not in `create_app()`, which stays free 
 side effects beyond config validation.
 """
 
+import logging
 import os
 
 from app.api.app import create_app
 from app.core.settings import get_settings
+
+# Timestamp every server log line. Uvicorn configures its handlers (default
+# format: no timestamp) before importing this module, so restyle them here at the
+# composition root; basicConfig gives app-level loggers (errors.py etc.) a
+# matching root handler and is a no-op if logging was already configured.
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    for _handler in logging.getLogger(_name).handlers:
+        _handler.setFormatter(logging.Formatter(_LOG_FORMAT))
 
 _settings = get_settings()
 if _settings.anthropic_api_key:
