@@ -55,6 +55,7 @@ from app.core.task_context import TaskContext
 from app.core.time import now_sofia
 from app.core.workflow import NodeConfig, Workflow, WorkflowSchema
 from app.database.models import Checkins, DailyMetrics, Plans, Suggestions
+from app.services.daily_metrics_engine import current_body_weight
 from app.services.derive.session import SessionBlock
 from app.services.derive.session import SessionPick as DerivePick
 from app.services.derive.session import expand_session
@@ -85,9 +86,7 @@ def _session_of(task_context: TaskContext) -> Session:
     """
     session = task_context.metadata.get("session")
     if not isinstance(session, Session):
-        raise ValueError(
-            "task_context.metadata['session'] must be an open SQLAlchemy Session"
-        )
+        raise ValueError("task_context.metadata['session'] must be an open SQLAlchemy Session")
     return session
 
 
@@ -150,11 +149,17 @@ def _checkin_flags(session: Session, day: date) -> dict:
     }
 
 
-def _live_weight(today: DailyMetrics | None, profile: Profile) -> float:
-    """The day's live weight for the macro compute — today's logged ``body_weight``,
-    else the profile's goal weight (the kernel needs a positive number)."""
-    weight = getattr(today, "body_weight", None)
-    if weight:
+def _live_weight(session: Session, day: date, profile: Profile) -> float:
+    """The day's live weight for the macro compute — the latest plausible materialised
+    ``body_weight`` on/before ``day`` (``current_body_weight``, the SAME walk-back the
+    weekly planner uses), else the profile's goal weight (the kernel needs a positive
+    number). Resolving both agents through one reader keeps their macros consistent:
+    before this, a day without a scale reading made the daily brief fall back to
+    ``goal_weight_kg`` while the weekly brief kept the last real weight, so the two
+    disagreed on protein/calories whenever weigh-ins were sparse (seen live 2026-07-23:
+    weekly at 81 kg vs daily at 75 kg off one weigh-in seven weeks back)."""
+    weight = current_body_weight(session, day)
+    if weight is not None:
         return float(weight)
     return float(profile.athlete.goal_weight_kg)
 
@@ -223,7 +228,7 @@ class ComputeReadinessNode(Node):
         # `metadata["computed"]` (daily_agent._daily_feeds → the USER context + DailyDeps).
         # `safety_gate` is injected by GateTrippedRoute (computed during routing, below).
         profile = load_profile()
-        live_weight = _live_weight(today, profile)
+        live_weight = _live_weight(session, event.date, profile)
         # Yesterday's logged intake, so the LLM actually sees fuelling history (constitution
         # §6 lists it as a daily input; §7 "the daily loop reports yesterday's adherence").
         # `vsTarget` needs a target, but today's day-type is the LLM's own pick (resolved
@@ -376,7 +381,7 @@ class SafetyRestNode(Node):
         day_type = meta.day_type
         macro_focus = compute_macro_focus(
             day_type=day_type,
-            weight_kg=_live_weight(_metrics_row(session, event.date), profile),
+            weight_kg=_live_weight(session, event.date, profile),
             nutrition=profile.nutrition,
             athlete=profile.athlete,
         )
@@ -542,9 +547,7 @@ def derive_intake_summary(
         return None
 
     calories_pct = (
-        round(kcal / target.calories_kcal, 2)
-        if kcal is not None and target.calories_kcal
-        else 0.0
+        round(kcal / target.calories_kcal, 2) if kcal is not None and target.calories_kcal else 0.0
     )
     protein_hit = protein is not None and protein >= target.protein_g
     return IntakeSummary(
@@ -607,7 +610,7 @@ class DeriveSessionNode(Node):
         day_type = resolve_day_type(out.day_type, out.session.card)
         macro_focus = compute_macro_focus(
             day_type=day_type,
-            weight_kg=_live_weight(_metrics_row(session, event.date), profile),
+            weight_kg=_live_weight(session, event.date, profile),
             nutrition=profile.nutrition,
             athlete=profile.athlete,
         )
@@ -633,9 +636,7 @@ class DeriveSessionNode(Node):
 # --------------------------------------------------------------------------- #
 # `validate_daily` ignores `ctx.budgets`, but `ValidationContext` requires one (it is a
 # weekly field) — a zero sentinel keeps the daily re-check budget-free.
-_SENTINEL_BUDGETS = WeeklyBudgets(
-    hard_days=0, strength_sessions=0, long_run_km=None, deload=False
-)
+_SENTINEL_BUDGETS = WeeklyBudgets(hard_days=0, strength_sessions=0, long_run_km=None, deload=False)
 
 
 class ValidateSessionNode(Node):
@@ -672,9 +673,7 @@ class ValidateSessionNode(Node):
         violations = validate_daily_output(out, validation_ctx)
         if any(v.severity is Severity.hard for v in violations):
             raise BriefGenerationError(code="brief_generation_failed")
-        self.save_output(
-            self.OutputType(passed=True, soft_violations=[v.rule for v in violations])
-        )
+        self.save_output(self.OutputType(passed=True, soft_violations=[v.rule for v in violations]))
         return task_context
 
 

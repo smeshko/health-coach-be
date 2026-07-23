@@ -74,6 +74,19 @@ ASLEEP_STAGES: frozenset[str] = frozenset(
     {"asleep", "asleepunspecified", "asleepcore", "asleepdeep", "asleeprem"}
 )
 
+# The live iOS exporter sends `HKCategoryValueSleepAnalysis.rawValue` as a bare digit
+# (observed in the first real sync 2026-07-23: every `sleep_analysis.value_text` was
+# "1".."5", so 62 days of sleep computed to NULL). Map the numeric enum to the same
+# canonical stage names the seed's `HKCategoryValueSleepAnalysis…` strings collapse to.
+_NUMERIC_SLEEP_STAGES: dict[str, str] = {
+    "0": "inbed",
+    "1": "asleepunspecified",
+    "2": "awake",
+    "3": "asleepcore",
+    "4": "asleepdeep",
+    "5": "asleeprem",
+}
+
 # Third-party workout apps — rank 3 (below the iPhone/other rank-2 tier) in the
 # source-priority pick (DECISIONS.md Decision 4). Lower-cased, whitespace-normalized.
 THIRD_PARTY_WORKOUT_APPS: frozenset[str] = frozenset(
@@ -82,6 +95,15 @@ THIRD_PARTY_WORKOUT_APPS: frozenset[str] = frozenset(
 
 # The five zone keys (without the `_min` suffix), in order.
 _ZONE_KEYS: tuple[str, ...] = ("z1", "z2", "z3", "z4", "z5")
+
+# Live Apple-Watch HR samples are POINT samples (`start_date == end_date`; every one of
+# the 68k rows in the first real sync), so interval overlap credits them 0 seconds and
+# zone-minutes computed to NULL for 62 straight days. An instant sample instead
+# represents the HR *until the next reading*: credit it the gap to the next instant
+# sample from the same picked source, capped so sparse background readings (Watch
+# off-wrist, overnight) can't smear one reading across hours. 5 min ≈ the Watch's
+# background sampling cadence; workout-dense sampling (every few seconds) is unaffected.
+_INSTANT_HR_MAX_CREDIT_S = 300.0
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +140,12 @@ def _record_type_aliases(types: set[str]) -> set[str]:
 def _canonical_sleep_stage(value_text: str | None) -> str:
     """Lower-cased sleep stage with the seeded `HKCategoryValueSleepAnalysis` prefix
     stripped, so `HKCategoryValueSleepAnalysisAsleepCore` and `asleepCore` both →
-    `asleepcore`."""
+    `asleepcore`. A bare numeric `rawValue` (the live exporter's form, e.g. `"3"`)
+    maps through `_NUMERIC_SLEEP_STAGES` to the same canonical name."""
     s = (value_text or "").strip()
     if s.startswith(_SLEEP_VALUE_PREFIX):
         s = s[len(_SLEEP_VALUE_PREFIX) :]
-    return s.lower()
+    return _NUMERIC_SLEEP_STAGES.get(s, s.lower())
 
 
 def _canonical_activity_type(activity_type: str | None) -> str:
@@ -389,28 +412,73 @@ def _bucket_zone(bpm: float, bounds: dict[str, tuple[int, int]]) -> str | None:
     return None
 
 
+def _is_instant(r: Records) -> bool:
+    """A point sample: no end, or end == start (the live Watch HR form)."""
+    return r.end_date is None or r.end_date == r.start_date
+
+
+def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple[Records, float]]:
+    """In-day credit for each of `day`'s instant HR samples: the gap to the NEXT
+    instant sample (successors on a neighbour day count — `instants` is the full
+    ±1-day window), capped at `_INSTANT_HR_MAX_CREDIT_S` and clipped to the Sofia
+    day end. The window's last sample has no successor and credits 0 (conservative —
+    one background reading's worth at most)."""
+    ordered = sorted(instants, key=lambda r: parse_ts(r.start_date))
+    _, day_end = _sofia_day_bounds(day)
+    credits: list[tuple[Records, float]] = []
+    for i, r in enumerate(ordered):
+        if to_sofia(parse_ts(r.start_date)).date() != day:
+            continue  # a window neighbour: successor material only, credits nothing here
+        if i + 1 == len(ordered):
+            credits.append((r, 0.0))
+            continue
+        start = parse_ts(r.start_date)
+        gap = (parse_ts(ordered[i + 1].start_date) - start).total_seconds()
+        credit = min(gap, _INSTANT_HR_MAX_CREDIT_S, (day_end - start).total_seconds())
+        credits.append((r, max(0.0, credit)))
+    return credits
+
+
 def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, float | None]:
     """HR zone-minutes for `day`, bucketed against `profile.zone_bounds()`.
 
     Restricts to the single highest-priority HR source first (Decision 4 — so
     overlapping dual-device HR can't double-count), then credits each sample's
-    **in-day** minutes (split at the Sofia midnight; round-1 #2) to its zone. A day
-    with no overlapping HR sample → every `z*_min` is `None` (no-data convention).
+    **in-day** minutes (split at the Sofia midnight; round-1 #2) to its zone.
+    Interval samples (the seeded form) credit their in-day overlap; instant samples
+    (the live Watch form) credit the capped gap to the next instant sample — see
+    `_INSTANT_HR_MAX_CREDIT_S`. A day with no in-day HR sample of either form →
+    every `z*_min` is `None` (no-data convention).
     """
-    overlapping = [
-        r
-        for r in _records_of_types(session, day, {"heart_rate"})
-        if r.value is not None and _in_day_overlap_seconds(r, day) > 0
+    window_rows = [
+        r for r in _records_of_types(session, day, {"heart_rate"}) if r.value is not None
     ]
-    if not overlapping:
+
+    def _contributes(r: Records) -> bool:
+        if _is_instant(r):
+            return to_sofia(parse_ts(r.start_date)).date() == day
+        return _in_day_overlap_seconds(r, day) > 0
+
+    in_day = [r for r in window_rows if _contributes(r)]
+    if not in_day:
         return {col: None for col in ZONE_COLUMNS}
-    picked = _picked_source_rows(overlapping, weight=lambda r: 1.0)
+    # Choose the day's source from the in-day rows, then credit from the full window's
+    # rows of that source, so an instant sample just before midnight still finds its
+    # next-day successor for the gap computation.
+    chosen = _choose_source(in_day, weight=lambda r: 1.0)
+    picked_window = [r for r in window_rows if r.source_name == chosen]
     bounds = profile.zone_bounds()
     minutes = {z: 0.0 for z in _ZONE_KEYS}
-    for r in picked:
+    credited = [
+        (r, _in_day_overlap_seconds(r, day))
+        for r in picked_window
+        if not _is_instant(r) and _contributes(r)
+    ]
+    credited += _instant_hr_credit_seconds([r for r in picked_window if _is_instant(r)], day)
+    for r, seconds in credited:
         zone = _bucket_zone(r.value, bounds)
         if zone is not None:
-            minutes[zone] += _in_day_overlap_seconds(r, day) / 60.0
+            minutes[zone] += seconds / 60.0
     return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
 
 
@@ -624,9 +692,11 @@ def _expand_forward_window(session: Session, days: set[date], *, span: int = 29)
     for d in days:
         start = (d + timedelta(days=1)).isoformat()
         end = (d + timedelta(days=span)).isoformat()
-        forward = session.execute(
-            select(DailyMetrics.date).where(DailyMetrics.date.between(start, end))
-        ).scalars().all()
+        forward = (
+            session.execute(select(DailyMetrics.date).where(DailyMetrics.date.between(start, end)))
+            .scalars()
+            .all()
+        )
         expanded.update(date.fromisoformat(s) for s in forward)
     return expanded
 
@@ -652,16 +722,24 @@ def window_readings(
     """
     start = (day - timedelta(days=days - 1)).isoformat()
     end = day.isoformat()
-    hrv = session.execute(
-        select(DailyMetrics.hrv_sdnn).where(
-            DailyMetrics.date.between(start, end), DailyMetrics.hrv_sdnn.is_not(None)
+    hrv = (
+        session.execute(
+            select(DailyMetrics.hrv_sdnn).where(
+                DailyMetrics.date.between(start, end), DailyMetrics.hrv_sdnn.is_not(None)
+            )
         )
-    ).scalars().all()
-    rhr_vals = session.execute(
-        select(DailyMetrics.rhr).where(
-            DailyMetrics.date.between(start, end), DailyMetrics.rhr.is_not(None)
+        .scalars()
+        .all()
+    )
+    rhr_vals = (
+        session.execute(
+            select(DailyMetrics.rhr).where(
+                DailyMetrics.date.between(start, end), DailyMetrics.rhr.is_not(None)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return list(hrv), list(rhr_vals)
 
 

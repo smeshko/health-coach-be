@@ -58,9 +58,7 @@ def seed_metrics(session, *, today_kwargs=None, yesterday_kwargs=None) -> None:
         hard_day=0,
     )
     session.add(DailyMetrics(date=TODAY.isoformat(), **{**base, **(today_kwargs or {})}))
-    session.add(
-        DailyMetrics(date=YESTERDAY.isoformat(), **{**base, **(yesterday_kwargs or {})})
-    )
+    session.add(DailyMetrics(date=YESTERDAY.isoformat(), **{**base, **(yesterday_kwargs or {})}))
     session.flush()
 
 
@@ -72,16 +70,12 @@ def seed_checkin(session, **kwargs) -> None:
 def _ctx(session, **nodes) -> TaskContext:
     from app.core.daily_adjuster import DailyAdjusterEvent
 
-    ctx = TaskContext(
-        event=DailyAdjusterEvent(date=TODAY), metadata={"session": session}
-    )
+    ctx = TaskContext(event=DailyAdjusterEvent(date=TODAY), metadata={"session": session})
     ctx.nodes.update(nodes)
     return ctx
 
 
-def _clean_daily_output(
-    *, card="vo2", day_type="hard", alternatives=None, narrative=None
-):
+def _clean_daily_output(*, card="vo2", day_type="hard", alternatives=None, narrative=None):
     from app.api.schemas.daily import DailyBriefLLMOutput
 
     return DailyBriefLLMOutput.model_validate(
@@ -126,11 +120,44 @@ def test_compute_readiness_node_bridges_agent_metadata(session, profile_path):
 
     assert isinstance(ctx.metadata["profile"], Profile)
     computed = ctx.metadata["computed"]
-    assert {"readiness", "band", "week_plan_cards", "flags", "live_weight_kg", "constants"} <= set(computed)
+    assert {"readiness", "band", "week_plan_cards", "flags", "live_weight_kg", "constants"} <= set(
+        computed
+    )
     assert computed["band"].value == "green"
     assert computed["flags"]["knee_pain"] == 2
     assert computed["live_weight_kg"] == 78.0
     assert WorkoutCard.vo2 in computed["week_plan_cards"]  # all-cards fallback (no plan)
+
+
+def test_live_weight_walks_back_to_latest_materialised_weight(session, profile_path):
+    """The 2026-07-23 live mismatch: a day WITHOUT a scale reading fell back to
+    goal_weight_kg (75) while the weekly planner walked back to the last real weight
+    (81) — the two briefs disagreed on protein/calories. The daily path now resolves
+    through the same `current_body_weight` walk-back."""
+    from app.core.daily_adjuster import ComputeReadinessNode
+
+    # Today + yesterday have NO weight; a week-old row carries the last real reading.
+    seed_metrics(
+        session, today_kwargs={"body_weight": None}, yesterday_kwargs={"body_weight": None}
+    )
+    session.add(DailyMetrics(date=(TODAY - timedelta(days=7)).isoformat(), body_weight=81.0))
+    session.flush()
+    ctx = _ctx(session)
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))
+
+    assert ctx.metadata["computed"]["live_weight_kg"] == 81.0  # walk-back, not the 75 goal
+
+
+def test_live_weight_goal_fallback_when_no_weight_ever(session, profile_path):
+    from app.core.daily_adjuster import ComputeReadinessNode
+
+    seed_metrics(
+        session, today_kwargs={"body_weight": None}, yesterday_kwargs={"body_weight": None}
+    )
+    ctx = _ctx(session)
+    asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))
+
+    assert ctx.metadata["computed"]["live_weight_kg"] == 75.0  # goal_weight_kg fallback
 
 
 def test_compute_readiness_node_does_not_write_back_daily_metrics(session, profile_path):
@@ -171,9 +198,7 @@ def test_compute_readiness_node_bridges_yesterday_intake(session, profile_path):
     assert intake.vs_target.calories_pct > 0
 
 
-def test_compute_readiness_node_intake_summary_none_when_yesterday_unlogged(
-    session, profile_path
-):
+def test_compute_readiness_node_intake_summary_none_when_yesterday_unlogged(session, profile_path):
     """No nutrition logged yesterday → `intake_summary` is None (never a fabricated zero)."""
     from app.core.daily_adjuster import ComputeReadinessNode
 
@@ -423,9 +448,7 @@ def test_derive_session_node_floors_day_type_for_hard_card(session, profile_path
 
     seed_metrics(session)
     # The LLM emitted dayType=moderate on a hard vo2 card → floored to hard for macros.
-    ctx = _ctx(
-        session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="moderate")
-    )
+    ctx = _ctx(session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="moderate"))
     asyncio.run(DeriveSessionNode(task_context=ctx).process(ctx))
     assert ctx.nodes["DeriveSessionNode"].macro_focus.day_type is DayType.hard
 
@@ -480,9 +503,7 @@ def _clean_persist_ctx(session):
     )
     from app.services.safety_gate import SafetyGate
 
-    seed_metrics(
-        session, yesterday_kwargs=dict(kcal_in=2400.0, protein_in_g=150.0)
-    )
+    seed_metrics(session, yesterday_kwargs=dict(kcal_in=2400.0, protein_in_g=150.0))
     ctx = _ctx(session, TuneSessionNode=_clean_daily_output(card="vo2", day_type="hard"))
     asyncio.run(ComputeReadinessNode(task_context=ctx).process(ctx))  # bridges metadata
     ctx.nodes["GateTrippedRoute"] = SafetyGate(triggered=False)
@@ -595,9 +616,7 @@ def _mock_tune_session(monkeypatch, llm_output):
 def _run_event_ctx(session):
     from app.core.daily_adjuster import DailyAdjusterEvent
 
-    return TaskContext(
-        event=DailyAdjusterEvent(date=TODAY), metadata={"session": session}
-    )
+    return TaskContext(event=DailyAdjusterEvent(date=TODAY), metadata={"session": session})
 
 
 def test_end_to_end_happy_path_clean_gate(session, profile_path, monkeypatch):
@@ -682,7 +701,9 @@ def test_end_to_end_constraint_breaking_never_persists(session, profile_path, mo
     assert dm.readiness_score is None  # write-back never ran (persist skipped)
 
 
-def test_end_to_end_persisted_macro_day_type_is_hard_for_hard_card(session, profile_path, monkeypatch):
+def test_end_to_end_persisted_macro_day_type_is_hard_for_hard_card(
+    session, profile_path, monkeypatch
+):
     from app.core.daily_adjuster import DailyAdjuster
 
     seed_metrics(session)

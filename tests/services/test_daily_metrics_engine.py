@@ -247,13 +247,25 @@ def test_sleep_h_sums_asleep_blocks_waking_on_day(session: Session) -> None:
     _seed(
         session,
         # two asleep blocks (core + REM) waking on D1 → 1h + 0.5h = 1.5h
-        _rec("sleep_analysis", "2026-06-01T01:00:00+03:00", end="2026-06-01T02:00:00+03:00",
-             value_text="asleepCore"),
-        _rec("sleep_analysis", "2026-06-01T02:00:00+03:00", end="2026-06-01T02:30:00+03:00",
-             value_text="asleepREM"),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T01:00:00+03:00",
+            end="2026-06-01T02:00:00+03:00",
+            value_text="asleepCore",
+        ),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T02:00:00+03:00",
+            end="2026-06-01T02:30:00+03:00",
+            value_text="asleepREM",
+        ),
         # inBed / awake must NOT count
-        _rec("sleep_analysis", "2026-06-01T00:30:00+03:00", end="2026-06-01T01:00:00+03:00",
-             value_text="inBed"),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T00:30:00+03:00",
+            end="2026-06-01T01:00:00+03:00",
+            value_text="inBed",
+        ),
     )
     assert sleep_h(session, D1) == pytest.approx(1.5)
     assert sleep_h(session, D2) is None  # nothing wakes on D2
@@ -263,8 +275,12 @@ def test_sleep_h_cross_midnight_anchors_wholly_to_wake_day(session: Session) -> 
     # 23:30 (D1) → 07:00 (D2) Sofia = 7.5h asleep, all credited to the WAKE day (D2).
     _seed(
         session,
-        _rec("sleep_analysis", "2026-06-01T23:30:00+03:00", end="2026-06-02T07:00:00+03:00",
-             value_text="asleepCore"),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T23:30:00+03:00",
+            end="2026-06-02T07:00:00+03:00",
+            value_text="asleepCore",
+        ),
     )
     assert sleep_h(session, D2) == pytest.approx(7.5)  # full night on the morning row
     assert sleep_h(session, D1) is None  # nothing on the prior day (not split)
@@ -292,7 +308,10 @@ def test_steps_source_deduped_watch_over_iphone(session: Session) -> None:
 
 
 def test_steps_falls_back_to_iphone_when_no_watch(session: Session) -> None:
-    _seed(session, _rec("step_count", "2026-06-01T11:00:00+03:00", value=7000.0, source="itsonev-ip15"))
+    _seed(
+        session,
+        _rec("step_count", "2026-06-01T11:00:00+03:00", value=7000.0, source="itsonev-ip15"),
+    )
     assert steps(session, D1) == 7000
 
 
@@ -305,7 +324,9 @@ def test_steps_none_when_no_record_and_zero_from_picked_source(session: Session)
 def test_active_energy_source_deduped_watch_over_workout_app(session: Session) -> None:
     _seed(
         session,
-        _rec("active_energy_burned", "2026-06-01T18:00:00+03:00", value=500.0, source="Apple Watch"),
+        _rec(
+            "active_energy_burned", "2026-06-01T18:00:00+03:00", value=500.0, source="Apple Watch"
+        ),
         _rec("active_energy_burned", "2026-06-01T18:00:00+03:00", value=300.0, source="Strava"),
     )
     assert active_energy(session, D1) == 500.0  # Watch only
@@ -316,11 +337,17 @@ def test_zone_minutes_bucketing_boundary_and_full_duration(session: Session) -> 
     _seed(
         session,
         # full-duration in-day sample: 130 bpm (z2) for 10 min
-        _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0),
+        _rec(
+            "heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0
+        ),
         # boundary sample: 127 bpm == z2.low lands in z2 (low <= bpm < high) for 5 min
-        _rec("heart_rate", "2026-06-01T10:10:00+03:00", end="2026-06-01T10:15:00+03:00", value=127.0),
+        _rec(
+            "heart_rate", "2026-06-01T10:10:00+03:00", end="2026-06-01T10:15:00+03:00", value=127.0
+        ),
         # 100 bpm (z1) for 4 min
-        _rec("heart_rate", "2026-06-01T10:15:00+03:00", end="2026-06-01T10:19:00+03:00", value=100.0),
+        _rec(
+            "heart_rate", "2026-06-01T10:15:00+03:00", end="2026-06-01T10:19:00+03:00", value=100.0
+        ),
     )
     z = zone_minutes(session, D1, profile=PROFILE)
     assert z["z1_min"] == pytest.approx(4.0)
@@ -332,7 +359,9 @@ def test_zone_minutes_split_across_sofia_midnight(session: Session) -> None:
     # 23:50 (D1) → 00:10 (D2) at 130 bpm (z2): 10 min each side of the boundary.
     _seed(
         session,
-        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00", value=130.0),
+        _rec(
+            "heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00", value=130.0
+        ),
     )
     assert zone_minutes(session, D1, profile=PROFILE)["z2_min"] == pytest.approx(10.0)
     assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)
@@ -342,10 +371,20 @@ def test_zone_minutes_hr_source_deduped(session: Session) -> None:
     # Overlapping Watch (z2) + Garmin (z3) HR: minutes from the priority Watch only.
     _seed(
         session,
-        _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00",
-             value=130.0, source="Apple Watch"),
-        _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00",
-             value=160.0, source="Garmin Connect"),
+        _rec(
+            "heart_rate",
+            "2026-06-01T10:00:00+03:00",
+            end="2026-06-01T10:10:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+        ),
+        _rec(
+            "heart_rate",
+            "2026-06-01T10:00:00+03:00",
+            end="2026-06-01T10:10:00+03:00",
+            value=160.0,
+            source="Garmin Connect",
+        ),
     )
     z = zone_minutes(session, D1, profile=PROFILE)
     assert z["z2_min"] == pytest.approx(10.0)  # Watch
@@ -357,9 +396,97 @@ def test_zone_minutes_none_when_no_hr_records(session: Session) -> None:
     assert all(z[c] is None for c in ("z1_min", "z2_min", "z3_min", "z4_min", "z5_min"))
 
 
+def test_sleep_h_numeric_stage_codes_from_live_exporter(session: Session) -> None:
+    """The 2026-07-23 live gap: the iOS exporter sends `HKCategoryValueSleepAnalysis.
+    rawValue` as a bare digit, which matched no stage and NULLed sleep for 62 days."""
+    _seed(
+        session,
+        # core (3) 1h + deep (4) 0.5h + rem (5) 0.25h = 1.75h asleep
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T01:00:00+03:00",
+            end="2026-06-01T02:00:00+03:00",
+            value_text="3",
+        ),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T02:00:00+03:00",
+            end="2026-06-01T02:30:00+03:00",
+            value_text="4",
+        ),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T02:30:00+03:00",
+            end="2026-06-01T02:45:00+03:00",
+            value_text="5",
+        ),
+        # awake (2) and inBed (0) must NOT count
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T02:45:00+03:00",
+            end="2026-06-01T03:00:00+03:00",
+            value_text="2",
+        ),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T00:30:00+03:00",
+            end="2026-06-01T01:00:00+03:00",
+            value_text="0",
+        ),
+    )
+    assert sleep_h(session, D1) == pytest.approx(1.75)
+
+
+def test_zone_minutes_instant_watch_samples_credit_gap_to_next(session: Session) -> None:
+    """The 2026-07-23 live gap: every Watch HR sample is a point (`start == end`), so
+    interval overlap credited 0s and zones were NULL for 62 days. Instant samples now
+    credit the gap to the next sample, capped at 5 min."""
+    _seed(
+        session,
+        # 10:00 at 130 (z2) → next at 10:04 → 4 min credited to z2
+        _rec("heart_rate", "2026-06-01T10:00:00+03:00", value=130.0),
+        # 10:04 at 155 (z3) → next at 10:24 (20 min away) → capped at 5 min to z3
+        _rec("heart_rate", "2026-06-01T10:04:00+03:00", value=155.0),
+        # 10:24 at 100 (z1) → last sample of the day → 0 credited
+        _rec("heart_rate", "2026-06-01T10:24:00+03:00", value=100.0),
+    )
+    z = zone_minutes(session, D1, profile=PROFILE)
+    assert z["z2_min"] == pytest.approx(4.0)
+    assert z["z3_min"] == pytest.approx(5.0)  # capped, not 20
+    assert z["z1_min"] == pytest.approx(0.0)  # data present, last-sample credit is 0 — not None
+
+
+def test_zone_minutes_instant_credit_clipped_at_sofia_midnight(session: Session) -> None:
+    # 23:58 (D1) at 130 bpm, next sample 00:30 (D2): credit is capped at 5 min AND
+    # clipped to the day end → 2 min on D1; the sample contributes nothing to D2.
+    _seed(
+        session,
+        _rec("heart_rate", "2026-06-01T23:58:00+03:00", value=130.0),
+        _rec("heart_rate", "2026-06-02T00:30:00+03:00", value=130.0),
+    )
+    assert zone_minutes(session, D1, profile=PROFILE)["z2_min"] == pytest.approx(2.0)
+
+
+def test_zone_minutes_mixed_interval_and_instant_samples(session: Session) -> None:
+    # A seeded interval sample and live instant samples on the same day both credit.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T09:00:00+03:00", end="2026-06-01T09:10:00+03:00", value=130.0
+        ),  # interval: 10 min z2
+        _rec("heart_rate", "2026-06-01T10:00:00+03:00", value=155.0),  # instant → 3 min z3
+        _rec("heart_rate", "2026-06-01T10:03:00+03:00", value=155.0),  # last → 0
+    )
+    z = zone_minutes(session, D1, profile=PROFILE)
+    assert z["z2_min"] == pytest.approx(10.0)
+    assert z["z3_min"] == pytest.approx(3.0)
+
+
 def test_instant_metric_attributed_to_sofia_date(session: Session) -> None:
     # 23:30 UTC on 06-02 → 02:30 Sofia (+03:00) on 06-03 → counts on the Sofia date.
-    _seed(session, _rec("step_count", "2026-06-02T23:30:00+00:00", value=5000.0, source="Apple Watch"))
+    _seed(
+        session, _rec("step_count", "2026-06-02T23:30:00+00:00", value=5000.0, source="Apple Watch")
+    )
     assert steps(session, date(2026, 6, 3)) == 5000
     assert steps(session, D2) is None  # not the wire-offset date
 
@@ -367,7 +494,9 @@ def test_instant_metric_attributed_to_sofia_date(session: Session) -> None:
 def test_expand_affected_dates_pulls_cross_midnight_neighbour(session: Session) -> None:
     _seed(
         session,
-        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00", value=130.0),
+        _rec(
+            "heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00", value=130.0
+        ),
     )
     # Handed only the start day (E5·P3 fans out by start) → engine widens to both days.
     assert expand_affected_dates(session, {D1}) == {D1, D2}
@@ -376,8 +505,14 @@ def test_expand_affected_dates_pulls_cross_midnight_neighbour(session: Session) 
 def test_engine_recomputes_both_rows_for_cross_midnight_sample(engine_db: str) -> None:
     seed = SessionLocal()
     try:
-        seed.add(_rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00",
-                      value=130.0))
+        seed.add(
+            _rec(
+                "heart_rate",
+                "2026-06-01T23:50:00+03:00",
+                end="2026-06-02T00:10:00+03:00",
+                value=130.0,
+            )
+        )
         seed.commit()
     finally:
         seed.close()
@@ -407,11 +542,23 @@ def test_nutrition_intake_dominant_app_not_cross_sum(session: Session) -> None:
     # MacroFactor (higher kcal_in) is dominant; MyFitnessPal's entries are NOT summed in.
     _seed(
         session,
-        _rec("dietary_energy_consumed", "2026-06-01T12:00:00+03:00", value=2000.0, source="MacroFactor"),
+        _rec(
+            "dietary_energy_consumed",
+            "2026-06-01T12:00:00+03:00",
+            value=2000.0,
+            source="MacroFactor",
+        ),
         _rec("dietary_protein", "2026-06-01T12:00:00+03:00", value=150.0, source="MacroFactor"),
-        _rec("dietary_carbohydrates", "2026-06-01T12:00:00+03:00", value=220.0, source="MacroFactor"),
+        _rec(
+            "dietary_carbohydrates", "2026-06-01T12:00:00+03:00", value=220.0, source="MacroFactor"
+        ),
         # a second app logged the same day (lower kcal) — must be ignored entirely
-        _rec("dietary_energy_consumed", "2026-06-01T13:00:00+03:00", value=900.0, source="MyFitnessPal"),
+        _rec(
+            "dietary_energy_consumed",
+            "2026-06-01T13:00:00+03:00",
+            value=900.0,
+            source="MyFitnessPal",
+        ),
         _rec("dietary_protein", "2026-06-01T13:00:00+03:00", value=60.0, source="MyFitnessPal"),
     )
     n = nutrition_intake(session, D1)
@@ -537,7 +684,9 @@ def test_current_body_weight_skips_sub_physiological(session: Session) -> None:
     assert current_body_weight(session, anchor) == 78.5
 
 
-@pytest.mark.parametrize("activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"])
+@pytest.mark.parametrize(
+    "activity", ["boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"]
+)
 def test_hard_day_per_hard_activity_type(session: Session, activity: str) -> None:
     _seed(session, _workout(activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
     assert hard_day(session, D1) == 1
@@ -572,15 +721,28 @@ def test_full_p1_row_matches_source_with_baselines_null(session: Session) -> Non
     # source, with the 30-day baselines + readiness null.
     _seed(
         session,
-        _rec("sleep_analysis", "2026-05-31T23:30:00+03:00", end="2026-06-01T07:00:00+03:00",
-             value_text="asleepCore"),
+        _rec(
+            "sleep_analysis",
+            "2026-05-31T23:30:00+03:00",
+            end="2026-06-01T07:00:00+03:00",
+            value_text="asleepCore",
+        ),
         _rec("heart_rate_variability_sdnn", "2026-06-01T06:30:00+03:00", value=48.0),
         _rec("resting_heart_rate", "2026-06-01T06:30:00+03:00", value=54.0),
         _rec("step_count", "2026-06-01T10:00:00+03:00", value=9000.0, source="Apple Watch"),
-        _rec("active_energy_burned", "2026-06-01T10:00:00+03:00", value=500.0, source="Apple Watch"),
-        _rec("heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0),
+        _rec(
+            "active_energy_burned", "2026-06-01T10:00:00+03:00", value=500.0, source="Apple Watch"
+        ),
+        _rec(
+            "heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:10:00+03:00", value=130.0
+        ),
         _rec("body_mass", "2026-06-01T07:00:00+03:00", value=78.4),
-        _rec("dietary_energy_consumed", "2026-06-01T12:00:00+03:00", value=2200.0, source="MacroFactor"),
+        _rec(
+            "dietary_energy_consumed",
+            "2026-06-01T12:00:00+03:00",
+            value=2200.0,
+            source="MacroFactor",
+        ),
     )
     _seed(session, _workout("boxing", "2026-06-01T18:00:00+03:00", duration=2700.0, unit="s"))
     recompute_day(session, D1, profile=PROFILE)
@@ -607,7 +769,12 @@ def test_nutrition_and_body_mass_attributed_to_sofia_date(session: Session) -> N
     _seed(
         session,
         _rec("body_mass", "2026-06-02T23:30:00+00:00", value=79.1, source="Apple Watch"),
-        _rec("dietary_energy_consumed", "2026-06-02T23:30:00+00:00", value=2100.0, source="MacroFactor"),
+        _rec(
+            "dietary_energy_consumed",
+            "2026-06-02T23:30:00+00:00",
+            value=2100.0,
+            source="MacroFactor",
+        ),
     )
     assert body_weight(session, d3) == 79.1
     assert nutrition_intake(session, d3)["kcal_in"] == 2100.0
@@ -675,25 +842,66 @@ def test_recompute_reads_seeded_hk_identifier_records(session: Session) -> None:
     # the seed rows are read (not superseded).
     _seed(
         session,
-        _rec("HKCategoryTypeIdentifierSleepAnalysis", "2026-05-31T23:30:00+03:00",
-             end="2026-06-01T07:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore",
-             origin="seed"),
-        _rec("HKQuantityTypeIdentifierHeartRateVariabilitySDNN", "2026-06-01T06:30:00+03:00",
-             value=48.0, origin="seed"),
-        _rec("HKQuantityTypeIdentifierRestingHeartRate", "2026-06-01T06:30:00+03:00",
-             value=54.0, origin="seed"),
-        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T10:00:00+03:00", value=9000.0,
-             source="Apple Watch", origin="seed"),
-        _rec("HKQuantityTypeIdentifierActiveEnergyBurned", "2026-06-01T10:00:00+03:00", value=500.0,
-             source="Apple Watch", origin="seed"),
-        _rec("HKQuantityTypeIdentifierHeartRate", "2026-06-01T10:00:00+03:00",
-             end="2026-06-01T10:10:00+03:00", value=130.0, origin="seed"),
-        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4,
-             origin="seed"),
-        _rec("HKQuantityTypeIdentifierDietaryEnergyConsumed", "2026-06-01T12:00:00+03:00",
-             value=2200.0, source="MacroFactor", origin="seed"),
-        _rec("HKQuantityTypeIdentifierDietaryProtein", "2026-06-01T12:00:00+03:00",
-             value=160.0, source="MacroFactor", origin="seed"),
+        _rec(
+            "HKCategoryTypeIdentifierSleepAnalysis",
+            "2026-05-31T23:30:00+03:00",
+            end="2026-06-01T07:00:00+03:00",
+            value_text="HKCategoryValueSleepAnalysisAsleepCore",
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
+            "2026-06-01T06:30:00+03:00",
+            value=48.0,
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierRestingHeartRate",
+            "2026-06-01T06:30:00+03:00",
+            value=54.0,
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierStepCount",
+            "2026-06-01T10:00:00+03:00",
+            value=9000.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierActiveEnergyBurned",
+            "2026-06-01T10:00:00+03:00",
+            value=500.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierHeartRate",
+            "2026-06-01T10:00:00+03:00",
+            end="2026-06-01T10:10:00+03:00",
+            value=130.0,
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierBodyMass",
+            "2026-06-01T07:00:00+03:00",
+            value=78.4,
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierDietaryEnergyConsumed",
+            "2026-06-01T12:00:00+03:00",
+            value=2200.0,
+            source="MacroFactor",
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierDietaryProtein",
+            "2026-06-01T12:00:00+03:00",
+            value=160.0,
+            source="MacroFactor",
+            origin="seed",
+        ),
     )
     recompute_day(session, D1, profile=PROFILE)
     session.commit()
@@ -713,9 +921,18 @@ def test_nutrition_dominant_app_across_seeded_and_live_type_forms(session: Sessi
     # The dominant-app pick + per-type sum must canonicalize HK vs snake forms together.
     _seed(
         session,
-        _rec("HKQuantityTypeIdentifierDietaryEnergyConsumed", "2026-06-01T12:00:00+03:00",
-             value=1200.0, source="MacroFactor"),
-        _rec("dietary_energy_consumed", "2026-06-01T19:00:00+03:00", value=900.0, source="MacroFactor"),
+        _rec(
+            "HKQuantityTypeIdentifierDietaryEnergyConsumed",
+            "2026-06-01T12:00:00+03:00",
+            value=1200.0,
+            source="MacroFactor",
+        ),
+        _rec(
+            "dietary_energy_consumed",
+            "2026-06-01T19:00:00+03:00",
+            value=900.0,
+            source="MacroFactor",
+        ),
     )
     # Both rows are the same canonical type + source → summed to one app's kcal.
     assert nutrition_intake(session, D1)["kcal_in"] == 2100.0
@@ -723,10 +940,16 @@ def test_nutrition_dominant_app_across_seeded_and_live_type_forms(session: Sessi
 
 @pytest.mark.parametrize(
     "hk_activity",
-    ["HKWorkoutActivityTypeBoxing", "HKWorkoutActivityTypeHighIntensityIntervalTraining",
-     "HKWorkoutActivityTypeKickboxing", "HKWorkoutActivityTypeMartialArts"],
+    [
+        "HKWorkoutActivityTypeBoxing",
+        "HKWorkoutActivityTypeHighIntensityIntervalTraining",
+        "HKWorkoutActivityTypeKickboxing",
+        "HKWorkoutActivityTypeMartialArts",
+    ],
 )
-def test_hard_day_matches_seeded_hk_workout_activity_types(session: Session, hk_activity: str) -> None:
+def test_hard_day_matches_seeded_hk_workout_activity_types(
+    session: Session, hk_activity: str
+) -> None:
     # A sub-90-min seeded hard session (HK activity form) must read hard_day=1.
     _seed(session, _workout(hk_activity, "2026-06-01T18:00:00+03:00", duration=1800.0, unit="s"))
     assert hard_day(session, D1) == 1
@@ -742,15 +965,35 @@ def test_sync_covered_day_supersedes_seed_rows_no_double_count(session: Session)
     _seed(
         session,
         # seeded estimate for D1 (HK form) — same source as the live row below
-        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T09:00:00+03:00", value=9000.0,
-             source="Apple Watch", origin="seed"),
-        _rec("HKQuantityTypeIdentifierActiveEnergyBurned", "2026-06-01T09:00:00+03:00", value=400.0,
-             source="Apple Watch", origin="seed"),
+        _rec(
+            "HKQuantityTypeIdentifierStepCount",
+            "2026-06-01T09:00:00+03:00",
+            value=9000.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
+        _rec(
+            "HKQuantityTypeIdentifierActiveEnergyBurned",
+            "2026-06-01T09:00:00+03:00",
+            value=400.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
         # live /sync for the same day — authoritative for the WHOLE day
-        _rec("step_count", "2026-06-01T18:00:00+03:00", value=10000.0, source="Apple Watch",
-             origin="sync"),
-        _rec("active_energy_burned", "2026-06-01T18:00:00+03:00", value=550.0, source="Apple Watch",
-             origin="sync"),
+        _rec(
+            "step_count",
+            "2026-06-01T18:00:00+03:00",
+            value=10000.0,
+            source="Apple Watch",
+            origin="sync",
+        ),
+        _rec(
+            "active_energy_burned",
+            "2026-06-01T18:00:00+03:00",
+            value=550.0,
+            source="Apple Watch",
+            origin="sync",
+        ),
     )
     assert steps(session, D1) == 10000  # sync only — NOT 19000
     assert active_energy(session, D1) == 550.0  # sync only — NOT 950
@@ -761,10 +1004,19 @@ def test_sync_covered_day_drops_seed_metric_even_when_sync_lacks_it(session: Ses
     # day the live sync covers is gone — the engine matches that post-reconcile state.
     _seed(
         session,
-        _rec("step_count", "2026-06-01T18:00:00+03:00", value=10000.0, source="Apple Watch",
-             origin="sync"),  # makes D1 "covered"
-        _rec("HKQuantityTypeIdentifierBodyMass", "2026-06-01T07:00:00+03:00", value=78.4,
-             origin="seed"),  # seed-only metric on a covered day → superseded
+        _rec(
+            "step_count",
+            "2026-06-01T18:00:00+03:00",
+            value=10000.0,
+            source="Apple Watch",
+            origin="sync",
+        ),  # makes D1 "covered"
+        _rec(
+            "HKQuantityTypeIdentifierBodyMass",
+            "2026-06-01T07:00:00+03:00",
+            value=78.4,
+            origin="seed",
+        ),  # seed-only metric on a covered day → superseded
     )
     assert body_weight(session, D1) is None  # seed body_mass dropped on the covered day
 
@@ -773,8 +1025,13 @@ def test_uncovered_seed_day_keeps_seed_rows(session: Session) -> None:
     # D1 has only seed rows (no sync) → not covered → seed rows are read.
     _seed(
         session,
-        _rec("HKQuantityTypeIdentifierStepCount", "2026-06-01T09:00:00+03:00", value=9000.0,
-             source="Apple Watch", origin="seed"),
+        _rec(
+            "HKQuantityTypeIdentifierStepCount",
+            "2026-06-01T09:00:00+03:00",
+            value=9000.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
     )
     assert steps(session, D1) == 9000  # kept — a partial/uncovered day keeps its seed
 
@@ -782,8 +1039,15 @@ def test_uncovered_seed_day_keeps_seed_rows(session: Session) -> None:
 def test_hard_day_seed_workout_superseded_on_sync_covered_day(session: Session) -> None:
     # A live sync row covers D1, so a seed boxing workout on D1 is superseded.
     _seed(session, _rec("step_count", "2026-06-01T18:00:00+03:00", value=8000.0, origin="sync"))
-    session.add(_workout("HKWorkoutActivityTypeBoxing", "2026-06-01T19:00:00+03:00",
-                         duration=1800.0, unit="s", origin="seed"))
+    session.add(
+        _workout(
+            "HKWorkoutActivityTypeBoxing",
+            "2026-06-01T19:00:00+03:00",
+            duration=1800.0,
+            unit="s",
+            origin="seed",
+        )
+    )
     session.commit()
     assert hard_day(session, D1) == 0  # seed boxing dropped on the covered day
 
@@ -797,11 +1061,23 @@ def test_cross_midnight_sync_hr_supersedes_seed_on_neighbour_day(session: Sessio
     _seed(
         session,
         # live HR spanning D1->D2 (start-day D1, but contributes minutes to D2 too)
-        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00",
-             value=130.0, source="Apple Watch", origin="sync"),
+        _rec(
+            "heart_rate",
+            "2026-06-01T23:50:00+03:00",
+            end="2026-06-02T00:10:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+            origin="sync",
+        ),
         # seeded HR fully within D2, same source — would double-count D2 without the fix
-        _rec("HKQuantityTypeIdentifierHeartRate", "2026-06-02T02:00:00+03:00",
-             end="2026-06-02T02:10:00+03:00", value=130.0, source="Apple Watch", origin="seed"),
+        _rec(
+            "HKQuantityTypeIdentifierHeartRate",
+            "2026-06-02T02:00:00+03:00",
+            end="2026-06-02T02:10:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
     )
     # D2 is covered by the cross-midnight sync row → the D2 seed HR is superseded.
     assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # not 20.0
@@ -811,12 +1087,21 @@ def test_cross_midnight_sync_sleep_supersedes_seed_on_wake_day(session: Session)
     _seed(
         session,
         # live sleep waking on D2 (sync, 7.5h)
-        _rec("sleep_analysis", "2026-06-01T23:30:00+03:00", end="2026-06-02T07:00:00+03:00",
-             value_text="asleepCore", origin="sync"),
+        _rec(
+            "sleep_analysis",
+            "2026-06-01T23:30:00+03:00",
+            end="2026-06-02T07:00:00+03:00",
+            value_text="asleepCore",
+            origin="sync",
+        ),
         # seeded sleep also waking on D2 (HK form) — would double sleep_h without the fix
-        _rec("HKCategoryTypeIdentifierSleepAnalysis", "2026-06-01T23:00:00+03:00",
-             end="2026-06-02T06:00:00+03:00", value_text="HKCategoryValueSleepAnalysisAsleepCore",
-             origin="seed"),
+        _rec(
+            "HKCategoryTypeIdentifierSleepAnalysis",
+            "2026-06-01T23:00:00+03:00",
+            end="2026-06-02T06:00:00+03:00",
+            value_text="HKCategoryValueSleepAnalysisAsleepCore",
+            origin="seed",
+        ),
     )
     # D2 (wake day) is covered by the sync sleep → the seed sleep is superseded.
     assert sleep_h(session, D2) == pytest.approx(7.5)  # live only, not 14.5
@@ -832,8 +1117,14 @@ def test_uncovered_neighbour_day_keeps_cross_midnight_seed_hr(session: Session) 
     _seed(
         session,
         # seed HR spanning D1->D2 (contributes 10 min to each), origin=seed
-        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:10:00+03:00",
-             value=130.0, source="Apple Watch", origin="seed"),
+        _rec(
+            "heart_rate",
+            "2026-06-01T23:50:00+03:00",
+            end="2026-06-02T00:10:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
         # live sync covers ONLY D1 (an instant step), NOT D2
         _rec("step_count", "2026-06-01T12:00:00+03:00", value=8000.0, origin="sync"),
     )
@@ -847,11 +1138,23 @@ def test_sync_hr_ending_exactly_at_midnight_does_not_cover_next_day(session: Ses
     _seed(
         session,
         # sync HR ending exactly at D2 00:00 — half-open, so it contributes to D1 only
-        _rec("heart_rate", "2026-06-01T23:50:00+03:00", end="2026-06-02T00:00:00+03:00",
-             value=130.0, source="Apple Watch", origin="sync"),
+        _rec(
+            "heart_rate",
+            "2026-06-01T23:50:00+03:00",
+            end="2026-06-02T00:00:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+            origin="sync",
+        ),
         # seed HR on D2 — must NOT be superseded (D2 is uncovered)
-        _rec("heart_rate", "2026-06-02T08:00:00+03:00", end="2026-06-02T08:10:00+03:00",
-             value=130.0, source="Apple Watch", origin="seed"),
+        _rec(
+            "heart_rate",
+            "2026-06-02T08:00:00+03:00",
+            end="2026-06-02T08:10:00+03:00",
+            value=130.0,
+            source="Apple Watch",
+            origin="seed",
+        ),
     )
     assert zone_minutes(session, D2, profile=PROFILE)["z2_min"] == pytest.approx(10.0)  # seed kept
 
@@ -859,7 +1162,9 @@ def test_sync_hr_ending_exactly_at_midnight_does_not_cover_next_day(session: Ses
 # ===========================================================================
 # E6·P2 — rolling 30-day HRV/RHR baselines.
 # ===========================================================================
-def _dm(session: Session, day: str, *, hrv: float | None = None, rhr_v: float | None = None) -> None:
+def _dm(
+    session: Session, day: str, *, hrv: float | None = None, rhr_v: float | None = None
+) -> None:
     """Seed a minimal `daily_metrics` row (date PK + hrv_sdnn/rhr; rest null)."""
     session.add(DailyMetrics(date=day, hrv_sdnn=hrv, rhr=rhr_v))
 
@@ -1011,8 +1316,14 @@ def test_forward_window_cascade_via_source_records(engine_db: str) -> None:
     seed = SessionLocal()
     try:
         for day in all_days:
-            seed.add(_rec("heart_rate_variability_sdnn", f"{day.isoformat()}T06:30:00+03:00",
-                          value=50.0, origin="sync"))
+            seed.add(
+                _rec(
+                    "heart_rate_variability_sdnn",
+                    f"{day.isoformat()}T06:30:00+03:00",
+                    value=50.0,
+                    origin="sync",
+                )
+            )
         seed.commit()
     finally:
         seed.close()
