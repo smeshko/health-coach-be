@@ -9,6 +9,8 @@ Routers (health/errors in E1·P2, endpoints in later epics) are attached here vi
 `include_router`; the factory stays free of side effects beyond config validation.
 """
 
+import logging
+
 from fastapi import FastAPI
 
 from app.api.errors import register_exception_handlers
@@ -27,6 +29,15 @@ def create_app() -> FastAPI:
     )
     # Keep a handle on validated config for routers/dependencies added later.
     app.state.settings = settings
+
+    # Loud at boot, not lazy at first use: with fixtures off the /brief/* routes are
+    # LLM-backed, and a missing ANTHROPIC_API_KEY only surfaces when the deferred
+    # model resolves on the first live run (seen in deployment as per-request 502s).
+    if not settings.brief_fixtures and not settings.anthropic_api_key:
+        logging.getLogger(__name__).warning(
+            "ANTHROPIC_API_KEY is not set and BRIEF_FIXTURES is off — every "
+            "/brief/* call will fail with brief_generation_failed until a key is configured"
+        )
 
     # Every non-2xx response renders the single error envelope (E1·P2).
     register_exception_handlers(app)

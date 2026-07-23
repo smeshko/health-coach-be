@@ -387,6 +387,27 @@ def test_exhausted_retries_map_to_brief_generation_failed(
     assert node.node_name not in ctx.nodes
 
 
+def test_missing_api_key_maps_to_brief_generation_failed(_no_anthropic_key):
+    """The 2026-07-23 live failure: with no ANTHROPIC_API_KEY, the deferred model
+    resolves on the FIRST real `agent.run` and pydantic-ai raises `UserError` —
+    which must map to the stable envelope code, not escape as an unhandled 500.
+    No `_patch_build_agent` here: the real deferred-string agent runs, and the
+    provider raises before any network I/O.
+    """
+    from app.core.agent_node import BriefGenerationError
+
+    node_cls = _toy_agent_node_cls(_ToyOut)
+    ctx = TaskContext(event=None)
+    node = node_cls(task_context=ctx)
+
+    with pytest.raises(BriefGenerationError) as excinfo:
+        asyncio.run(node.process(ctx))
+
+    assert excinfo.value.code == "brief_generation_failed"
+    # No synthetic fallback: nothing stored for the node on failure.
+    assert node.node_name not in ctx.nodes
+
+
 def test_timeout_maps_to_upstream_timeout(
     _no_anthropic_key, monkeypatch: pytest.MonkeyPatch
 ):

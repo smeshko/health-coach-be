@@ -33,6 +33,7 @@ from pydantic_ai import (
     RunContext,
     ToolOutput,
 )
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.settings import ModelSettings
 
 from app.core.constitution import constitution_version, render_constitution
@@ -150,9 +151,7 @@ def build_user_context(profile: Profile, *, computed: Any, mode: ModeT) -> dict:
     return context
 
 
-def build_agent(
-    config: AgentConfig, *, system_prompt: str, deps_type: type[BaseModel]
-) -> Agent:
+def build_agent(config: AgentConfig, *, system_prompt: str, deps_type: type[BaseModel]) -> Agent:
     """Construct a PydanticAI `Agent` from an E1 `AgentConfig` with the LLM §2 settings.
 
     The model is the **deferred string** id `f"anthropic:{config.model_id}"` with
@@ -174,9 +173,7 @@ def build_agent(
         output_type=ToolOutput(config.output_type),
         instructions=system_prompt,
         deps_type=deps_type,
-        model_settings=ModelSettings(
-            temperature=LOW_TEMPERATURE, timeout=CALL_TIMEOUT_S
-        ),
+        model_settings=ModelSettings(temperature=LOW_TEMPERATURE, timeout=CALL_TIMEOUT_S),
         retries=MAX_RETRIES,
         defer_model_check=True,
     )
@@ -461,9 +458,8 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
         from app.core.tracing import resolve_constitution_version, traced_run
 
         profile = task_context.metadata.get("profile")
-        version = (
-            getattr(profile, "constitution_version", None)
-            or resolve_constitution_version(deps)
+        version = getattr(profile, "constitution_version", None) or resolve_constitution_version(
+            deps
         )
         return traced_run(
             self._trace_name(),
@@ -513,6 +509,12 @@ class PydanticAgentNode(AgentNode, Generic[DepsTypeT, OutputTypeT]):
             # other model/HTTP failure (ModelHTTPError/ModelAPIError) derive from
             # AgentRunError → the generic LLM-failure code.
             if isinstance(exc, AgentRunError):
+                raise BriefGenerationError(code="brief_generation_failed") from exc
+            # Deferred model resolution (defer_model_check=True above) surfaces a
+            # missing/blank ANTHROPIC_API_KEY here as pydantic-ai's UserError, on the
+            # FIRST live run — map it to the stable LLM-failure code so a config gap
+            # answers as the envelope 502, not an unhandled 500 (seen live 2026-07-23).
+            if isinstance(exc, UserError):
                 raise BriefGenerationError(code="brief_generation_failed") from exc
             raise
         # Belt-and-suspenders re-check before persist (E9·P2; LLM §4): re-run the
