@@ -27,7 +27,7 @@ from sqlalchemy import select, update
 
 from app.api.schemas.sync import Workout
 from app.database.models import Workouts, WorkoutStatistics
-from app.services._upsert import insert_new_by_uuid
+from app.services._upsert import insert_new_by_uuid, iter_uuid_chunks
 
 
 class WorkoutUpsertResult(NamedTuple):
@@ -84,9 +84,7 @@ def _statistics_for(workout: Workout, workout_id: int) -> list[WorkoutStatistics
     return children
 
 
-def _backfill_effort_scores(
-    session, rows: list[dict[str, Any]], new_uuids: set[str]
-) -> None:
+def _backfill_effort_scores(session, rows: list[dict[str, Any]], new_uuids: set[str]) -> None:
     """Set `effort_score` on already-existing workouts whose stored score is `NULL`.
 
     Only the *duplicate* rows (their uuid pre-existed, so the insert skipped them) with
@@ -120,11 +118,15 @@ def upsert_workouts(session, workouts: Iterable[Workout]) -> WorkoutUpsertResult
     _backfill_effort_scores(session, rows, new_uuids)
 
     if new_uuids:
-        id_by_uuid = dict(
-            session.execute(
-                select(Workouts.uuid, Workouts.id).where(Workouts.uuid.in_(new_uuids))
-            ).all()
-        )
+        # Chunked like the shared helper: a first-ever sync can carry more workouts
+        # than SQLite's bind-variable cap allows in a single IN (...) clause.
+        id_by_uuid: dict[str, int] = {}
+        for chunk in iter_uuid_chunks(list(new_uuids)):
+            id_by_uuid.update(
+                session.execute(
+                    select(Workouts.uuid, Workouts.id).where(Workouts.uuid.in_(chunk))
+                ).all()
+            )
         children: list[WorkoutStatistics] = []
         processed: set[str] = set()
         for workout in workouts:

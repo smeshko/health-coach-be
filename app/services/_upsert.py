@@ -13,12 +13,24 @@ Pure: it ``flush()``es but never commits (the `/sync` route owns the transaction
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
+
+# SQLite caps bind variables per statement (SQLITE_MAX_VARIABLE_NUMBER: 999 on
+# older builds, 32,766 since 3.32). A first-ever HealthKit sync ships years of
+# records in one request (observed: 17 MB, >32k rows), so any per-uuid
+# `IN (?, ?, …)` must be chunked well under the oldest limit.
+UUID_CHUNK = 500
+
+
+def iter_uuid_chunks(uuids: Sequence[str]) -> Iterator[Sequence[str]]:
+    """Yield `uuids` in slices small enough for one SQLite `IN (...)` clause."""
+    for start in range(0, len(uuids), UUID_CHUNK):
+        yield uuids[start : start + UUID_CHUNK]
 
 
 def insert_new_by_uuid(
@@ -35,9 +47,9 @@ def insert_new_by_uuid(
         return [], 0, 0
 
     batch_uuids = [r["uuid"] for r in rows]
-    existing: set[str] = set(
-        session.execute(select(model.uuid).where(model.uuid.in_(batch_uuids))).scalars()
-    )
+    existing: set[str] = set()
+    for chunk in iter_uuid_chunks(batch_uuids):
+        existing.update(session.execute(select(model.uuid).where(model.uuid.in_(chunk))).scalars())
 
     new_rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -49,8 +61,11 @@ def insert_new_by_uuid(
         new_rows.append(row)
 
     if new_rows:
+        # executemany (params bound per row) — NOT `.values(new_rows)`, which compiles
+        # one giant multi-VALUES statement binding rows × columns variables and blows
+        # SQLite's bind-variable cap on a large first sync.
         session.execute(
-            sqlite_insert(model).values(new_rows).on_conflict_do_nothing(index_elements=["uuid"])
+            sqlite_insert(model).on_conflict_do_nothing(index_elements=["uuid"]), new_rows
         )
         session.flush()
 
