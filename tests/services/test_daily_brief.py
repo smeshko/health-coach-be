@@ -203,6 +203,75 @@ def test_refresh_deletes_then_regenerates(session) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# ?refresh=true no-op guard — unchanged inputs serve the cache (2026-07-26)
+# --------------------------------------------------------------------------- #
+def test_refresh_with_matching_inputs_is_noop_cache_hit(session) -> None:
+    first = _StubGenerator(marker="v1")
+    get_or_generate_daily(session, DATE, refresh=False, generate=_bind(first, session))
+    second = _StubGenerator(marker="v2")
+    # The stub stored `inputs_snapshot={"readiness": ...}` — supply an equal fingerprint.
+    brief, cached = get_or_generate_daily(
+        session,
+        DATE,
+        refresh=True,
+        generate=_bind(second, session),
+        current_inputs={"readiness": _data()["readiness"]},
+    )
+    assert second.calls == 0  # no regeneration — the refresh was a no-op
+    assert cached is True
+    assert brief.data["marker"] == "v1"  # the stored brief, untouched
+    assert _row_count(session) == 1
+
+
+def test_refresh_with_changed_inputs_regenerates(session) -> None:
+    first = _StubGenerator(marker="v1")
+    get_or_generate_daily(session, DATE, refresh=False, generate=_bind(first, session))
+    second = _StubGenerator(marker="v2")
+    changed = {"readiness": {"score": 41, "band": "amber", "penalties": [{"rule": "sleep"}]}}
+    brief, cached = get_or_generate_daily(
+        session, DATE, refresh=True, generate=_bind(second, session), current_inputs=changed
+    )
+    assert second.calls == 1
+    assert cached is False
+    assert brief.data["marker"] == "v2"
+    assert _row_count(session) == 1
+
+
+def test_refresh_without_current_inputs_regenerates(session) -> None:
+    """`current_inputs=None` (a caller that computed nothing) is the pre-guard behaviour."""
+    first = _StubGenerator(marker="v1")
+    get_or_generate_daily(session, DATE, refresh=False, generate=_bind(first, session))
+    second = _StubGenerator(marker="v2")
+    brief, cached = get_or_generate_daily(
+        session, DATE, refresh=True, generate=_bind(second, session), current_inputs=None
+    )
+    assert second.calls == 1
+    assert cached is False
+    assert brief.data["marker"] == "v2"
+
+
+def test_refresh_with_malformed_stored_snapshot_regenerates(session) -> None:
+    from sqlalchemy import update
+
+    first = _StubGenerator(marker="v1")
+    get_or_generate_daily(session, DATE, refresh=False, generate=_bind(first, session))
+    session.execute(
+        update(Suggestions).where(Suggestions.date == DATE).values(inputs_snapshot="not json")
+    )
+    second = _StubGenerator(marker="v2")
+    brief, cached = get_or_generate_daily(
+        session,
+        DATE,
+        refresh=True,
+        generate=_bind(second, session),
+        current_inputs={"readiness": _data()["readiness"]},
+    )
+    assert second.calls == 1
+    assert cached is False
+    assert brief.data["marker"] == "v2"
+
+
+# --------------------------------------------------------------------------- #
 # No second writer — a duplicate generate without refresh trips UNIQUE(date)
 # --------------------------------------------------------------------------- #
 def test_no_second_writer_unique_date(session) -> None:

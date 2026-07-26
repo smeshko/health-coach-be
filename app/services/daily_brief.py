@@ -17,7 +17,9 @@ gate, ``SafetyRestNode``) writes the one ``suggestions`` row on the metadata ses
 workflow-produced ``intakeYesterday`` through and round-tripping it on a hit. ``?refresh=true``
 is **delete-then-generate** (DB.md §4 verbatim), not an in-place upsert: the prior delete +
 the workflow's insert + the single ``commit`` are one transaction, so the row count stays at
-one. A **gate-tripped** brief is a normal ``GeneratedDailyBrief`` (``triggered=True``) served
+one — except when the stored ``inputs_snapshot`` equals the caller-supplied ``current_inputs``
+fingerprint, in which case the refresh is a **no-op cache hit** (identical deterministic
+inputs ⇒ identical LLM prompt ⇒ regeneration would be sampling noise; 2026-07-26 incident). A **gate-tripped** brief is a normal ``GeneratedDailyBrief`` (``triggered=True``) served
 like any other — **never** an error (the ``BriefGenerationError`` mapping is the route's, for
 in-engine *failures* only).
 
@@ -115,17 +117,44 @@ def _deserialize(row: Suggestions) -> GeneratedDailyBrief:
     )
 
 
+def _refresh_is_noop(row: Suggestions, current_inputs: dict[str, Any] | None) -> bool:
+    """Whether a ``?refresh=true`` over ``row`` may serve the cache instead of regenerating.
+
+    True iff the caller supplied the freshly recomputed deterministic-inputs fingerprint
+    (``compute_inputs_snapshot`` — the same builder ``_persist_brief`` stored the row's
+    ``inputs_snapshot`` through) and it equals the stored one: an equal fingerprint means an
+    identical LLM prompt, so a regeneration could only differ by sampling noise — the
+    2026-07-26 incident, where a client force-refreshing on every open flipped the session
+    pick with zero input change. Anything unparseable / missing / pre-guard (thin legacy
+    snapshots) compares unequal → regenerate honestly.
+    """
+    if current_inputs is None or not row.inputs_snapshot:
+        return False
+    try:
+        stored = json.loads(row.inputs_snapshot)
+    except (TypeError, ValueError):
+        return False
+    return stored == current_inputs
+
+
 def get_or_generate_daily(
     session: Session,
     date: str,
     *,
     refresh: bool,
     generate: DailyBriefGenerator,
+    current_inputs: dict[str, Any] | None = None,
 ) -> tuple[GeneratedDailyBrief, bool]:
     """Get-or-generate the daily brief for ``date``; return ``(brief, cached)``.
 
-    * ``refresh=True`` → ``delete_suggestion`` first (delete-then-generate; DB.md §4) and
-      skip the lookup, then run the miss path.
+    * ``refresh=True`` → look the day up first: when a row exists and its stored
+      ``inputs_snapshot`` equals ``current_inputs`` (the route-recomputed fingerprint of
+      every deterministic feed the LLM reads), the refresh is a **no-op** — serve the
+      stored row ``(brief, True)`` and never touch the LLM (regenerating over identical
+      inputs could only produce sampling noise; 2026-07-26). Otherwise
+      ``delete_suggestion`` (delete-then-generate; DB.md §4) and run the miss path.
+      ``current_inputs=None`` (a caller that computed nothing) always regenerates — the
+      pre-guard behaviour.
     * otherwise look the day up — on a **hit** deserialise the stored row and return
       ``(brief, True)`` **without** calling ``generate`` (no workflow run / LLM on a hit;
       epic §4). A gate-tripped row round-trips as a normal brief, never raised.
@@ -137,9 +166,14 @@ def get_or_generate_daily(
     This service writes **no** ``suggestions`` row itself — the workflow is the sole writer
     (a refresh's prior delete + that insert + this single commit are one transaction, so
     ``UNIQUE(date)`` is never tripped under normal flow). A failed ``generate`` propagates
-    **before** the commit, so a failed run caches nothing.
+    **before** the commit, so a failed run caches nothing. The service stays pure: the
+    fingerprint is a **value** computed by the caller (the route, via
+    ``compute_inputs_snapshot``) — no ``daily_metrics``/profile read happens here.
     """
     if refresh:
+        row = lookup_suggestion(session, date)
+        if row is not None and _refresh_is_noop(row, current_inputs):
+            return _deserialize(row), True
         delete_suggestion(session, date)
     else:
         row = lookup_suggestion(session, date)

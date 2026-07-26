@@ -544,7 +544,7 @@ def test_persist_suggestion_node_writes_back_readiness_band(session, profile_pat
     assert dm.readiness_score == 100 and dm.band == "green"
 
 
-def test_persist_inputs_snapshot_carries_readiness_gate_band_constants(session, profile_path):
+def test_persist_inputs_snapshot_carries_full_deterministic_fingerprint(session, profile_path):
     from app.core.daily_adjuster import PersistSuggestionNode
 
     ctx = _clean_persist_ctx(session)
@@ -552,7 +552,32 @@ def test_persist_inputs_snapshot_carries_readiness_gate_band_constants(session, 
 
     row = session.execute(select(Suggestions)).scalars().one()
     snapshot = json.loads(row.inputs_snapshot)
-    assert set(snapshot) == {"readiness", "safety_gate", "band", "constants"}
+    assert set(snapshot) == {
+        "readiness",
+        "safety_gate",
+        "band",
+        "constants",
+        "week_plan_cards",
+        "flags",
+        "live_weight_kg",
+        "intake_yesterday",
+        "constitution_version",
+    }
+
+
+def test_persist_inputs_snapshot_matches_recomputed_fingerprint(session, profile_path):
+    """The ?refresh=true no-op guard's soundness: the snapshot `_persist_brief` stores must
+    equal `compute_inputs_snapshot` recomputed over the same DB state — both sides go
+    through the ONE canonical builder, so a drift here would silently break the guard."""
+    from app.core.daily_adjuster import PersistSuggestionNode, compute_inputs_snapshot
+
+    ctx = _clean_persist_ctx(session)
+    asyncio.run(PersistSuggestionNode(task_context=ctx).process(ctx))
+
+    row = session.execute(select(Suggestions)).scalars().one()
+    stored = json.loads(row.inputs_snapshot)
+    recomputed = json.loads(json.dumps(compute_inputs_snapshot(session, TODAY)))
+    assert stored == recomputed
 
 
 def test_persist_suggestion_node_does_not_commit_or_lookup(session, profile_path, monkeypatch):

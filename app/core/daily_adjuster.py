@@ -422,6 +422,68 @@ def _gate_dict(gate: SafetyGate) -> dict:
     }
 
 
+def compute_inputs_snapshot(session: Session, day: date) -> dict:
+    """The canonical deterministic-inputs fingerprint for ``day``'s brief.
+
+    Recomputes every code-computed feed the daily LLM context reads (the daily slots of
+    ``build_daily_computed``: readiness, gate, week-plan cards, check-in flags, live
+    weight, constants, yesterday's intake) plus the ``constitution_version``, as one
+    JSON-able dict. **One builder, two readers** — ``_persist_brief`` stores it as
+    ``suggestions.inputs_snapshot`` and the ``?refresh=true`` guard (E11·P3) recomputes it
+    to decide whether a forced refresh may serve the cached row: an equal fingerprint means
+    an identical LLM prompt, so regenerating could only produce sampling noise (the
+    2026-07-26 session-pick flip). Building both sides through this one function is what
+    makes the equality comparison sound — never hand-assemble either side.
+
+    Limitation: a `profile.yaml` edit without a `constitution_version` bump changes the
+    SYSTEM prompt but not this fingerprint (only ``constants``/macros surface here).
+    """
+    profile = load_profile()
+    today = _metrics_row(session, day)
+    yesterday = _metrics_row(session, day - timedelta(days=1))
+    checkin = _checkin_row(session, day)
+    readiness = compute_readiness(
+        sleep_h=getattr(today, "sleep_h", None),
+        hrv_sdnn=getattr(today, "hrv_sdnn", None),
+        hrv_30d_mean=getattr(today, "hrv_30d_mean", None),
+        hrv_30d_sd=getattr(today, "hrv_30d_sd", None),
+        rhr=getattr(today, "rhr", None),
+        rhr_30d_mean=getattr(today, "rhr_30d_mean", None),
+        yesterday_hard_day=bool(getattr(yesterday, "hard_day", 0) or 0),
+    )
+    gate = evaluate_safety_gate(
+        gi_symptoms=getattr(checkin, "gi_symptoms", None),
+        illness=getattr(checkin, "illness", None),
+        knee_pain=getattr(checkin, "knee_pain", None),
+        sleep_h=getattr(today, "sleep_h", None),
+        rhr=getattr(today, "rhr", None),
+        rhr_30d_mean=getattr(today, "rhr_30d_mean", None),
+        hrv_sdnn=getattr(today, "hrv_sdnn", None),
+        hrv_30d_mean=getattr(today, "hrv_30d_mean", None),
+    )
+    live_weight = _live_weight(session, day, profile)
+    # Yesterday's intake is referenced against the same neutral `moderate` target the
+    # ComputeReadinessNode bridge uses (today's day-type is the LLM's own later pick).
+    reference_target = compute_macro_focus(
+        day_type=DayType.moderate,
+        weight_kg=live_weight,
+        nutrition=profile.nutrition,
+        athlete=profile.athlete,
+    )
+    intake = derive_intake_summary(yesterday, reference_target)
+    return {
+        "readiness": _readiness_dict(readiness),
+        "safety_gate": _gate_dict(gate),
+        "band": readiness.band.value,
+        "constants": _daily_constants(profile),
+        "week_plan_cards": sorted(c.value for c in _week_plan_cards(session, day)),
+        "flags": _checkin_flags(session, day),
+        "live_weight_kg": live_weight,
+        "intake_yesterday": intake.model_dump(mode="json") if intake is not None else None,
+        "constitution_version": profile.constitution_version,
+    }
+
+
 def _persist_brief(
     task_context: TaskContext,
     *,
@@ -455,7 +517,6 @@ def _persist_brief(
 
     readiness_d = _readiness_dict(readiness)
     gate_d = _gate_dict(gate)
-    constants = task_context.metadata.get("computed", {}).get("constants")
     data = {
         "date": date_str,
         "readiness": readiness_d,
@@ -470,12 +531,10 @@ def _persist_brief(
         ),
     }
     brief = {"data": data, "narrative": [n.model_dump(mode="json") for n in narrative]}
-    inputs_snapshot = {
-        "readiness": readiness_d,
-        "safety_gate": gate_d,
-        "band": readiness.band.value,
-        "constants": constants,
-    }
+    # Recomputed through the one canonical builder (not assembled from the context values
+    # above) so the stored fingerprint is byte-comparable with the ?refresh=true guard's
+    # recomputation (E11·P3) — the two sides must serialize identically to compare equal.
+    inputs_snapshot = compute_inputs_snapshot(session, event.date)
 
     session.execute(
         insert(Suggestions).values(

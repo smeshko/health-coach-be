@@ -236,10 +236,41 @@ def test_refresh_regenerates(ctx):
     stub2 = _StubGenerator(marker="v2")
     _use_generator(app, stub2)
 
+    # The stub stored a thin (pre-guard) `inputs_snapshot`, which never equals the route's
+    # recomputed fingerprint — so this also pins the legacy-row behaviour: regenerate.
     resp = client.post("/brief/daily?refresh=true", json={}, headers=AUTH)
     assert resp.status_code == 200
     assert resp.json()["data"]["cached"] is False
     assert stub2.calls == 1
+    assert _count(db_path) == 1
+
+
+def test_refresh_with_unchanged_inputs_is_noop_cache_hit(ctx):
+    """The 2026-07-26 defense: `?refresh=true` over a row whose stored `inputs_snapshot`
+    equals the freshly recomputed fingerprint serves the cache — no delete, no generate."""
+    from datetime import date as date_type
+
+    from app.core.daily_adjuster import compute_inputs_snapshot
+
+    client, app, db_path = ctx
+    _use_generator(app, _StubGenerator(marker="v1"))
+    client.post("/brief/daily", json={}, headers=AUTH)
+
+    # Replace the stub's thin snapshot with the canonical fingerprint for this DB state
+    # (what the real PersistSuggestionNode stores) so the route's recomputation matches.
+    with Session(get_engine()) as fingerprint_session:
+        snapshot = compute_inputs_snapshot(
+            fingerprint_session, date_type.fromisoformat(CURRENT_DATE)
+        )
+    with sqlite3.connect(db_path) as raw:
+        raw.execute("UPDATE suggestions SET inputs_snapshot = ?", (json.dumps(snapshot),))
+
+    stub2 = _StubGenerator(marker="v2")
+    _use_generator(app, stub2)
+    resp = client.post("/brief/daily?refresh=true", json={}, headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["cached"] is True
+    assert stub2.calls == 0  # the LLM path never ran
     assert _count(db_path) == 1
 
 

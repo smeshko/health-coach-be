@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import require_auth
 from app.api.schemas.daily import DailyBrief, DailyBriefData, DailyBriefRequest
-from app.core.daily_adjuster import DailyAdjuster, DailyAdjusterEvent
+from app.core.daily_adjuster import DailyAdjuster, DailyAdjusterEvent, compute_inputs_snapshot
 from app.core.task_context import TaskContext
 from app.core.time import get_clock, now_sofia, period_date
 from app.database.engine import get_session
@@ -115,10 +115,20 @@ def daily_brief(
     get-or-generate service (which commits on a miss/refresh), and assembles the
     `{ data, narrative }` envelope with `date`/`generatedAt`/`cached`/`constitutionVersion`
     set. A tripped safety gate is served `200` as a normal brief (never raised).
+    A `?refresh=true` whose recomputed inputs fingerprint matches the stored row is a
+    no-op cache hit (`cached=true`) — no delete, no LLM run.
     """
     key = body.date.isoformat() if body.date else period_date(now_sofia(clock))
 
-    brief, cached = get_or_generate_daily(session, key, refresh=refresh, generate=generate)
+    # The ?refresh=true guard's fingerprint (computed only when it can matter): the service
+    # serves the cached row when this equals the stored `inputs_snapshot` — a forced refresh
+    # over unchanged deterministic inputs must not re-roll the LLM's session pick (2026-07-26).
+    current_inputs = (
+        compute_inputs_snapshot(session, date_type.fromisoformat(key)) if refresh else None
+    )
+    brief, cached = get_or_generate_daily(
+        session, key, refresh=refresh, generate=generate, current_inputs=current_inputs
+    )
 
     # `generatedAt`/`constitutionVersion` are stamped onto the row by the workflow's
     # PersistSuggestionNode/SafetyRestNode. A hit deserialises them off the row; a fresh
