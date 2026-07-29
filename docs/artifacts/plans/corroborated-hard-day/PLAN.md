@@ -1,6 +1,6 @@
 # Plan: Corroborated hard-day classification
 
-Status: in-progress
+Status: done
 Branch: bug/corroborated-hard-day
 Risk: medium
 Epic: none
@@ -101,29 +101,29 @@ fallback.
 
 ## Acceptance Criteria
 
-- [ ] July 27-shaped fixture (HIIT-typed, effort 3, in-window HR all z1/z2) → `hard_day = 0`.
-- [ ] Hard untyped fixture (running, effort 9, duration ≥ 20 min) → `hard_day = 1`; same via
+- [x] July 27-shaped fixture (HIIT-typed, effort 3, in-window HR all z1/z2) → `hard_day = 0`.
+- [x] Hard untyped fixture (running, effort 9, duration ≥ 20 min) → `hard_day = 1`; same via
       in-window z4+z5 ≥ 15 with null effort.
-- [ ] Typed workout with no effort and no in-window HR → `hard_day = 1` (fallback preserved).
-- [ ] **Sparse-coverage fallback** (round-1 #2): typed boxing, no effort, HR covering only
+- [x] Typed workout with no effort and no in-window HR → `hard_day = 1` (fallback preserved).
+- [x] **Sparse-coverage fallback** (round-1 #2): typed boxing, no effort, HR covering only
       the first 3 min of a 50-min window, all z1 → `hard_day = 1` (coverage below
       `HARD_HR_COVERAGE_MIN_FRAC` → zones absent → fallback). Same fixture with HR covering
       ≥ 50 % of the window, all z1 → `hard_day = 0`.
-- [ ] **Promotion is coverage-independent** (round-2 #4): 16 credited in-window z4 minutes
+- [x] **Promotion is coverage-independent** (round-2 #4): 16 credited in-window z4 minutes
       in a 50-min workout (32 % coverage, below the gate) → `hard_day = 1`.
-- [ ] **Effort validity** (round-1 #3): `effort_score = 99` on an easy 30-min untyped
+- [x] **Effort validity** (round-1 #3): `effort_score = 99` on an easy 30-min untyped
       workout → `hard_day = 0` (invalid → absent, no promotion); `effort_score = -3` on a
       typed boxing workout with no HR → `hard_day = 1` (invalid → absent → fallback holds).
-- [ ] **Invalid effort is correctable** (round-2 #5, round-3 #1): a workout stored with
+- [x] **Invalid effort is correctable** (round-2 #5, round-3 #1): a workout stored with
       `effort_score = 99` accepts a later synced `9` for the same uuid, including when both
       arrive in the *same* payload; a valid stored score is still never overwritten.
-- [ ] **Per-workout isolation** (round-1 #4): 20 in-window z4 min earned *outside* the
+- [x] **Per-workout isolation** (round-1 #4): 20 in-window z4 min earned *outside* the
       workout window → that workout does not flag; two workouts of 8 in-window z4 min each
       (16 day-total) → `hard_day = 0` (no cross-workout aggregation).
-- [ ] Duration ≥ 90 min still flags regardless of signals; boundary tests inclusive (≥) for
+- [x] Duration ≥ 90 min still flags regardless of signals; boundary tests inclusive (≥) for
       7 / 20 / 15 / 90.
-- [ ] All existing engine tests pass; `pytest` green.
-- [ ] DB.md §2 `hard_day` description matches the implemented rule.
+- [x] All existing engine tests pass; `pytest` green.
+- [x] DB.md §2 `hard_day` description matches the implemented rule.
 
 ## Tasks
 
@@ -134,4 +134,4 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-002: Symmetric corroborated hard_day() with typed fallback (depends on TASK-001)
 - [x] TASK-005: Let a valid effort_score replace an invalid stored one (depends on TASK-002)
 - [x] TASK-003: Docs: DB.md hard_day wording + Decision 3 revision record (depends on TASK-002)
-- [ ] TASK-004: Final Validation
+- [x] TASK-004: Final Validation
