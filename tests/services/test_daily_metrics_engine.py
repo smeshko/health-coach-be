@@ -32,6 +32,7 @@ from app.services.daily_metrics_engine import (
     MIN_BASELINE_SAMPLES,
     PRESERVED_COLUMNS,
     DailyMetricsEngine,
+    _workout_z45_minutes,
     active_energy,
     body_weight,
     current_body_weight,
@@ -526,12 +527,20 @@ def test_engine_recomputes_both_rows_for_cross_midnight_sample(engine_db: str) -
 # TASK-003: nutrition intake + latest body weight + hard_day flag.
 # ---------------------------------------------------------------------------
 def _workout(
-    activity_type: str, start: str, *, duration: float, unit: str = "s", origin: str = "sync"
+    activity_type: str,
+    start: str,
+    *,
+    duration: float,
+    unit: str = "s",
+    origin: str = "sync",
+    end: str | None = None,
 ) -> Workouts:
+    # `end` defaults to `start` (a zero-length window): the legacy fixtures carry no HR
+    # window at all, so they exercise the "zones absent" typed fallback.
     return Workouts(
         activity_type=activity_type,
         start_date=start,
-        end_date=start,
+        end_date=start if end is None else end,
         duration=duration,
         duration_unit=unit,
         origin=origin,
@@ -1363,3 +1372,204 @@ def test_forward_window_cascade_via_source_records(engine_db: str) -> None:
     assert mean_of(d + timedelta(days=29)) == pytest.approx(51.0)
     # D+30's window is [D+1, D+30] — excludes D — and it is NOT in the cascade → unchanged.
     assert mean_of(d + timedelta(days=30)) == pytest.approx(50.0)
+
+
+# ---------------------------------------------------------------------------
+# corroborated-hard-day TASK-001: per-workout in-window z4+z5 minutes helper.
+# The corroboration signal for `hard_day` — credited strictly inside the workout's
+# own [start_date, end_date] window, from the single highest-priority HR source.
+# Zone bounds (profile.yaml): z1[98,127) z2[127,152) z3[152,170) z4[170,179) z5[179,195].
+# ---------------------------------------------------------------------------
+W_START = "2026-06-01T18:00:00+03:00"
+W_END = "2026-06-01T18:50:00+03:00"  # a 50-minute window
+
+
+def _win_workout(**over) -> Workouts:
+    """A 50-min untyped workout on D1 with a real start/end window."""
+    base = {"activity_type": "running", "start": W_START, "duration": 50.0, "unit": "min"}
+    base.update(over)
+    return _workout(
+        base["activity_type"],
+        base["start"],
+        duration=base["duration"],
+        unit=base["unit"],
+        end=base.get("end", W_END),
+    )
+
+
+def _z45(session: Session, w: Workouts) -> tuple[float, float] | None:
+    return _workout_z45_minutes(session, w, profile=PROFILE)
+
+
+def test_workout_z45_none_when_no_hr_overlaps_the_window(session: Session) -> None:
+    # HR exists on the day, but entirely OUTSIDE the workout window → zones absent.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T10:00:00+03:00", end="2026-06-01T10:30:00+03:00", value=172.0
+        ),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) is None
+
+
+def test_workout_z45_none_when_window_is_undefined(session: Session) -> None:
+    # `end_date is None` and a zero-length window both leave the window undefined.
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end=W_END, value=172.0),
+    )
+    no_end = _win_workout()
+    no_end.end_date = None
+    _seed(session, no_end)
+    assert _z45(session, no_end) is None
+
+    zero_len = _win_workout(end=W_START)
+    _seed(session, zero_len)
+    assert _z45(session, zero_len) is None
+
+
+def test_workout_z45_interval_credits_only_the_window_overlap(session: Session) -> None:
+    # A z4 interval 17:50→18:10 half-overlaps the 18:00→18:50 window → 10 min, not 20.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T17:50:00+03:00", end="2026-06-01T18:10:00+03:00", value=172.0
+        ),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(10.0)
+    assert credited == pytest.approx(10.0)
+
+
+def test_workout_z45_sums_z4_and_z5_only(session: Session) -> None:
+    # z4 + z5 are the signal; z1–z3 feed `credited_minutes` but never the z45 sum.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T18:00:00+03:00", end="2026-06-01T18:06:00+03:00", value=172.0
+        ),
+        _rec(
+            "heart_rate", "2026-06-01T18:06:00+03:00", end="2026-06-01T18:10:00+03:00", value=185.0
+        ),
+        _rec(
+            "heart_rate", "2026-06-01T18:10:00+03:00", end="2026-06-01T18:20:00+03:00", value=130.0
+        ),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(10.0)  # 6 min z4 + 4 min z5
+    assert credited == pytest.approx(20.0)  # + 10 min z2
+
+
+def test_workout_z45_instant_chain_credits_capped_gaps(session: Session) -> None:
+    # Live Watch point samples inside the window credit the gap to the next sample,
+    # capped at 5 min (`_INSTANT_HR_MAX_CREDIT_S`) — same rule as `zone_minutes`.
+    _seed(
+        session,
+        _rec("heart_rate", "2026-06-01T18:00:00+03:00", value=172.0),  # → 18:04 = 4 min z4
+        _rec("heart_rate", "2026-06-01T18:04:00+03:00", value=185.0),  # → 18:24, capped 5 min z5
+        _rec("heart_rate", "2026-06-01T18:24:00+03:00", value=110.0),  # last of all → 0
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(9.0)
+    assert credited == pytest.approx(9.0)  # the trailing z1 sample credits 0
+
+
+def test_workout_z45_instant_successor_context_comes_from_outside_the_window(
+    session: Session,
+) -> None:
+    """round-1 #5: the last in-window instant must credit its real gap, clipped to the
+    window end — a filter-to-window-first implementation gives it 0 and lands at 10.0,
+    just under the 15.0 promotion threshold."""
+    _seed(
+        session,
+        _rec("heart_rate", "2026-06-01T18:00:00+03:00", value=172.0),  # → 18:05 = 5 min z4
+        _rec("heart_rate", "2026-06-01T18:05:00+03:00", value=172.0),  # → 18:10 = 5 min z4
+        _rec("heart_rate", "2026-06-01T18:10:00+03:00", value=172.0),  # successor at 18:52
+        # Successor OUTSIDE the window: gap 42 min → capped 5 min, clipped to 18:50 (40) → 5.
+        _rec("heart_rate", "2026-06-01T18:52:00+03:00", value=110.0),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(15.0)  # NOT 10.0
+    assert credited == pytest.approx(15.0)
+
+
+def test_workout_z45_restricted_to_the_single_highest_priority_source(session: Session) -> None:
+    # Watch (rank 0) outranks the phone (rank 2); the phone's z5 minutes must not add.
+    _seed(
+        session,
+        _rec(
+            "heart_rate",
+            "2026-06-01T18:00:00+03:00",
+            end="2026-06-01T18:12:00+03:00",
+            value=172.0,
+            source="Apple Watch",
+        ),
+        _rec(
+            "heart_rate",
+            "2026-06-01T18:00:00+03:00",
+            end="2026-06-01T18:30:00+03:00",
+            value=185.0,
+            source="itsonev-ip15",
+        ),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(12.0)  # Watch only — NOT 42.0
+    assert credited == pytest.approx(12.0)
+
+
+def test_workout_z45_reports_sparse_credited_coverage(session: Session) -> None:
+    # round-1 #2: 3 credited minutes of a 50-min window — TASK-002's coverage gate needs
+    # `credited_minutes` to tell this from a fully-recorded easy session.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T18:00:00+03:00", end="2026-06-01T18:03:00+03:00", value=110.0
+        ),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(0.0)
+    assert credited == pytest.approx(3.0)
+
+
+def test_workout_z45_is_zero_not_none_when_the_window_is_covered_but_easy(
+    session: Session,
+) -> None:
+    # Data present, no hard minutes → (0.0, covered) — the "present and zero" case the
+    # coverage gate is allowed to trust (mirrors `zone_minutes`' no-data convention).
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end=W_END, value=110.0),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(50.0))
+
+
+def test_zone_minutes_unchanged_by_the_window_credit_extraction(session: Session) -> None:
+    # The shared window-crediting core must leave `zone_minutes` byte-identical.
+    _seed(
+        session,
+        _rec(
+            "heart_rate", "2026-06-01T09:00:00+03:00", end="2026-06-01T09:10:00+03:00", value=130.0
+        ),
+        _rec("heart_rate", "2026-06-01T10:00:00+03:00", value=155.0),
+        _rec("heart_rate", "2026-06-01T10:03:00+03:00", value=155.0),
+    )
+    z = zone_minutes(session, D1, profile=PROFILE)
+    assert z["z2_min"] == pytest.approx(10.0)
+    assert z["z3_min"] == pytest.approx(3.0)
+    assert z["z4_min"] == pytest.approx(0.0)

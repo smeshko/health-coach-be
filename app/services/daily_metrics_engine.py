@@ -320,14 +320,23 @@ def _sofia_day_bounds(day: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def _in_day_overlap_seconds(r: Records, day: date) -> float:
-    """Seconds of `[start_date, end_date]` that fall inside the Sofia `day`."""
+def _overlap_seconds(r: Records, lo: datetime, hi: datetime) -> float:
+    """Seconds of the interval `[start_date, end_date]` that fall inside `[lo, hi]`.
+
+    The window-generic core behind `_in_day_overlap_seconds` — a Sofia day and a
+    workout's start–end window credit interval samples by exactly the same rule, so
+    the two callers cannot drift (corroborated-hard-day TASK-001).
+    """
     if r.end_date is None:
         return 0.0
     start, end = parse_ts(r.start_date), parse_ts(r.end_date)
-    day_start, day_end = _sofia_day_bounds(day)
-    lo, hi = max(start, day_start), min(end, day_end)
-    return max(0.0, (hi - lo).total_seconds())
+    a, b = max(start, lo), min(end, hi)
+    return max(0.0, (b - a).total_seconds())
+
+
+def _in_day_overlap_seconds(r: Records, day: date) -> float:
+    """Seconds of `[start_date, end_date]` that fall inside the Sofia `day`."""
+    return _overlap_seconds(r, *_sofia_day_bounds(day))
 
 
 # ---------------------------------------------------------------------------
@@ -417,26 +426,83 @@ def _is_instant(r: Records) -> bool:
     return r.end_date is None or r.end_date == r.start_date
 
 
-def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple[Records, float]]:
-    """In-day credit for each of `day`'s instant HR samples: the gap to the NEXT
-    instant sample (successors on a neighbour day count — `instants` is the full
-    ±1-day window), capped at `_INSTANT_HR_MAX_CREDIT_S` and clipped to the Sofia
-    day end. The window's last sample has no successor and credits 0 (conservative —
-    one background reading's worth at most)."""
+def _instant_credit_seconds(
+    instants: list[Records], lo: datetime, hi: datetime
+) -> list[tuple[Records, float]]:
+    """Credit each instant sample **starting inside `[lo, hi)`** the gap to the NEXT
+    instant sample, capped at `_INSTANT_HR_MAX_CREDIT_S` and clipped to `hi`.
+
+    The window-generic core behind `_instant_hr_credit_seconds`. `instants` is always
+    the wider (±1-day) source list, not the in-range subset: the successor supplying a
+    boundary sample's gap routinely sits **outside** `[lo, hi)`, so filtering first
+    would zero the last in-range sample (corroborated-hard-day round-1 #5). Only the
+    very last sample of the whole list has no successor and credits 0 (conservative —
+    one background reading's worth at most).
+    """
     ordered = sorted(instants, key=lambda r: parse_ts(r.start_date))
-    _, day_end = _sofia_day_bounds(day)
     credits: list[tuple[Records, float]] = []
     for i, r in enumerate(ordered):
-        if to_sofia(parse_ts(r.start_date)).date() != day:
+        start = parse_ts(r.start_date)
+        if not lo <= start < hi:
             continue  # a window neighbour: successor material only, credits nothing here
         if i + 1 == len(ordered):
             credits.append((r, 0.0))
             continue
-        start = parse_ts(r.start_date)
         gap = (parse_ts(ordered[i + 1].start_date) - start).total_seconds()
-        credit = min(gap, _INSTANT_HR_MAX_CREDIT_S, (day_end - start).total_seconds())
+        credit = min(gap, _INSTANT_HR_MAX_CREDIT_S, (hi - start).total_seconds())
         credits.append((r, max(0.0, credit)))
     return credits
+
+
+def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple[Records, float]]:
+    """In-day credit for each of `day`'s instant HR samples (see `_instant_credit_seconds`;
+    `[lo, hi)` is the Sofia day, and `to_sofia(start).date() == day` is exactly that range)."""
+    return _instant_credit_seconds(instants, *_sofia_day_bounds(day))
+
+
+def _zone_minutes_in_range(
+    window_rows: list[Records], lo: datetime, hi: datetime, *, profile: Profile
+) -> dict[str, float] | None:
+    """Zone-minutes credited inside `[lo, hi)` from `window_rows`, or `None` when no
+    sample contributes to that range at all (the "no data" convention).
+
+    The shared crediting core: `zone_minutes` passes the Sofia day bounds,
+    `_workout_z45_minutes` passes one workout's start–end window, so the day-level
+    column and the classifier's per-workout signal can never drift apart
+    (corroborated-hard-day TASK-001). `window_rows` must be the WIDER (±1-day) row set,
+    not the in-range subset — the source pick reads the in-range rows, but crediting
+    then runs over that source's full row set so a boundary instant still finds its
+    successor.
+    """
+
+    def contributes(r: Records) -> bool:
+        if _is_instant(r):
+            return lo <= parse_ts(r.start_date) < hi
+        return _overlap_seconds(r, lo, hi) > 0
+
+    in_range = [r for r in window_rows if contributes(r)]
+    if not in_range:
+        return None
+    chosen = _choose_source(in_range, weight=lambda r: 1.0)
+    picked_window = [r for r in window_rows if r.source_name == chosen]
+    bounds = profile.zone_bounds()
+    minutes = {z: 0.0 for z in _ZONE_KEYS}
+    credited = [
+        (r, _overlap_seconds(r, lo, hi))
+        for r in picked_window
+        if not _is_instant(r) and contributes(r)
+    ]
+    credited += _instant_credit_seconds([r for r in picked_window if _is_instant(r)], lo, hi)
+    for r, seconds in credited:
+        zone = _bucket_zone(r.value, bounds)
+        if zone is not None:
+            minutes[zone] += seconds / 60.0
+    return minutes
+
+
+def _hr_window_rows(session: Session, day: date) -> list[Records]:
+    """`day`'s ±1-day `heart_rate` rows with a value (seed-superseding already applied)."""
+    return [r for r in _records_of_types(session, day, {"heart_rate"}) if r.value is not None]
 
 
 def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, float | None]:
@@ -450,36 +516,44 @@ def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, 
     `_INSTANT_HR_MAX_CREDIT_S`. A day with no in-day HR sample of either form →
     every `z*_min` is `None` (no-data convention).
     """
-    window_rows = [
-        r for r in _records_of_types(session, day, {"heart_rate"}) if r.value is not None
-    ]
-
-    def _contributes(r: Records) -> bool:
-        if _is_instant(r):
-            return to_sofia(parse_ts(r.start_date)).date() == day
-        return _in_day_overlap_seconds(r, day) > 0
-
-    in_day = [r for r in window_rows if _contributes(r)]
-    if not in_day:
-        return {col: None for col in ZONE_COLUMNS}
     # Choose the day's source from the in-day rows, then credit from the full window's
     # rows of that source, so an instant sample just before midnight still finds its
-    # next-day successor for the gap computation.
-    chosen = _choose_source(in_day, weight=lambda r: 1.0)
-    picked_window = [r for r in window_rows if r.source_name == chosen]
-    bounds = profile.zone_bounds()
-    minutes = {z: 0.0 for z in _ZONE_KEYS}
-    credited = [
-        (r, _in_day_overlap_seconds(r, day))
-        for r in picked_window
-        if not _is_instant(r) and _contributes(r)
-    ]
-    credited += _instant_hr_credit_seconds([r for r in picked_window if _is_instant(r)], day)
-    for r, seconds in credited:
-        zone = _bucket_zone(r.value, bounds)
-        if zone is not None:
-            minutes[zone] += seconds / 60.0
+    # next-day successor for the gap computation — see `_zone_minutes_in_range`.
+    minutes = _zone_minutes_in_range(
+        _hr_window_rows(session, day), *_sofia_day_bounds(day), profile=profile
+    )
+    if minutes is None:
+        return {col: None for col in ZONE_COLUMNS}
     return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
+
+
+def _workout_z45_minutes(
+    session: Session, w: Workouts, *, profile: Profile
+) -> tuple[float, float] | None:
+    """One workout's **in-window** `(z4+z5 minutes, credited minutes)`, or `None` when no
+    HR sample overlaps its `[start_date, end_date]` window.
+
+    The corroboration signal `hard_day` reads (DECISIONS.md Decisions 3 & 6). Credit is
+    strictly per workout: minutes earned elsewhere in the day never contribute, and two
+    workouts' windows are never summed. `credited_minutes` is the total across **all five
+    zones**, not just z4/z5 — it is what the coverage gate uses to tell a genuinely easy
+    session (fully recorded, no hard minutes) from one the watch barely recorded.
+
+    `None` means *the signal is absent*, mirroring `zone_minutes`' all-`None` no-data
+    convention; a covered-but-easy window returns `(0.0, credited)`, which is a real
+    reading. An undefined window (`end_date is None`, or end at/before start) is absent
+    too — there is nothing to credit against.
+    """
+    if w.end_date is None:
+        return None
+    lo, hi = parse_ts(w.start_date), parse_ts(w.end_date)
+    if hi <= lo:
+        return None
+    day = to_sofia(lo).date()
+    minutes = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
+    if minutes is None:
+        return None
+    return minutes["z4"] + minutes["z5"], sum(minutes.values())
 
 
 # ---------------------------------------------------------------------------
