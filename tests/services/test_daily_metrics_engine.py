@@ -1596,6 +1596,33 @@ def test_workout_z45_coverage_counts_above_z5_samples(session: Session) -> None:
     assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(30.0))
 
 
+def test_workout_z45_dedupes_overlapping_hard_samples(session: Session) -> None:
+    """review round-2 #1: two overlapping 8-min z4 intervals are 8 unique hard minutes,
+    not 16 — a per-sample sum would fabricate a promotion past `HARD_Z45_MIN` from wall
+    clock the window does not contain."""
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end="2026-06-01T18:08:00+03:00", value=172.0),
+        _rec("heart_rate", W_START, end="2026-06-01T18:08:00+03:00", value=175.0),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) == (pytest.approx(8.0), pytest.approx(8.0))
+
+
+def test_workout_z45_implausible_values_prove_no_coverage(session: Session) -> None:
+    # review round-2 #2: 0-bpm / negative values cannot represent a heartbeat — they
+    # bucket to no zone AND earn no coverage, so the signal stays effectively absent.
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end="2026-06-01T18:25:00+03:00", value=0.0),
+        _rec("heart_rate", "2026-06-01T18:25:00+03:00", end=W_END, value=-5.0),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(0.0))
+
+
 def test_zone_minutes_unchanged_by_the_window_credit_extraction(session: Session) -> None:
     # The shared window-crediting core must leave `zone_minutes` byte-identical.
     _seed(
@@ -1757,6 +1784,26 @@ def test_hard_day_below_z1_recording_is_real_coverage_and_demotes(session: Sessi
     _seed(session, _hr_span(W_START, W_END, 90.0))  # 50 min under z1's 98-bpm floor
     _seed(session, _workout("boxing", W_START, duration=50.0, unit="min", end=W_END))
     assert _hard(session) == 0
+
+
+def test_hard_day_overlapping_hard_samples_cannot_fabricate_promotion(session: Session) -> None:
+    """review round-2 #1: duplicated z4 intervals must not turn 8 real hard minutes into
+    a 16-minute promotion on an untyped workout."""
+    _seed(
+        session,
+        _hr_span(W_START, "2026-06-01T18:08:00+03:00", 172.0),
+        _hr_span(W_START, "2026-06-01T18:08:00+03:00", 175.0),
+    )
+    _seed(session, _workout("running", W_START, duration=50.0, unit="min", end=W_END))
+    assert _hard(session) == 0
+
+
+def test_hard_day_zero_bpm_recording_cannot_demote_a_typed_workout(session: Session) -> None:
+    """review round-2 #2: a full-window 0-bpm interval is malformed data, not proof the
+    session was easy — implausible values earn no coverage, so the fallback holds."""
+    _seed(session, _hr_span(W_START, W_END, 0.0))
+    _seed(session, _workout("boxing", W_START, duration=50.0, unit="min", end=W_END))
+    assert _hard(session) == 1
 
 
 def test_hard_day_out_of_range_high_effort_is_absent_not_a_promotion(session: Session) -> None:

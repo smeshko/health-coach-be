@@ -28,6 +28,7 @@ import re
 import statistics
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -461,6 +462,27 @@ def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple
     return _instant_credit_seconds(instants, *_sofia_day_bounds(day))
 
 
+# The human-plausible heart-rate range (bpm) for a *coverage-proving* HR sample. The sync
+# `HealthRecord.value` is an unconstrained float, so 0 / negative / NaN / `±inf` are storable;
+# such a value cannot represent a heartbeat, so it must not count as evidence the sensor was
+# recording (review round-2 #2) — otherwise a full-window 0-bpm interval would demote a typed
+# workout. Wide sanity guards in the `MIN/MAX_PLAUSIBLE_BODY_WEIGHT_KG` style: the lowest
+# recorded human resting HR is ~25 bpm and no human heart sustains > 250, so no real reading
+# is ever excluded. Zone bucketing needs no such gate — `_bucket_zone` already rejects
+# anything outside the profile's z1–z5 bounds (NaN/±inf compare false).
+MIN_PLAUSIBLE_HR_BPM: float = 25.0
+MAX_PLAUSIBLE_HR_BPM: float = 250.0
+
+
+def _is_plausible_hr(bpm: float | None) -> bool:
+    """Whether `bpm` could be a real heartbeat reading (finite, within the plausible range)."""
+    return (
+        bpm is not None
+        and math.isfinite(bpm)
+        and MIN_PLAUSIBLE_HR_BPM <= bpm <= MAX_PLAUSIBLE_HR_BPM
+    )
+
+
 def _union_seconds(spans: list[tuple[datetime, datetime]]) -> float:
     """Total seconds covered by the **union** of `spans` (overlaps counted once)."""
     total = 0.0
@@ -478,11 +500,20 @@ def _union_seconds(spans: list[tuple[datetime, datetime]]) -> float:
     return total
 
 
+class _WindowCredit(NamedTuple):
+    """What one `[lo, hi)` window's HR credits, split by consumer (see
+    `_zone_minutes_in_range`)."""
+
+    minutes: dict[str, float]  # per-zone, per-sample-SUM — the z*_min day-column semantics
+    z45_min: float  # UNION of z4/z5-bucketed spans — the classifier's promotion signal
+    covered_min: float  # UNION of plausible-sample spans — the classifier's coverage gate
+
+
 def _zone_minutes_in_range(
     window_rows: list[Records], lo: datetime, hi: datetime, *, profile: Profile
-) -> tuple[dict[str, float], float] | None:
-    """`(zone-minutes, covered-minutes)` credited inside `[lo, hi)` from `window_rows`,
-    or `None` when no sample contributes to that range at all (the "no data" convention).
+) -> _WindowCredit | None:
+    """The HR credit inside `[lo, hi)` from `window_rows` (`_WindowCredit`), or `None`
+    when no sample contributes to that range at all (the "no data" convention).
 
     The shared crediting core: `zone_minutes` passes the Sofia day bounds,
     `_workout_z45_minutes` passes one workout's start–end window, so the day-level
@@ -492,12 +523,18 @@ def _zone_minutes_in_range(
     then runs over that source's full row set so a boundary instant still finds its
     successor.
 
-    `covered-minutes` is the **union** of the chosen source's credited spans, clipped to
-    `[lo, hi)` and independent of zone bucketing (review round-1 #1): overlapping samples
-    count once, and a sample below z1 / above z5 still proves the sensor was recording
-    even though it lands in no zone. It can therefore never exceed `hi - lo`, unlike a
-    per-sample sum. The zone-minutes dict keeps the per-sample-sum semantics the
-    `z*_min` day columns have always had.
+    The two union fields exist because the classifier must be overlap- and
+    garbage-proof where the day columns deliberately keep their historical per-sample
+    sums (review round-1 #1, round-2 #1, #2):
+
+    - `covered_min` is the union of the chosen source's credited spans, clipped to
+      `[lo, hi)`, zone-independent but **plausibility-gated** (`_is_plausible_hr`):
+      overlapping samples count once, a below-z1/above-z5 sample still proves the
+      sensor was recording, and a value no human heart can produce (0, negative,
+      non-finite, absurd) proves nothing. Never exceeds `hi - lo`.
+    - `z45_min` is the union of the spans whose sample buckets to z4 or z5, so
+      duplicated hard samples cannot fabricate promotion minutes the wall clock does
+      not contain.
     """
 
     def contributes(r: Records) -> bool:
@@ -518,17 +555,25 @@ def _zone_minutes_in_range(
         if not _is_instant(r) and contributes(r)
     ]
     credited += _instant_credit_seconds([r for r in picked_window if _is_instant(r)], lo, hi)
-    spans: list[tuple[datetime, datetime]] = []
+    covered_spans: list[tuple[datetime, datetime]] = []
+    z45_spans: list[tuple[datetime, datetime]] = []
     for r, seconds in credited:
-        if seconds > 0:
-            start = parse_ts(r.start_date)
-            if not _is_instant(r):
-                start = max(start, lo)  # an interval's credit begins where the window does
-            spans.append((start, start + timedelta(seconds=seconds)))
         zone = _bucket_zone(r.value, bounds)
         if zone is not None:
             minutes[zone] += seconds / 60.0
-    return minutes, _union_seconds(spans) / 60.0
+        if seconds <= 0:
+            continue
+        start = parse_ts(r.start_date)
+        if not _is_instant(r):
+            start = max(start, lo)  # an interval's credit begins where the window does
+        span = (start, start + timedelta(seconds=seconds))
+        if _is_plausible_hr(r.value):
+            covered_spans.append(span)
+        if zone in ("z4", "z5"):
+            z45_spans.append(span)
+    return _WindowCredit(
+        minutes, _union_seconds(z45_spans) / 60.0, _union_seconds(covered_spans) / 60.0
+    )
 
 
 def _hr_window_rows(session: Session, day: date) -> list[Records]:
@@ -550,13 +595,13 @@ def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, 
     # Choose the day's source from the in-day rows, then credit from the full window's
     # rows of that source, so an instant sample just before midnight still finds its
     # next-day successor for the gap computation — see `_zone_minutes_in_range`.
-    credited = _zone_minutes_in_range(
+    credit = _zone_minutes_in_range(
         _hr_window_rows(session, day), *_sofia_day_bounds(day), profile=profile
     )
-    if credited is None:
+    if credit is None:
         return {col: None for col in ZONE_COLUMNS}
-    minutes, _ = credited  # coverage is the classifier's concern, not the day columns'
-    return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
+    # The union fields are the classifier's concern; the day columns keep the sums.
+    return {f"{z}_min": credit.minutes[z] for z in _ZONE_KEYS}
 
 
 def _workout_z45_minutes(
@@ -567,9 +612,10 @@ def _workout_z45_minutes(
 
     The corroboration signal `hard_day` reads (DECISIONS.md Decisions 3 & 6). Credit is
     strictly per workout: minutes earned elsewhere in the day never contribute, and two
-    workouts' windows are never summed. `credited_minutes` is the **union** of the
-    chosen source's in-window credited time — zone-independent and overlap-deduped, so
-    it can never exceed the window length (review round-1 #1) — it is what the coverage
+    workouts' windows are never summed. Both values are span **unions**, so neither can
+    exceed the window length (review round-1 #1, round-2 #1): the z4+z5 minutes count
+    each hard wall-clock minute once however many samples cover it, and
+    `credited_minutes` — zone-independent, plausibility-gated — is what the coverage
     gate uses to tell a genuinely easy session (fully recorded, no hard minutes) from
     one the watch barely recorded.
 
@@ -584,11 +630,10 @@ def _workout_z45_minutes(
     if hi <= lo:
         return None
     day = to_sofia(lo).date()
-    credited = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
-    if credited is None:
+    credit = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
+    if credit is None:
         return None
-    minutes, covered = credited
-    return minutes["z4"] + minutes["z5"], covered
+    return credit.z45_min, credit.covered_min
 
 
 # ---------------------------------------------------------------------------
