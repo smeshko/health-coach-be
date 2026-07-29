@@ -133,5 +133,5 @@ Task state lives here. Tasks are appended by `scripts/add_task.py` and
 - [x] TASK-001: Per-workout in-window z4+z5 minutes helper
 - [x] TASK-002: Symmetric corroborated hard_day() with typed fallback (depends on TASK-001)
 - [x] TASK-005: Let a valid effort_score replace an invalid stored one (depends on TASK-002)
-- [ ] TASK-003: Docs: DB.md hard_day wording + Decision 3 revision record (depends on TASK-002)
+- [x] TASK-003: Docs: DB.md hard_day wording + Decision 3 revision record (depends on TASK-002)
 - [ ] TASK-004: Final Validation
