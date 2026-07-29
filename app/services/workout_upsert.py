@@ -102,7 +102,12 @@ def _backfill_effort_scores(session, rows: list[dict[str, Any]]) -> None:
     batch carrying the same uuid twice — `[uuid/99, uuid/9]` — still gets repaired. That
     matters because `insert_new_by_uuid` keeps only the FIRST occurrence of a uuid, so the
     corrected copy is never inserted (round-3 #1). Where a uuid repeats, the LAST valid
-    incoming score wins.
+    incoming score wins **the repair** — but repair only lands where the stored value is
+    `NULL` or invalid, so if an earlier occurrence already stored a valid score (e.g. a
+    `[uuid/7, uuid/9]` pair inserted the 7), the never-clobber guard keeps it: the FIRST
+    valid score is authoritative, exactly as it is across separate syncs (review round-1
+    #2 — a payload carrying two conflicting valid scores is contradictory input, and
+    without ordering metadata "newer" is indistinguishable from a stale duplicate).
 
     An invalid incoming score is skipped outright — it is noise, not a correction, so it
     can neither fill a `NULL` nor replace another invalid value.
