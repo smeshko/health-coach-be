@@ -144,3 +144,75 @@ def test_replay_adds_no_statistics_rows(session) -> None:
     assert before == 2  # one stat + one zone row
     upsert_workouts(session, [w])  # replay
     assert _scount(session) == before  # net-new only — no duplicate children
+
+
+# ---------------------------------------------------------------------------
+# corroborated-hard-day TASK-005: an INVALID stored effort_score is repairable.
+# `hard_day` treats a score outside HARD_EFFORT_VALID_RANGE as absent, so the old
+# `WHERE effort_score IS NULL` guard would have stranded such a workout as permanently
+# effort-absent — the corrected score could never land (round-2 #5, round-3 #1).
+# ---------------------------------------------------------------------------
+def test_valid_effort_score_replaces_an_invalid_stored_one(session) -> None:
+    upsert_workouts(session, [_workout("w", effortScore=99)])
+    assert _effort(session, "w") == 99
+    upsert_workouts(session, [_workout("w", effortScore=9)])
+    assert _effort(session, "w") == 9
+    assert _wcount(session) == 1
+
+
+def test_valid_effort_score_replaces_a_negative_stored_one(session) -> None:
+    upsert_workouts(session, [_workout("w", effortScore=-3)])
+    upsert_workouts(session, [_workout("w", effortScore=4)])
+    assert _effort(session, "w") == 4
+
+
+def test_valid_stored_effort_score_is_still_never_clobbered(session) -> None:
+    # The never-overwrite contract for *valid* data is unchanged.
+    upsert_workouts(session, [_workout("w", effortScore=8)])
+    upsert_workouts(session, [_workout("w", effortScore=9)])
+    assert _effort(session, "w") == 8
+
+
+def test_null_stored_effort_score_is_still_backfilled(session) -> None:
+    upsert_workouts(session, [_workout("w", effortScore=None)])
+    upsert_workouts(session, [_workout("w", effortScore=9)])
+    assert _effort(session, "w") == 9
+
+
+def test_invalid_incoming_effort_score_never_overwrites_anything(session) -> None:
+    # 99 / -3 are nonsense, not corrections: they must not land on a NULL row…
+    upsert_workouts(session, [_workout("null", effortScore=None)])
+    upsert_workouts(session, [_workout("null", effortScore=99)])
+    assert _effort(session, "null") is None
+    # …nor replace an already-stored invalid value with another invalid one.
+    upsert_workouts(session, [_workout("bad", effortScore=99)])
+    upsert_workouts(session, [_workout("bad", effortScore=-3)])
+    assert _effort(session, "bad") == 99
+
+
+def test_same_batch_duplicate_repairs_an_invalid_score(session) -> None:
+    """round-3 #1: `insert_new_by_uuid` keeps the FIRST occurrence of a uuid, so a payload
+    carrying [uuid/99, uuid/9] inserts the 99 and drops the correction. The repair runs
+    over all incoming uuids, so the valid second copy still lands."""
+    upsert_workouts(session, [_workout("w", effortScore=99), _workout("w", effortScore=9)])
+    assert _effort(session, "w") == 9
+    assert _wcount(session) == 1
+
+
+def test_same_batch_duplicate_leaves_a_valid_first_score_alone(session) -> None:
+    # The first copy stored a valid 7; the second must not overwrite it.
+    upsert_workouts(session, [_workout("w", effortScore=7), _workout("w", effortScore=9)])
+    assert _effort(session, "w") == 7
+
+
+def test_effort_validity_range_is_shared_with_the_classifier(session) -> None:
+    # One source of truth for the bounds — the upsert must not re-declare them.
+    from app.services import workout_upsert as upsert_mod
+    from app.services.daily_metrics_engine import HARD_EFFORT_VALID_RANGE
+
+    assert upsert_mod.HARD_EFFORT_VALID_RANGE is HARD_EFFORT_VALID_RANGE
+    # The inclusive bounds are valid scores and survive untouched.
+    for uuid, score in (("lo", 1), ("hi", 10)):
+        upsert_workouts(session, [_workout(uuid, effortScore=score)])
+        upsert_workouts(session, [_workout(uuid, effortScore=5)])
+        assert _effort(session, uuid) == score

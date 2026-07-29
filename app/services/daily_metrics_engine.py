@@ -23,10 +23,12 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -320,14 +322,23 @@ def _sofia_day_bounds(day: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def _in_day_overlap_seconds(r: Records, day: date) -> float:
-    """Seconds of `[start_date, end_date]` that fall inside the Sofia `day`."""
+def _overlap_seconds(r: Records, lo: datetime, hi: datetime) -> float:
+    """Seconds of the interval `[start_date, end_date]` that fall inside `[lo, hi]`.
+
+    The window-generic core behind `_in_day_overlap_seconds` — a Sofia day and a
+    workout's start–end window credit interval samples by exactly the same rule, so
+    the two callers cannot drift (corroborated-hard-day TASK-001).
+    """
     if r.end_date is None:
         return 0.0
     start, end = parse_ts(r.start_date), parse_ts(r.end_date)
-    day_start, day_end = _sofia_day_bounds(day)
-    lo, hi = max(start, day_start), min(end, day_end)
-    return max(0.0, (hi - lo).total_seconds())
+    a, b = max(start, lo), min(end, hi)
+    return max(0.0, (b - a).total_seconds())
+
+
+def _in_day_overlap_seconds(r: Records, day: date) -> float:
+    """Seconds of `[start_date, end_date]` that fall inside the Sofia `day`."""
+    return _overlap_seconds(r, *_sofia_day_bounds(day))
 
 
 # ---------------------------------------------------------------------------
@@ -417,26 +428,157 @@ def _is_instant(r: Records) -> bool:
     return r.end_date is None or r.end_date == r.start_date
 
 
-def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple[Records, float]]:
-    """In-day credit for each of `day`'s instant HR samples: the gap to the NEXT
-    instant sample (successors on a neighbour day count — `instants` is the full
-    ±1-day window), capped at `_INSTANT_HR_MAX_CREDIT_S` and clipped to the Sofia
-    day end. The window's last sample has no successor and credits 0 (conservative —
-    one background reading's worth at most)."""
+def _instant_credit_seconds(
+    instants: list[Records], lo: datetime, hi: datetime
+) -> list[tuple[Records, float]]:
+    """Credit each instant sample **starting inside `[lo, hi)`** the gap to the NEXT
+    instant sample, capped at `_INSTANT_HR_MAX_CREDIT_S` and clipped to `hi`.
+
+    The window-generic core behind `_instant_hr_credit_seconds`. `instants` is always
+    the wider (±1-day) source list, not the in-range subset: the successor supplying a
+    boundary sample's gap routinely sits **outside** `[lo, hi)`, so filtering first
+    would zero the last in-range sample (corroborated-hard-day round-1 #5). Only the
+    very last sample of the whole list has no successor and credits 0 (conservative —
+    one background reading's worth at most).
+    """
     ordered = sorted(instants, key=lambda r: parse_ts(r.start_date))
-    _, day_end = _sofia_day_bounds(day)
     credits: list[tuple[Records, float]] = []
     for i, r in enumerate(ordered):
-        if to_sofia(parse_ts(r.start_date)).date() != day:
+        start = parse_ts(r.start_date)
+        if not lo <= start < hi:
             continue  # a window neighbour: successor material only, credits nothing here
         if i + 1 == len(ordered):
             credits.append((r, 0.0))
             continue
-        start = parse_ts(r.start_date)
         gap = (parse_ts(ordered[i + 1].start_date) - start).total_seconds()
-        credit = min(gap, _INSTANT_HR_MAX_CREDIT_S, (day_end - start).total_seconds())
+        credit = min(gap, _INSTANT_HR_MAX_CREDIT_S, (hi - start).total_seconds())
         credits.append((r, max(0.0, credit)))
     return credits
+
+
+def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple[Records, float]]:
+    """In-day credit for each of `day`'s instant HR samples (see `_instant_credit_seconds`;
+    `[lo, hi)` is the Sofia day, and `to_sofia(start).date() == day` is exactly that range)."""
+    return _instant_credit_seconds(instants, *_sofia_day_bounds(day))
+
+
+# The human-plausible heart-rate range (bpm) for a *coverage-proving* HR sample. The sync
+# `HealthRecord.value` is an unconstrained float, so 0 / negative / NaN / `±inf` are storable;
+# such a value cannot represent a heartbeat, so it must not count as evidence the sensor was
+# recording (review round-2 #2) — otherwise a full-window 0-bpm interval would demote a typed
+# workout. Wide sanity guards in the `MIN/MAX_PLAUSIBLE_BODY_WEIGHT_KG` style: the lowest
+# recorded human resting HR is ~25 bpm and no human heart sustains > 250, so no real reading
+# is ever excluded. Zone bucketing needs no such gate — `_bucket_zone` already rejects
+# anything outside the profile's z1–z5 bounds (NaN/±inf compare false).
+MIN_PLAUSIBLE_HR_BPM: float = 25.0
+MAX_PLAUSIBLE_HR_BPM: float = 250.0
+
+
+def _is_plausible_hr(bpm: float | None) -> bool:
+    """Whether `bpm` could be a real heartbeat reading (finite, within the plausible range)."""
+    return (
+        bpm is not None
+        and math.isfinite(bpm)
+        and MIN_PLAUSIBLE_HR_BPM <= bpm <= MAX_PLAUSIBLE_HR_BPM
+    )
+
+
+def _union_seconds(spans: list[tuple[datetime, datetime]]) -> float:
+    """Total seconds covered by the **union** of `spans` (overlaps counted once)."""
+    total = 0.0
+    cur_lo: datetime | None = None
+    cur_hi: datetime | None = None
+    for s, e in sorted(spans):
+        if cur_hi is None or s > cur_hi:
+            if cur_hi is not None and cur_lo is not None:
+                total += (cur_hi - cur_lo).total_seconds()
+            cur_lo, cur_hi = s, e
+        elif e > cur_hi:
+            cur_hi = e
+    if cur_hi is not None and cur_lo is not None:
+        total += (cur_hi - cur_lo).total_seconds()
+    return total
+
+
+class _WindowCredit(NamedTuple):
+    """What one `[lo, hi)` window's HR credits, split by consumer (see
+    `_zone_minutes_in_range`)."""
+
+    minutes: dict[str, float]  # per-zone, per-sample-SUM — the z*_min day-column semantics
+    z45_min: float  # UNION of z4/z5-bucketed spans — the classifier's promotion signal
+    covered_min: float  # UNION of plausible-sample spans — the classifier's coverage gate
+
+
+def _zone_minutes_in_range(
+    window_rows: list[Records], lo: datetime, hi: datetime, *, profile: Profile
+) -> _WindowCredit | None:
+    """The HR credit inside `[lo, hi)` from `window_rows` (`_WindowCredit`), or `None`
+    when no sample contributes to that range at all (the "no data" convention).
+
+    The shared crediting core: `zone_minutes` passes the Sofia day bounds,
+    `_workout_z45_minutes` passes one workout's start–end window, so the day-level
+    column and the classifier's per-workout signal can never drift apart
+    (corroborated-hard-day TASK-001). `window_rows` must be the WIDER (±1-day) row set,
+    not the in-range subset — the source pick reads the in-range rows, but crediting
+    then runs over that source's full row set so a boundary instant still finds its
+    successor.
+
+    The two union fields exist because the classifier must be overlap- and
+    garbage-proof where the day columns deliberately keep their historical per-sample
+    sums (review round-1 #1, round-2 #1, #2):
+
+    - `covered_min` is the union of the chosen source's credited spans, clipped to
+      `[lo, hi)`, zone-independent but **plausibility-gated** (`_is_plausible_hr`):
+      overlapping samples count once, a below-z1/above-z5 sample still proves the
+      sensor was recording, and a value no human heart can produce (0, negative,
+      non-finite, absurd) proves nothing. Never exceeds `hi - lo`.
+    - `z45_min` is the union of the spans whose sample buckets to z4 or z5, so
+      duplicated hard samples cannot fabricate promotion minutes the wall clock does
+      not contain.
+    """
+
+    def contributes(r: Records) -> bool:
+        if _is_instant(r):
+            return lo <= parse_ts(r.start_date) < hi
+        return _overlap_seconds(r, lo, hi) > 0
+
+    in_range = [r for r in window_rows if contributes(r)]
+    if not in_range:
+        return None
+    chosen = _choose_source(in_range, weight=lambda r: 1.0)
+    picked_window = [r for r in window_rows if r.source_name == chosen]
+    bounds = profile.zone_bounds()
+    minutes = {z: 0.0 for z in _ZONE_KEYS}
+    credited = [
+        (r, _overlap_seconds(r, lo, hi))
+        for r in picked_window
+        if not _is_instant(r) and contributes(r)
+    ]
+    credited += _instant_credit_seconds([r for r in picked_window if _is_instant(r)], lo, hi)
+    covered_spans: list[tuple[datetime, datetime]] = []
+    z45_spans: list[tuple[datetime, datetime]] = []
+    for r, seconds in credited:
+        zone = _bucket_zone(r.value, bounds)
+        if zone is not None:
+            minutes[zone] += seconds / 60.0
+        if seconds <= 0:
+            continue
+        start = parse_ts(r.start_date)
+        if not _is_instant(r):
+            start = max(start, lo)  # an interval's credit begins where the window does
+        span = (start, start + timedelta(seconds=seconds))
+        if _is_plausible_hr(r.value):
+            covered_spans.append(span)
+        if zone in ("z4", "z5"):
+            z45_spans.append(span)
+    return _WindowCredit(
+        minutes, _union_seconds(z45_spans) / 60.0, _union_seconds(covered_spans) / 60.0
+    )
+
+
+def _hr_window_rows(session: Session, day: date) -> list[Records]:
+    """`day`'s ±1-day `heart_rate` rows with a value (seed-superseding already applied)."""
+    return [r for r in _records_of_types(session, day, {"heart_rate"}) if r.value is not None]
 
 
 def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, float | None]:
@@ -450,36 +592,48 @@ def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, 
     `_INSTANT_HR_MAX_CREDIT_S`. A day with no in-day HR sample of either form →
     every `z*_min` is `None` (no-data convention).
     """
-    window_rows = [
-        r for r in _records_of_types(session, day, {"heart_rate"}) if r.value is not None
-    ]
-
-    def _contributes(r: Records) -> bool:
-        if _is_instant(r):
-            return to_sofia(parse_ts(r.start_date)).date() == day
-        return _in_day_overlap_seconds(r, day) > 0
-
-    in_day = [r for r in window_rows if _contributes(r)]
-    if not in_day:
-        return {col: None for col in ZONE_COLUMNS}
     # Choose the day's source from the in-day rows, then credit from the full window's
     # rows of that source, so an instant sample just before midnight still finds its
-    # next-day successor for the gap computation.
-    chosen = _choose_source(in_day, weight=lambda r: 1.0)
-    picked_window = [r for r in window_rows if r.source_name == chosen]
-    bounds = profile.zone_bounds()
-    minutes = {z: 0.0 for z in _ZONE_KEYS}
-    credited = [
-        (r, _in_day_overlap_seconds(r, day))
-        for r in picked_window
-        if not _is_instant(r) and _contributes(r)
-    ]
-    credited += _instant_hr_credit_seconds([r for r in picked_window if _is_instant(r)], day)
-    for r, seconds in credited:
-        zone = _bucket_zone(r.value, bounds)
-        if zone is not None:
-            minutes[zone] += seconds / 60.0
-    return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
+    # next-day successor for the gap computation — see `_zone_minutes_in_range`.
+    credit = _zone_minutes_in_range(
+        _hr_window_rows(session, day), *_sofia_day_bounds(day), profile=profile
+    )
+    if credit is None:
+        return {col: None for col in ZONE_COLUMNS}
+    # The union fields are the classifier's concern; the day columns keep the sums.
+    return {f"{z}_min": credit.minutes[z] for z in _ZONE_KEYS}
+
+
+def _workout_z45_minutes(
+    session: Session, w: Workouts, *, profile: Profile
+) -> tuple[float, float] | None:
+    """One workout's **in-window** `(z4+z5 minutes, credited minutes)`, or `None` when no
+    HR sample overlaps its `[start_date, end_date]` window.
+
+    The corroboration signal `hard_day` reads (DECISIONS.md Decisions 3 & 6). Credit is
+    strictly per workout: minutes earned elsewhere in the day never contribute, and two
+    workouts' windows are never summed. Both values are span **unions**, so neither can
+    exceed the window length (review round-1 #1, round-2 #1): the z4+z5 minutes count
+    each hard wall-clock minute once however many samples cover it, and
+    `credited_minutes` — zone-independent, plausibility-gated — is what the coverage
+    gate uses to tell a genuinely easy session (fully recorded, no hard minutes) from
+    one the watch barely recorded.
+
+    `None` means *the signal is absent*, mirroring `zone_minutes`' all-`None` no-data
+    convention; a covered-but-easy window returns `(0.0, credited)`, which is a real
+    reading. An undefined window (`end_date is None`, or end at/before start) is absent
+    too — there is nothing to credit against.
+    """
+    if w.end_date is None:
+        return None
+    lo, hi = parse_ts(w.start_date), parse_ts(w.end_date)
+    if hi <= lo:
+        return None
+    day = to_sofia(lo).date()
+    credit = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
+    if credit is None:
+        return None
+    return credit.z45_min, credit.covered_min
 
 
 # ---------------------------------------------------------------------------
@@ -498,10 +652,27 @@ DIETARY_TYPE_TO_COLUMN: dict[str, str] = {
 _KCAL_TYPE = "dietary_energy_consumed"
 
 # `hard_day` predicate constants (DECISIONS.md Decision 3) — matched case-insensitively.
+# These four types are the *fallback* heuristic, consulted only when a workout carries
+# neither corroborating signal (corroborated-hard-day DECISIONS.md Decision 2).
 HARD_ACTIVITY_TYPES: frozenset[str] = frozenset(
     {"boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"}
 )
 LONG_DURATION_MIN: float = 90.0  # minutes; "long" session fallback, BOUNDARY INCLUSIVE (>=)
+
+# Corroboration thresholds (corroborated-hard-day DECISIONS.md Decisions 1, 6, 7). Every
+# comparison against them is BOUNDARY INCLUSIVE (>=, or <= for the effort range's top).
+HARD_EFFORT_MIN: float = 7.0  # Apple RPE: 7-8 "hard", 9-10 "max"
+HARD_EFFORT_MIN_DURATION_MIN: float = 20.0  # a short 7-RPE burst is not a hard *day*
+HARD_Z45_MIN: float = 15.0  # in-window z4+z5 minutes that confirm on their own
+# The usable Apple RPE range. `sync.py` declares a bare `int | None` into an unconstrained
+# `Float` column, so 99 and -3 are storable; outside this range a score is nonsense, not
+# evidence, and is treated exactly as NULL (Decision 7).
+HARD_EFFORT_VALID_RANGE: tuple[float, float] = (1.0, 10.0)
+# Fraction of a workout's duration that must carry credited in-window HR before the zones
+# signal counts as *present* (Decision 6). Below it — dead battery, manual log — zones are
+# absent, so the typed fallback still protects the session instead of demoting it on three
+# warm-up minutes. Promotion by `HARD_Z45_MIN` is deliberately NOT gated on this.
+HARD_HR_COVERAGE_MIN_FRAC: float = 0.5
 _SECONDS_UNITS: frozenset[str] = frozenset({"s", "sec", "secs", "second", "seconds"})
 _MINUTES_UNITS: frozenset[str] = frozenset({"min", "mins", "minute", "minutes", ""})
 
@@ -624,11 +795,83 @@ def _duration_minutes(w: Workouts) -> float:
     return 0.0
 
 
-def hard_day(session: Session, day: date) -> int:
-    """Deterministic 0/1 hard-session flag from the day's `workouts` (DECISIONS.md
-    Decision 3): `1` if any workout's `activity_type` is in `HARD_ACTIVITY_TYPES` **or**
-    its duration (normalized to minutes) is `>= LONG_DURATION_MIN`; else `0`. Always a
-    real `0`/`1` — never `None` (a flag, not a measurement)."""
+def is_valid_effort_score(score: float | int | None) -> bool:
+    """True when `score` is a usable Apple RPE — finite and inside
+    `HARD_EFFORT_VALID_RANGE` (inclusive at both ends).
+
+    The single home of the validity rule (corroborated-hard-day DECISIONS.md Decision 7):
+    `hard_day` uses it to decide whether an effort signal is *present*, and
+    `workout_upsert` uses the same predicate to decide whether a stored score is
+    repairable, so the two can never disagree about what "valid" means.
+    """
+    if score is None:
+        return False
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return False
+    lo, hi = HARD_EFFORT_VALID_RANGE
+    return math.isfinite(value) and lo <= value <= hi
+
+
+def _workout_effort(w: Workouts) -> float | None:
+    """`w`'s effort score when it is trustworthy, else `None` — an invalid score is
+    treated **exactly** as `NULL`, not as a low reading (Decision 7)."""
+    return float(w.effort_score) if is_valid_effort_score(w.effort_score) else None
+
+
+def _workout_is_hard(session: Session, w: Workouts, *, profile: Profile) -> bool:
+    """Whether one workout makes its day hard — the per-workout half of `hard_day`."""
+    duration = _duration_minutes(w)
+    if duration >= LONG_DURATION_MIN:
+        return True  # the long-session rule is unconditional, never corroboration-gated
+
+    effort = _workout_effort(w)
+    zones = _workout_z45_minutes(session, w, profile=profile)
+
+    # Confirmation — either signal is enough, whatever the activity type (Decision 2).
+    if (
+        effort is not None
+        and effort >= HARD_EFFORT_MIN
+        and duration >= HARD_EFFORT_MIN_DURATION_MIN
+    ):
+        return True
+    if zones is not None and zones[0] >= HARD_Z45_MIN:
+        return True  # NOT coverage-gated: 15 credited hard minutes imply real data
+
+    # Neither confirmed. The type heuristic applies ONLY when both signals are absent —
+    # a present-but-unconfirming signal is evidence, and it wins over the label.
+    zones_present = (
+        zones is not None and duration > 0 and zones[1] >= HARD_HR_COVERAGE_MIN_FRAC * duration
+    )
+    if effort is None and not zones_present:
+        return _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES
+    return False
+
+
+def hard_day(session: Session, day: date, *, profile: Profile) -> int:
+    """Deterministic 0/1 hard-session flag from the day's `workouts`, corroborated against
+    the session's actual intensity (corroborated-hard-day DECISIONS.md; **revises**
+    archived Decision 3 of `2026-06-04-e6-p1-per-day-recompute`, which trusted
+    `activity_type` alone).
+
+    `1` if ANY of the day's workouts is hard. Per workout, in order:
+
+    1. `_duration_minutes(w) >= LONG_DURATION_MIN` (90) — unconditional, ungated.
+    2. **Confirmed by either signal**, whatever the activity type: a *valid* effort score
+       `>= HARD_EFFORT_MIN` on a session of `>= HARD_EFFORT_MIN_DURATION_MIN`, or in-window
+       z4+z5 `>= HARD_Z45_MIN` minutes (`_workout_z45_minutes`).
+    3. **Typed fallback** — `activity_type in HARD_ACTIVITY_TYPES` — but only when BOTH
+       signals are *absent*, which reproduces the legacy predicate on a no-data workout.
+
+    "Absent" is validity-gated, not merely null-gated: an effort score outside
+    `HARD_EFFORT_VALID_RANGE` counts as absent (Decision 7), and the zones signal counts as
+    present only with credited in-window HR `>= HARD_HR_COVERAGE_MIN_FRAC` of the duration
+    (Decision 6). So a present-but-disproving signal demotes a mislabelled session, while
+    bad or missing data leaves the label's protection intact.
+
+    Always a real `0`/`1` — never `None` (a flag, not a measurement).
+    """
     lo, hi = _window(day)
     stmt = select(Workouts).where(Workouts.start_date >= lo).where(Workouts.start_date < hi)
     workouts = _drop_superseded_seed(
@@ -637,9 +880,7 @@ def hard_day(session: Session, day: date) -> int:
     for w in workouts:
         if to_sofia(parse_ts(w.start_date)).date() != day:
             continue
-        if _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES:
-            return 1
-        if _duration_minutes(w) >= LONG_DURATION_MIN:
+        if _workout_is_hard(session, w, profile=profile):
             return 1
     return 0
 
@@ -783,7 +1024,7 @@ def _compute_day_values(session: Session, day: date, *, profile: Profile) -> dic
         "steps": steps(session, day),
         "active_energy": active_energy(session, day),
         "body_weight": body_weight(session, day),
-        "hard_day": hard_day(session, day),
+        "hard_day": hard_day(session, day, profile=profile),
     }
     values.update(zone_minutes(session, day, profile=profile))
     values.update(nutrition_intake(session, day))
