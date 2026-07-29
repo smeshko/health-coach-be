@@ -1561,6 +1561,41 @@ def test_workout_z45_is_zero_not_none_when_the_window_is_covered_but_easy(
     assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(50.0))
 
 
+def test_workout_z45_coverage_dedupes_overlapping_samples(session: Session) -> None:
+    """review round-1 #1: two overlapping 13-min z1 intervals cover 13 unique minutes,
+    not 26 — a per-sample sum would let duplicated easy samples fake half the window."""
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end="2026-06-01T18:13:00+03:00", value=110.0),
+        _rec("heart_rate", W_START, end="2026-06-01T18:13:00+03:00", value=112.0),
+    )
+    w = _win_workout()
+    _seed(session, w)
+    z45, credited = _z45(session, w)
+    assert z45 == pytest.approx(0.0)
+    assert credited == pytest.approx(13.0)  # union, NOT 26.0
+
+
+def test_workout_z45_coverage_counts_below_z1_samples(session: Session) -> None:
+    """review round-1 #1: a full-window recording below the z1 floor lands in no zone,
+    but it still proves the sensor was on — coverage is zone-independent."""
+    _seed(session, _rec("heart_rate", W_START, end=W_END, value=90.0))  # < z1 low (98)
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(50.0))
+
+
+def test_workout_z45_coverage_counts_above_z5_samples(session: Session) -> None:
+    # Above max HR buckets to no zone (pre-existing rule) but still counts as coverage.
+    _seed(
+        session,
+        _rec("heart_rate", W_START, end="2026-06-01T18:30:00+03:00", value=200.0),  # > 195
+    )
+    w = _win_workout()
+    _seed(session, w)
+    assert _z45(session, w) == (pytest.approx(0.0), pytest.approx(30.0))
+
+
 def test_zone_minutes_unchanged_by_the_window_credit_extraction(session: Session) -> None:
     # The shared window-crediting core must leave `zone_minutes` byte-identical.
     _seed(
@@ -1699,6 +1734,27 @@ def test_hard_day_adequate_hr_coverage_demotes_a_typed_workout(session: Session)
 def test_hard_day_coverage_gate_is_boundary_inclusive(session: Session) -> None:
     # Exactly 50 % of the duration credited, all z1 → present (>=), so no fallback → 0.
     _seed(session, _hr_span(W_START, "2026-06-01T18:25:00+03:00", 110.0))
+    _seed(session, _workout("boxing", W_START, duration=50.0, unit="min", end=W_END))
+    assert _hard(session) == 0
+
+
+def test_hard_day_overlapping_easy_intervals_do_not_fake_coverage(session: Session) -> None:
+    """review round-1 #1: two overlapping 13-min z1 spans are 13 unique minutes — 26 %
+    of the window, under the gate. A per-sample sum (26 min ≥ 25) would call zones
+    present and wrongly demote the typed session."""
+    _seed(
+        session,
+        _hr_span(W_START, "2026-06-01T18:13:00+03:00", 110.0),
+        _hr_span(W_START, "2026-06-01T18:13:00+03:00", 112.0),
+    )
+    _seed(session, _workout("boxing", W_START, duration=50.0, unit="min", end=W_END))
+    assert _hard(session) == 1
+
+
+def test_hard_day_below_z1_recording_is_real_coverage_and_demotes(session: Session) -> None:
+    """review round-1 #1: a typed session fully recorded below the z1 floor is a present,
+    disproving zones signal — zone-bucketed coverage would call it absent and fall back."""
+    _seed(session, _hr_span(W_START, W_END, 90.0))  # 50 min under z1's 98-bpm floor
     _seed(session, _workout("boxing", W_START, duration=50.0, unit="min", end=W_END))
     assert _hard(session) == 0
 

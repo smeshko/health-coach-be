@@ -461,11 +461,28 @@ def _instant_hr_credit_seconds(instants: list[Records], day: date) -> list[tuple
     return _instant_credit_seconds(instants, *_sofia_day_bounds(day))
 
 
+def _union_seconds(spans: list[tuple[datetime, datetime]]) -> float:
+    """Total seconds covered by the **union** of `spans` (overlaps counted once)."""
+    total = 0.0
+    cur_lo: datetime | None = None
+    cur_hi: datetime | None = None
+    for s, e in sorted(spans):
+        if cur_hi is None or s > cur_hi:
+            if cur_hi is not None and cur_lo is not None:
+                total += (cur_hi - cur_lo).total_seconds()
+            cur_lo, cur_hi = s, e
+        elif e > cur_hi:
+            cur_hi = e
+    if cur_hi is not None and cur_lo is not None:
+        total += (cur_hi - cur_lo).total_seconds()
+    return total
+
+
 def _zone_minutes_in_range(
     window_rows: list[Records], lo: datetime, hi: datetime, *, profile: Profile
-) -> dict[str, float] | None:
-    """Zone-minutes credited inside `[lo, hi)` from `window_rows`, or `None` when no
-    sample contributes to that range at all (the "no data" convention).
+) -> tuple[dict[str, float], float] | None:
+    """`(zone-minutes, covered-minutes)` credited inside `[lo, hi)` from `window_rows`,
+    or `None` when no sample contributes to that range at all (the "no data" convention).
 
     The shared crediting core: `zone_minutes` passes the Sofia day bounds,
     `_workout_z45_minutes` passes one workout's start–end window, so the day-level
@@ -474,6 +491,13 @@ def _zone_minutes_in_range(
     not the in-range subset — the source pick reads the in-range rows, but crediting
     then runs over that source's full row set so a boundary instant still finds its
     successor.
+
+    `covered-minutes` is the **union** of the chosen source's credited spans, clipped to
+    `[lo, hi)` and independent of zone bucketing (review round-1 #1): overlapping samples
+    count once, and a sample below z1 / above z5 still proves the sensor was recording
+    even though it lands in no zone. It can therefore never exceed `hi - lo`, unlike a
+    per-sample sum. The zone-minutes dict keeps the per-sample-sum semantics the
+    `z*_min` day columns have always had.
     """
 
     def contributes(r: Records) -> bool:
@@ -494,11 +518,17 @@ def _zone_minutes_in_range(
         if not _is_instant(r) and contributes(r)
     ]
     credited += _instant_credit_seconds([r for r in picked_window if _is_instant(r)], lo, hi)
+    spans: list[tuple[datetime, datetime]] = []
     for r, seconds in credited:
+        if seconds > 0:
+            start = parse_ts(r.start_date)
+            if not _is_instant(r):
+                start = max(start, lo)  # an interval's credit begins where the window does
+            spans.append((start, start + timedelta(seconds=seconds)))
         zone = _bucket_zone(r.value, bounds)
         if zone is not None:
             minutes[zone] += seconds / 60.0
-    return minutes
+    return minutes, _union_seconds(spans) / 60.0
 
 
 def _hr_window_rows(session: Session, day: date) -> list[Records]:
@@ -520,11 +550,12 @@ def zone_minutes(session: Session, day: date, *, profile: Profile) -> dict[str, 
     # Choose the day's source from the in-day rows, then credit from the full window's
     # rows of that source, so an instant sample just before midnight still finds its
     # next-day successor for the gap computation — see `_zone_minutes_in_range`.
-    minutes = _zone_minutes_in_range(
+    credited = _zone_minutes_in_range(
         _hr_window_rows(session, day), *_sofia_day_bounds(day), profile=profile
     )
-    if minutes is None:
+    if credited is None:
         return {col: None for col in ZONE_COLUMNS}
+    minutes, _ = credited  # coverage is the classifier's concern, not the day columns'
     return {f"{z}_min": minutes[z] for z in _ZONE_KEYS}
 
 
@@ -536,9 +567,11 @@ def _workout_z45_minutes(
 
     The corroboration signal `hard_day` reads (DECISIONS.md Decisions 3 & 6). Credit is
     strictly per workout: minutes earned elsewhere in the day never contribute, and two
-    workouts' windows are never summed. `credited_minutes` is the total across **all five
-    zones**, not just z4/z5 — it is what the coverage gate uses to tell a genuinely easy
-    session (fully recorded, no hard minutes) from one the watch barely recorded.
+    workouts' windows are never summed. `credited_minutes` is the **union** of the
+    chosen source's in-window credited time — zone-independent and overlap-deduped, so
+    it can never exceed the window length (review round-1 #1) — it is what the coverage
+    gate uses to tell a genuinely easy session (fully recorded, no hard minutes) from
+    one the watch barely recorded.
 
     `None` means *the signal is absent*, mirroring `zone_minutes`' all-`None` no-data
     convention; a covered-but-easy window returns `(0.0, credited)`, which is a real
@@ -551,10 +584,11 @@ def _workout_z45_minutes(
     if hi <= lo:
         return None
     day = to_sofia(lo).date()
-    minutes = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
-    if minutes is None:
+    credited = _zone_minutes_in_range(_hr_window_rows(session, day), lo, hi, profile=profile)
+    if credited is None:
         return None
-    return minutes["z4"] + minutes["z5"], sum(minutes.values())
+    minutes, covered = credited
+    return minutes["z4"] + minutes["z5"], covered
 
 
 # ---------------------------------------------------------------------------
