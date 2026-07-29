@@ -23,6 +23,7 @@ module lands the engine shape + the idempotent upsert + the provider swap.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections.abc import Callable, Iterable, Sequence
@@ -572,10 +573,27 @@ DIETARY_TYPE_TO_COLUMN: dict[str, str] = {
 _KCAL_TYPE = "dietary_energy_consumed"
 
 # `hard_day` predicate constants (DECISIONS.md Decision 3) — matched case-insensitively.
+# These four types are the *fallback* heuristic, consulted only when a workout carries
+# neither corroborating signal (corroborated-hard-day DECISIONS.md Decision 2).
 HARD_ACTIVITY_TYPES: frozenset[str] = frozenset(
     {"boxing", "high_intensity_interval_training", "kickboxing", "martial_arts"}
 )
 LONG_DURATION_MIN: float = 90.0  # minutes; "long" session fallback, BOUNDARY INCLUSIVE (>=)
+
+# Corroboration thresholds (corroborated-hard-day DECISIONS.md Decisions 1, 6, 7). Every
+# comparison against them is BOUNDARY INCLUSIVE (>=, or <= for the effort range's top).
+HARD_EFFORT_MIN: float = 7.0  # Apple RPE: 7-8 "hard", 9-10 "max"
+HARD_EFFORT_MIN_DURATION_MIN: float = 20.0  # a short 7-RPE burst is not a hard *day*
+HARD_Z45_MIN: float = 15.0  # in-window z4+z5 minutes that confirm on their own
+# The usable Apple RPE range. `sync.py` declares a bare `int | None` into an unconstrained
+# `Float` column, so 99 and -3 are storable; outside this range a score is nonsense, not
+# evidence, and is treated exactly as NULL (Decision 7).
+HARD_EFFORT_VALID_RANGE: tuple[float, float] = (1.0, 10.0)
+# Fraction of a workout's duration that must carry credited in-window HR before the zones
+# signal counts as *present* (Decision 6). Below it — dead battery, manual log — zones are
+# absent, so the typed fallback still protects the session instead of demoting it on three
+# warm-up minutes. Promotion by `HARD_Z45_MIN` is deliberately NOT gated on this.
+HARD_HR_COVERAGE_MIN_FRAC: float = 0.5
 _SECONDS_UNITS: frozenset[str] = frozenset({"s", "sec", "secs", "second", "seconds"})
 _MINUTES_UNITS: frozenset[str] = frozenset({"min", "mins", "minute", "minutes", ""})
 
@@ -698,11 +716,83 @@ def _duration_minutes(w: Workouts) -> float:
     return 0.0
 
 
-def hard_day(session: Session, day: date) -> int:
-    """Deterministic 0/1 hard-session flag from the day's `workouts` (DECISIONS.md
-    Decision 3): `1` if any workout's `activity_type` is in `HARD_ACTIVITY_TYPES` **or**
-    its duration (normalized to minutes) is `>= LONG_DURATION_MIN`; else `0`. Always a
-    real `0`/`1` — never `None` (a flag, not a measurement)."""
+def is_valid_effort_score(score: float | int | None) -> bool:
+    """True when `score` is a usable Apple RPE — finite and inside
+    `HARD_EFFORT_VALID_RANGE` (inclusive at both ends).
+
+    The single home of the validity rule (corroborated-hard-day DECISIONS.md Decision 7):
+    `hard_day` uses it to decide whether an effort signal is *present*, and
+    `workout_upsert` uses the same predicate to decide whether a stored score is
+    repairable, so the two can never disagree about what "valid" means.
+    """
+    if score is None:
+        return False
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return False
+    lo, hi = HARD_EFFORT_VALID_RANGE
+    return math.isfinite(value) and lo <= value <= hi
+
+
+def _workout_effort(w: Workouts) -> float | None:
+    """`w`'s effort score when it is trustworthy, else `None` — an invalid score is
+    treated **exactly** as `NULL`, not as a low reading (Decision 7)."""
+    return float(w.effort_score) if is_valid_effort_score(w.effort_score) else None
+
+
+def _workout_is_hard(session: Session, w: Workouts, *, profile: Profile) -> bool:
+    """Whether one workout makes its day hard — the per-workout half of `hard_day`."""
+    duration = _duration_minutes(w)
+    if duration >= LONG_DURATION_MIN:
+        return True  # the long-session rule is unconditional, never corroboration-gated
+
+    effort = _workout_effort(w)
+    zones = _workout_z45_minutes(session, w, profile=profile)
+
+    # Confirmation — either signal is enough, whatever the activity type (Decision 2).
+    if (
+        effort is not None
+        and effort >= HARD_EFFORT_MIN
+        and duration >= HARD_EFFORT_MIN_DURATION_MIN
+    ):
+        return True
+    if zones is not None and zones[0] >= HARD_Z45_MIN:
+        return True  # NOT coverage-gated: 15 credited hard minutes imply real data
+
+    # Neither confirmed. The type heuristic applies ONLY when both signals are absent —
+    # a present-but-unconfirming signal is evidence, and it wins over the label.
+    zones_present = (
+        zones is not None and duration > 0 and zones[1] >= HARD_HR_COVERAGE_MIN_FRAC * duration
+    )
+    if effort is None and not zones_present:
+        return _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES
+    return False
+
+
+def hard_day(session: Session, day: date, *, profile: Profile) -> int:
+    """Deterministic 0/1 hard-session flag from the day's `workouts`, corroborated against
+    the session's actual intensity (corroborated-hard-day DECISIONS.md; **revises**
+    archived Decision 3 of `2026-06-04-e6-p1-per-day-recompute`, which trusted
+    `activity_type` alone).
+
+    `1` if ANY of the day's workouts is hard. Per workout, in order:
+
+    1. `_duration_minutes(w) >= LONG_DURATION_MIN` (90) — unconditional, ungated.
+    2. **Confirmed by either signal**, whatever the activity type: a *valid* effort score
+       `>= HARD_EFFORT_MIN` on a session of `>= HARD_EFFORT_MIN_DURATION_MIN`, or in-window
+       z4+z5 `>= HARD_Z45_MIN` minutes (`_workout_z45_minutes`).
+    3. **Typed fallback** — `activity_type in HARD_ACTIVITY_TYPES` — but only when BOTH
+       signals are *absent*, which reproduces the legacy predicate on a no-data workout.
+
+    "Absent" is validity-gated, not merely null-gated: an effort score outside
+    `HARD_EFFORT_VALID_RANGE` counts as absent (Decision 7), and the zones signal counts as
+    present only with credited in-window HR `>= HARD_HR_COVERAGE_MIN_FRAC` of the duration
+    (Decision 6). So a present-but-disproving signal demotes a mislabelled session, while
+    bad or missing data leaves the label's protection intact.
+
+    Always a real `0`/`1` — never `None` (a flag, not a measurement).
+    """
     lo, hi = _window(day)
     stmt = select(Workouts).where(Workouts.start_date >= lo).where(Workouts.start_date < hi)
     workouts = _drop_superseded_seed(
@@ -711,9 +801,7 @@ def hard_day(session: Session, day: date) -> int:
     for w in workouts:
         if to_sofia(parse_ts(w.start_date)).date() != day:
             continue
-        if _canonical_activity_type(w.activity_type) in HARD_ACTIVITY_TYPES:
-            return 1
-        if _duration_minutes(w) >= LONG_DURATION_MIN:
+        if _workout_is_hard(session, w, profile=profile):
             return 1
     return 0
 
@@ -857,7 +945,7 @@ def _compute_day_values(session: Session, day: date, *, profile: Profile) -> dic
         "steps": steps(session, day),
         "active_energy": active_energy(session, day),
         "body_weight": body_weight(session, day),
-        "hard_day": hard_day(session, day),
+        "hard_day": hard_day(session, day, profile=profile),
     }
     values.update(zone_minutes(session, day, profile=profile))
     values.update(nutrition_intake(session, day))
